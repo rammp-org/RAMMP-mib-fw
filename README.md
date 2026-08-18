@@ -1,7 +1,6 @@
-# ESP++ Template
+# MEBot Interface Board Template
 
-Template repository for building an ESP app with ESP++ (espp) components and
-ESP-IDF components.
+This repository contains the firmware for the MEBot Interface Board, which is responsible for motor actuation and drive control of the robotic wheelchair base on RAMMP. This project is built on top of ESPP and will run on the ESP32-P4.
 
 <!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-refresh-toc -->
 **Table of Contents**
@@ -21,11 +20,13 @@ ESP-IDF components.
 
 <!-- markdown-toc end -->
 
-## Template
-
-This repository is designed to be used as a template repository - so you can
-specify this as the template repository type when creating a new repository on
-GitHub.
+### Functionality (in progress)
+- [ ] Positional control with MCP266 motor controllers
+- [ ] Communications and control of PACE RACER motor controllers over PoE
+- [ ] Read IMU data
+- [ ] Read and implement software-based limit switches
+- [ ] Read MT6701 and carriage (TBD) encoders
+- [ ] Read load cell data
 
 ### Automated Setup
 
