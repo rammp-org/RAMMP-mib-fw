@@ -1,6 +1,30 @@
 dependencies:
+  adithya-187326/bno055:
+    component_hash: 652a2de3a28dca4f9d701d3c8660a744f90873a748647019448dea1891ce567b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.1
   espp/base_component:
     component_hash: 5651445974f90d0686116afaec12615f1552632713cbc194bb984062799c3350
+    dependencies:
+    - name: espp/logger
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.0
+  espp/cli:
+    component_hash: 495bd10e340b1be69889cad02b7ad5113fac403b6afd14ed35b41d8fea78a3d7
     dependencies:
     - name: espp/logger
       registry_url: https://components.espressif.com
@@ -21,6 +45,28 @@ dependencies:
       version: '>=5.0'
     source:
       registry_url: https://components.espressif.com
+      type: service
+    version: 1.2.0
+  espp/i2c:
+    component_hash: ba2a26a1003e4f65be7ff2576c155f23458d2a53a6a2330bcd5564346abd3724
+    dependencies:
+    - name: espp/base_component
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: espp/cli
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: espp/task
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.2.0
   espp/logger:
@@ -56,8 +102,10 @@ dependencies:
       type: idf
     version: 6.0.2
 direct_dependencies:
+- adithya-187326/bno055
+- espp/i2c
 - espp/task
 - idf
-manifest_hash: e20aa6291450d0f99e731580df5f812c1aea34eb4bde8e46526bafa1deb025f3
-target: esp32s3
+manifest_hash: d61969ef14137a27ced4a7baff8dd2434e40b4d7884a31b1a5d95eb05e3b9e3d
+target: esp32p4
 version: 3.0.0

@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espp/task: '>=1.0'
   espp/i2c: '*'
+  adithya-187326/bno055: ^1.0.1
