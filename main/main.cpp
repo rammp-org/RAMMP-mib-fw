@@ -2,6 +2,8 @@
 #include <chrono>
 #include <thread>
 
+#include "bno055.h"
+#include "imu.hpp"
 #include "logger.hpp"
 #include "task.hpp"
 
@@ -12,28 +14,21 @@ extern "C" void app_main(void) {
 
   logger.info("Bootup");
 
-  // counter to show the number of prints, shared between main and task
-  std::atomic<int> counter = 0;
+  IMU imu;
+  if (!imu.init()) {
+    logger.error("IMU init failed");
+    return;
+  }
 
-  // make a simple task that prints "Hello World!" every second
-  espp::Task task({
-      .callback = [&](auto &m, auto &cv) -> bool {
-        logger.debug("[{}] Hello from the task!", counter++);
-        std::unique_lock<std::mutex> lock(m);
-        cv.wait_for(lock, 1s);
-        // we don't want to stop the task, so return false
-        return false;
-      },
-        .task_config = {
-          .name = "Hello World",
-          .stack_size_bytes = 4096,
-        }
-    });
-  task.start();
-
-  // also print in the main thread
   while (true) {
-    logger.debug("[{}] Hello World!", counter++);
-    std::this_thread::sleep_for(1s);
+    bno055_t &dev = imu.device();
+    esp_err_t ret = bno055_get_readings(&dev, EULER_ANGLE);
+    if (ret != ESP_OK) {
+      ESP_LOGE("MAIN", "bno055_get_readings() failed: %s", esp_err_to_name(ret));
+    } else {
+      ESP_LOGI("MAIN", "pitch=%.1f roll=%.1f yaw=%.1f", dev.euler_angle.pitch, dev.euler_angle.roll,
+               dev.euler_angle.yaw);
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 }
