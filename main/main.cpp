@@ -2,7 +2,6 @@
 #include <chrono>
 #include <thread>
 
-// #include "IMU_BNO055.hpp"
 #include "bno055.h"
 #include "i2c.hpp"
 #include "logger.hpp"
@@ -49,25 +48,6 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(bno055_configure(&bno055, NDOF_MODE, (ACC_MG | GY_RPS | EUL_DEG)));
 
   ESP_LOGI("MAIN", "BNO055 configured");
-
-  // logger.info("Bootup");
-
-  // // counter to show the number of prints, shared between main and task
-  // std::atomic<int> counter = 0;
-
-  // // make a simple task that prints "Hello World!" every second
-  // espp::Task task({.callback = [&](auto &m, auto &cv) -> bool {
-  //                    logger.debug("[{}] Hello from the task!", counter++);
-  //                    std::unique_lock<std::mutex> lock(m);
-  //                    cv.wait_for(lock, 1s);
-  //                    // we don't want to stop the task, so return false
-  //                    return false;
-  //                  },
-  //                  .task_config = {
-  //                      .name = "Hello World",
-  //                      .stack_size_bytes = 4096,
-  //                  }});
-  // task.start();
 
   // also print in the main thread
   while (true) {
