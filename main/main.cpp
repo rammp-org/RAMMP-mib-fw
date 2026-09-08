@@ -34,7 +34,7 @@ extern "C" void app_main(void) {
             .mode = 0,
             .clock_speed_hz = 1000000,
             .input_delay_ns = 0,
-            .cs_io_num = GPIO_NUM_48,
+            .cs_io_num = GPIO_NUM_48, // FOR TESTING CHANGE THIS PIN ONLY
             .queue_size = 1,
         },
         ec);
