@@ -1,4 +1,5 @@
-# TODO: uncomment one of these if you want to support a specifc target by default
+# Default target for the RAMMP MIB firmware
+CONFIG_IDF_TARGET="esp32p4"
 # CONFIG_IDF_TARGET="esp32"
 # CONFIG_IDF_TARGET="esp32s2"
 # CONFIG_IDF_TARGET="esp32s3"
@@ -18,3 +19,7 @@
 #
 # CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y

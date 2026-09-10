@@ -43,7 +43,7 @@ set(
   "List of components to include"
   )
 
-# TODO: update this with your project's name
-project(template)
+# Project metadata for the RAMMP MIB firmware
+project(rammp_mib)
 
 set(CMAKE_CXX_STANDARD 20)

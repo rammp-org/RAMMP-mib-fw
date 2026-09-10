@@ -8,32 +8,29 @@
 using namespace std::chrono_literals;
 
 extern "C" void app_main(void) {
-  espp::Logger logger({.tag = "Template", .level = espp::Logger::Verbosity::DEBUG});
+  espp::Logger logger({.tag = "RAMMP_MIB", .level = espp::Logger::Verbosity::DEBUG});
 
-  logger.info("Bootup");
+  logger.info("RAMMP MIB booting...");
+  logger.info("Initializing drive control and interface subsystems");
 
-  // counter to show the number of prints, shared between main and task
   std::atomic<int> counter = 0;
 
-  // make a simple task that prints "Hello World!" every second
   espp::Task task({
       .callback = [&](auto &m, auto &cv) -> bool {
-        logger.debug("[{}] Hello from the task!", counter++);
+        logger.debug("[{}] MIB heartbeat: subsystem status check", counter++);
         std::unique_lock<std::mutex> lock(m);
         cv.wait_for(lock, 1s);
-        // we don't want to stop the task, so return false
         return false;
       },
         .task_config = {
-          .name = "Hello World",
+          .name = "MIB heartbeat",
           .stack_size_bytes = 4096,
         }
     });
   task.start();
 
-  // also print in the main thread
   while (true) {
-    logger.debug("[{}] Hello World!", counter++);
+    logger.debug("[{}] RAMMP MIB active", counter++);
     std::this_thread::sleep_for(1s);
   }
 }

@@ -4,9 +4,8 @@ name: Build
 on: [pull_request]
 
 env:
-  # TODO: Update the below variables for your project
-  APP_NAME: "Template"
-  IDF_TARGET: 'esp32'
+  APP_NAME: "RAMMP_MIB"
+  IDF_TARGET: 'esp32p4'
   IDF_VERSION: 'v6.0.1'
   IDF_COMPONENT_MANAGER: "1" # whether to enable the component manager or not
   FLASH_TOTAL_OVERRIDE: '1500000' # number of bytes of total flash (for percentage calculations)

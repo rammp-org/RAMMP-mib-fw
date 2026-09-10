@@ -1,6 +1,6 @@
-# MEBot Interface Board Firmware
+# RAMMP MIB Firmware
 
-This repository contains the firmware for the MEBot Interface Board, which is responsible for motor actuation and drive control of the robotic wheelchair base on RAMMP. This project is built on top of ESPP and will run on the ESP32-P4.
+This repository contains the firmware for the RAMMP MIB (MEBot Interface Board), responsible for motor actuation and drive control of the robotic wheelchair base on the RAMMP platform. The project is built on top of ESPP and targets the ESP32-P4.
 
 <!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-refresh-toc -->
 **Table of Contents**
