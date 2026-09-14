@@ -7,8 +7,13 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # add the component directories that we want to use
 set(EXTRA_COMPONENT_DIRS
   "${CMAKE_CURRENT_LIST_DIR}/components"
-  "${CMAKE_CURRENT_LIST_DIR}/external/rammp-rtps/components"
 )
+
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/external/rammp-rtps/components")
+  list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/external/rammp-rtps/components")
+else()
+  message(FATAL_ERROR "Missing external/rammp-rtps submodule. Run: git submodule update --init --recursive")
+endif()
 
 set(
   COMPONENTS
