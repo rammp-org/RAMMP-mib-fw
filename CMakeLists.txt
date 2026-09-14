@@ -7,11 +7,12 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # add the component directories that we want to use
 set(EXTRA_COMPONENT_DIRS
   "${CMAKE_CURRENT_LIST_DIR}/components"
+  "${CMAKE_CURRENT_LIST_DIR}/external/rammp-rtps/components"
 )
 
 set(
   COMPONENTS
-  "main esptool_py bsp"
+  "main esptool_py bsp rammp_rtps_messages"
   CACHE STRING
   "List of components to include"
   )

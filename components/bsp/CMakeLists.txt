@@ -7,6 +7,8 @@ idf_component_register(
     "ethernet"
     "esp_netif"
     "esp32-p4-eth"
+    "rtps"
+    "cdr"
     "logger"
   REQUIRED_IDF_TARGETS "esp32p4"
 )

@@ -1,0 +1,3 @@
+[submodule "external/rammp-rtps"]
+	path = external/rammp-rtps
+	url = /home/gly/repo/rammp-rtps
