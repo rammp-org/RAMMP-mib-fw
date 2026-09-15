@@ -17,7 +17,7 @@ endif()
 
 set(
   COMPONENTS
-  "main esptool_py bsp rammp_rtps_messages"
+  "main esptool_py bsp MibSystem rammp_rtps_messages"
   CACHE STRING
   "List of components to include"
   )
