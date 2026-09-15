@@ -31,8 +31,12 @@ public:
     board_ = &espp::Esp32P4Eth::get();
     board_->set_log_level(espp::Logger::Verbosity::INFO);
 
-    return init_ethernet() && init_rtps();
+    return init_ethernet();
   }
+
+  /// @brief Start RTPS after Ethernet has an active link.
+  /// @return True if the RTPS participant was started.
+  bool init_rtps();
 
   /// @brief Check whether Ethernet is connected and has an IP address.
   /// @return True if Ethernet has an active link and a valid IP address.
@@ -63,8 +67,6 @@ public:
   espp::RtpsParticipant &rtps_participant() { return *rtps_participant_; }
 
 private:
-  bool init_rtps();
-
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};
     config.mode = mib::config::ethernet_dhcp_server

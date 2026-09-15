@@ -105,9 +105,19 @@ void MibSystem::run_state_step() {
       return;
     }
 
+    logger_.info("Waiting for Ethernet link...");
+    while (!mib_.ethernet_connected()) {
+      std::this_thread::sleep_for(100ms);
+    }
+
     logger_.info("ESP32-P4-ETH init complete");
     logger_.info("Board Ethernet status: connected={}", mib_.ethernet_connected());
     logger_.info("Board IP: {}", mib_.ethernet_ip_string());
+    if (!mib_.init_rtps()) {
+      logger_.error("Failed to initialize RTPS");
+      state_.store(SystemState::ERROR);
+      return;
+    }
     state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
     break;
   case SystemState::IDLE:
