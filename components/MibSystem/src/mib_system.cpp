@@ -25,6 +25,7 @@ void MibSystem::start() {
   });
   state_task_->start();
 
+  // Publishing is only meaningful once RTPS and the endpoints exist, so wait out INIT.
   while (state_.load() == SystemState::INIT) {
     std::this_thread::sleep_for(10ms);
   }
@@ -105,6 +106,7 @@ void MibSystem::run_state_step() {
       return;
     }
 
+    // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");
     while (!mib_.ethernet_connected()) {
       std::this_thread::sleep_for(100ms);
