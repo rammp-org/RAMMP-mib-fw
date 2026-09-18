@@ -55,11 +55,11 @@ public:
 
   /// @brief Check whether the left motor output is inverted.
   /// @return True if the left wheel speed is negated.
-  bool invert_left() const { return invert_left_; }
+  bool is_left_inverted() const { return invert_left_; }
 
   /// @brief Check whether the right motor output is inverted.
   /// @return True if the right wheel speed is negated.
-  bool invert_right() const { return invert_right_; }
+  bool is_right_inverted() const { return invert_right_; }
 
 private:
   float wheel_diameter_m_;
