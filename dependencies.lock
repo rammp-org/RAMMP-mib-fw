@@ -194,5 +194,5 @@ direct_dependencies:
 - espp/task
 - idf
 manifest_hash: aec086cab07ae937a0c03677278e7ec524a6eea5580bb93be6aaaa33c876796e
-target: esp32s3
+target: esp32p4
 version: 3.0.0

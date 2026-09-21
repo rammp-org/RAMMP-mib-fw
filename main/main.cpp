@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "butterworth_filter.hpp"
-#include "i2c.hpp"
+// #include "i2c.hpp"
 #include "mt6701.hpp"
 #include "spi.hpp"
 #include "task.hpp"
@@ -21,9 +21,9 @@ extern "C" void app_main(void) {
     // make the SPI bus and SSI device that we'll use to communicate
     espp::Spi spi({
         .host = SPI2_HOST,
-        .sclk_io_num = GPIO_NUM_4,
+        .sclk_io_num = GPIO_NUM_32,
         .mosi_io_num = GPIO_NUM_NC,
-        .miso_io_num = GPIO_NUM_5,
+        .miso_io_num = GPIO_NUM_26,
         .max_transfer_sz = 32,
         .log_level = espp::Logger::Verbosity::WARN,
     });
@@ -34,7 +34,7 @@ extern "C" void app_main(void) {
             .mode = 0,
             .clock_speed_hz = 1000000,
             .input_delay_ns = 0,
-            .cs_io_num = GPIO_NUM_48, // FOR TESTING CHANGE THIS PIN ONLY
+            .cs_io_num = GPIO_NUM_33, // FOR TESTING CHANGE THIS PIN ONLY
             .queue_size = 1,
         },
         ec);
