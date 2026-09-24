@@ -58,6 +58,7 @@ DriveController::profile_config(MIB::DriveProfile profile) {
       config::drive_profile_low.max_linear_acceleration_mps2;
     config.driving_profile.max_angular_acceleration =
       config::drive_profile_low.max_angular_acceleration_radps2;
+    config.stopping_profile = config.driving_profile;
     break;
   case MIB::DriveProfile::NORMAL:
     config.max_linear_velocity = config::drive_profile_normal.max_linear_velocity_mps;
@@ -66,6 +67,7 @@ DriveController::profile_config(MIB::DriveProfile profile) {
       config::drive_profile_normal.max_linear_acceleration_mps2;
     config.driving_profile.max_angular_acceleration =
       config::drive_profile_normal.max_angular_acceleration_radps2;
+    config.stopping_profile = config.driving_profile;
     break;
   case MIB::DriveProfile::HIGH:
     config.max_linear_velocity = config::drive_profile_high.max_linear_velocity_mps;
@@ -74,6 +76,7 @@ DriveController::profile_config(MIB::DriveProfile profile) {
       config::drive_profile_high.max_linear_acceleration_mps2;
     config.driving_profile.max_angular_acceleration =
       config::drive_profile_high.max_angular_acceleration_radps2;
+    config.stopping_profile = config.driving_profile;
     break;
   }
   return config;

@@ -8,8 +8,8 @@ namespace mib::config {
 /// @brief State-machine task period.
 inline constexpr auto state_task_interval = std::chrono::milliseconds{20};
 
-/// @brief System and seat status publication task period.
-inline constexpr auto publication_task_interval = std::chrono::milliseconds{200};
+/// @brief System, seat status, and drive diagnostic publication task period.
+inline constexpr auto publication_task_interval = std::chrono::milliseconds{500};
 
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};

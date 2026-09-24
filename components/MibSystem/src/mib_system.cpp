@@ -41,6 +41,7 @@ void MibSystem::start() {
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
+        log_drive_status();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::publication_task_interval);
@@ -68,7 +69,6 @@ void MibSystem::start() {
   motor_command_task_->start();
 
   while (true) {
-    logger_.info("RAMMP MIB active, waiting for XYTwist messages");
     std::this_thread::sleep_for(2s);
   }
 }
@@ -156,8 +156,13 @@ bool MibSystem::initialize_pubsub() {
 }
 
 void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
-  logger_.info("Joystick x={} y={} twist={} buttons={}", sample.x, sample.y, sample.twist,
-               static_cast<uint32_t>(sample.buttons));
+  {
+    std::lock_guard<std::mutex> lock(joystick_mutex_);
+    latest_joystick_ = sample;
+  }
+
+  logger_.debug("Joystick x={} y={} twist={} buttons={}", sample.x, sample.y, sample.twist,
+                static_cast<uint32_t>(sample.buttons));
 
   switch (state_.load()) {
   case SystemState::DRIVE_ENABLED:
@@ -276,6 +281,47 @@ void MibSystem::publish_seat_state() {
   logger_.debug("Publishing seat state - placeholder");
 }
 
+void MibSystem::log_drive_status() {
+  rammp::XYTwist joystick{};
+  {
+    std::lock_guard<std::mutex> lock(joystick_mutex_);
+    joystick = latest_joystick_;
+  }
+
+  const auto current_state = state_.load();
+  const char *state_name = "UNKNOWN";
+  switch (current_state) {
+  case SystemState::INIT:
+    state_name = "INIT";
+    break;
+  case SystemState::IDLE:
+    state_name = "IDLE";
+    break;
+  case SystemState::CALIBRATE:
+    state_name = "CALIBRATE";
+    break;
+  case SystemState::DRIVE_ENABLED:
+    state_name = "DRIVE_ENABLED";
+    break;
+  case SystemState::ERROR:
+    state_name = "ERROR";
+    break;
+  }
+
+  float left_rad_per_second = 0.0f;
+  float right_rad_per_second = 0.0f;
+  if (current_state == SystemState::DRIVE_ENABLED) {
+    const auto wheel_speeds = drive_controller_.wheel_speeds();
+    constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
+    left_rad_per_second = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+    right_rad_per_second = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+  }
+
+  logger_.info("Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} rad/s",
+               state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
+               right_rad_per_second);
+}
+
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
@@ -338,10 +384,10 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: IDLE - running idle placeholder");
     break;
   case SystemState::CALIBRATE:
-    logger_.info("System state: CALIBRATE - running calibration placeholder");
+    logger_.debug("System state: CALIBRATE - running calibration placeholder");
     break;
   case SystemState::DRIVE_ENABLED:
-    logger_.info("System state: DRIVE_ENABLED - running drive placeholder");
+    logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
   case SystemState::ERROR:
     logger_.error("System state: ERROR - running error placeholder");
