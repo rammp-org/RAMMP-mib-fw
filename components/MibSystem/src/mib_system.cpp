@@ -39,6 +39,7 @@ void MibSystem::start() {
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
+        publish_motor_commands();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, 200ms);
@@ -111,6 +112,25 @@ bool MibSystem::initialize_pubsub() {
 
   if (!status_publisher_->is_valid()) {
     logger_.error("Failed to create MIB status publisher");
+    return false;
+  }
+
+  left_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::MotorCommand>::Config{
+          .topic = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.name,
+          .type_name = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.type,
+          .reliability = Reliability::BEST_EFFORT});
+
+  right_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::MotorCommand>::Config{
+          .topic = rammp::axis(rammp::AxisId::DRIVE_RIGHT).command.name,
+          .type_name = rammp::axis(rammp::AxisId::DRIVE_RIGHT).command.type,
+          .reliability = Reliability::BEST_EFFORT});
+
+  if (!left_motor_publisher_->is_valid() || !right_motor_publisher_->is_valid()) {
+    logger_.error("Failed to create drive motor command publisher");
     return false;
   }
 
@@ -229,6 +249,38 @@ void MibSystem::publish_system_state() {
 
 void MibSystem::publish_seat_state() {
   logger_.debug("Publishing seat state - placeholder");
+}
+
+void MibSystem::publish_motor_commands() {
+  rammp::MotorCommand command{};
+  command.seq = ++motor_command_sequence_;
+  command.requested_state = state_.load() == SystemState::DRIVE_ENABLED
+                                ? rammp::RequestedState::ARMED
+                                : rammp::RequestedState::DISARMED;
+  command.mode = rammp::ControlMode::VELOCITY;
+
+  if (state_.load() == SystemState::DRIVE_ENABLED) {
+    const auto wheel_speeds = drive_controller_.wheel_speeds();
+    constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
+    command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+    if (!left_motor_publisher_->publish(command)) {
+      logger_.warn("Failed to publish left motor command");
+    }
+
+    command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+    if (!right_motor_publisher_->publish(command)) {
+      logger_.warn("Failed to publish right motor command");
+    }
+    return;
+  }
+
+  command.velocity = 0.0f;
+  if (!left_motor_publisher_->publish(command)) {
+    logger_.warn("Failed to publish left motor stop command");
+  }
+  if (!right_motor_publisher_->publish(command)) {
+    logger_.warn("Failed to publish right motor stop command");
+  }
 }
 
 void MibSystem::run_state_step() {

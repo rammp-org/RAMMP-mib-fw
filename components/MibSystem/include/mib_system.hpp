@@ -75,6 +75,10 @@ private:
   /// \note Runs on the publication task.
   void publish_seat_state();
 
+  /// Publish velocity commands for the two drive motor controllers.
+  /// \note Runs on the publication task and feeds only the motor command topics.
+  void publish_motor_commands();
+
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
@@ -82,7 +86,10 @@ private:
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
+  uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
+  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
