@@ -6,6 +6,7 @@
 
 #include "bsp.hpp"
 #include "base_component.hpp"
+#include "drive_controller.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
@@ -75,6 +76,7 @@ private:
   void publish_seat_state();
 
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
+  mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.

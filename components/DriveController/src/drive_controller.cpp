@@ -19,6 +19,10 @@ void DriveController::set_target(float linear, float angular) {
   trajectory_planner_.set_target(linear, angular);
 }
 
+void DriveController::stop() {
+  trajectory_planner_.stop();
+}
+
 DriveController::Config DriveController::default_config() {
   return Config{
       .trajectory_planner = profile_config(MIB::DriveProfile::NORMAL),

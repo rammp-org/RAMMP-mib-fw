@@ -9,7 +9,7 @@ using namespace std::chrono_literals;
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-      mib_(mib::bsp::MIB::instance()) {}
+  mib_(mib::bsp::MIB::instance()), drive_controller_() {}
 
 void MibSystem::start() {
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
@@ -120,6 +120,12 @@ bool MibSystem::initialize_pubsub() {
 void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
   logger_.info("Joystick x={} y={} twist={} buttons={}", sample.x, sample.y, sample.twist,
                static_cast<uint32_t>(sample.buttons));
+
+  if (state_.load() == SystemState::DRIVE_ENABLED) {
+    drive_controller_.set_target(sample.y, sample.x); // y is for linear velocity, x is for angular velocity
+  } else {
+    drive_controller_.stop();
+  }
 }
 
 void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
@@ -147,6 +153,7 @@ void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
     return;
   }
 
+  drive_controller_.set_seat_target(static_cast<uint8_t>(command.axis), command.target);
   logger_.info("Seat control command applied: axis={} target={} - placeholder",
                static_cast<uint8_t>(command.axis), command.target);
 }
@@ -157,6 +164,10 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   case rammp::DriveRequest::ENABLE:
     if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
       logger_.warn("Ignoring drive enable command outside IDLE state");
+      return;
+    }
+    if (!drive_controller_.update_drive_profile(command.profile)) {
+      logger_.error("Failed to update drive profile");
       return;
     }
     drive_profile_.store(command.profile);
@@ -172,6 +183,7 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.warn("Ignoring drive disable command outside DRIVE_ENABLED state");
       return;
     }
+    drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
     break;
