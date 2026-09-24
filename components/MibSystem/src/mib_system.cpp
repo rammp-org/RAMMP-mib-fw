@@ -5,6 +5,8 @@
 #include <mutex>
 #include <thread>
 
+#include "MIBconfig.hpp"
+
 using namespace std::chrono_literals;
 
 MibSystem::MibSystem()
@@ -18,7 +20,7 @@ void MibSystem::start() {
         run_state_step();
 
         std::unique_lock<std::mutex> lock(mutex);
-        condition_variable.wait_for(lock, 20ms);
+        condition_variable.wait_for(lock, mib::config::state_task_interval);
         return false;
       },
       .task_config = {.name = "MIB system state", .stack_size_bytes = 8 * 1024},
@@ -39,15 +41,31 @@ void MibSystem::start() {
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
-        publish_motor_commands();
 
         std::unique_lock<std::mutex> lock(mutex);
-        condition_variable.wait_for(lock, 200ms);
+        condition_variable.wait_for(lock, mib::config::publication_task_interval);
         return false;
       },
       .task_config = {.name = "MIB state publication", .stack_size_bytes = 4 * 1024},
   });
   publication_task_->start();
+
+  motor_command_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex,
+                         std::condition_variable &condition_variable) -> bool {
+        publish_motor_commands();
+
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_for(lock, mib::config::motor_command_task_interval);
+        return false;
+      },
+      .task_config = {
+          .name = "MIB motor commands",
+          .stack_size_bytes = 4 * 1024,
+          .priority = 2,
+      },
+  });
+  motor_command_task_->start();
 
   while (true) {
     logger_.info("RAMMP MIB active, waiting for XYTwist messages");

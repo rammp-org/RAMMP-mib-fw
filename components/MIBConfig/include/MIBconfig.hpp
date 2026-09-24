@@ -1,8 +1,18 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 
 namespace mib::config {
+
+/// @brief State-machine task period.
+inline constexpr auto state_task_interval = std::chrono::milliseconds{20};
+
+/// @brief System and seat status publication task period.
+inline constexpr auto publication_task_interval = std::chrono::milliseconds{200};
+
+/// @brief Motor command publication task period.
+inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
 
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;

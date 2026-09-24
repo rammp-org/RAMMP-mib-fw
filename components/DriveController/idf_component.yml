@@ -1,0 +1,3 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espp/trajectory_planner: '>=1.3.5'

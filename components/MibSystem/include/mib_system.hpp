@@ -95,4 +95,5 @@ private:
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
+  std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
 };
