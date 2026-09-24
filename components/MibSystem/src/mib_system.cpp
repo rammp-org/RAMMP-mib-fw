@@ -161,7 +161,7 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
 
   switch (state_.load()) {
   case SystemState::DRIVE_ENABLED:
-    // XYTwist::twist is clockwise-positive; DriveController expects CCW-positive.
+    // The MIB maps y to linear velocity and x to angular velocity.
     drive_controller_.set_target(sample.y, sample.x);
     break;
   case SystemState::INIT:
