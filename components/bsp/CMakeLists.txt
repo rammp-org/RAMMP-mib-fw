@@ -10,5 +10,6 @@ idf_component_register(
     "rtps"
     "cdr"
     "logger"
+    "MIBConfig"
   REQUIRED_IDF_TARGETS "esp32p4"
 )
