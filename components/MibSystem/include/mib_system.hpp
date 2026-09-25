@@ -2,9 +2,11 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 #include "bsp.hpp"
 #include "base_component.hpp"
+#include "drive_controller.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
@@ -50,10 +52,17 @@ private:
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
-  void handle_joystick_message(const rammp_xy_twist_t &sample);
+  void handle_joystick_message(const rammp::XYTwist &sample);
 
   /// Handle a seat control command.
-  void handle_seat_control_command();
+  /// \param command The requested seat axis and target position.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_seat_control_command(const rammp::SeatCommand &command);
+
+  /// Handle a drive enable or disable command.
+  /// \param command The requested drive state and response profile.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_drive_command(const rammp::DriveCommand &command);
 
   /// Handle a motor controller status report.
   void handle_motor_status();
@@ -66,9 +75,31 @@ private:
   /// \note Runs on the publication task.
   void publish_seat_state();
 
+  /// Publish velocity commands for the two drive motor controllers.
+  /// \note Runs on the publication task and feeds only the motor command topics.
+  void publish_motor_commands();
+
+  /// Log the latest joystick input, system state, and motor output.
+  /// \note Runs at the slower publication-task rate.
+  void log_drive_status();
+
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
+  mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
-  std::unique_ptr<espp::Subscriber<rammp_xy_twist_t>> joystick_subscriber_; ///< HMI joystick input.
+  std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
+  MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
+  mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
+  rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
+  mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
+  uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
+  uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
+  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
+  std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
+  std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
+  std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
+  std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
 };

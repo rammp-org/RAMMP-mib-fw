@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-# add the component directories that we want to use
+# Add the component directories that we want to use.
 set(EXTRA_COMPONENT_DIRS
   "${CMAKE_CURRENT_LIST_DIR}/components"
 )
@@ -17,7 +17,7 @@ endif()
 
 set(
   COMPONENTS
-  "main esptool_py bsp MibSystem DifferentialDrive rammp_rtps_messages"
+  "main esptool_py bsp MIBConfig MibSystem DifferentialDrive DriveController rammp_rtps_messages"
   CACHE STRING
   "List of components to include"
   )
