@@ -1,7 +1,9 @@
 # Branch notes: feature/18-mib-debugger
 
 This branch carries the bench debugger in `tools/mib_debugger` and the firmware
-support it needs. **It is not intended to merge into `main`.** Everything the
+support it needs: the runtime parameter store (`mib_params.hpp`) and the raw
+CAN bridge (`mib_can_bridge.hpp`) that lets the debugger program the MCP266
+motor controllers over CANopen. **It is not intended to merge into `main`.** Everything the
 debugger turned up that `main` should act on is tracked here, so nothing is lost
 when the branch is eventually dropped. Keep this file current: when the debugger
 reveals something new, add it under "Findings for main".
@@ -117,3 +119,34 @@ git cherry-pick cf16ccb
 The joystick sign fix (finding 1) is a hand edit on main, not a cherry-pick,
 because this branch demonstrates the bug through a parameter rather than fixing
 it.
+
+### 5. The MCP266s need a CAN transport on main; what the bench found
+
+**Status: informational, for whoever builds the MCP266 driver on main.**
+
+- `main` has no CAN support yet (the README lists "Positional control with
+  MCP266 motor controllers" as open). The transceiver is on TWAI TX GPIO 17 and
+  RX GPIO 16; the MCP266s are assumed at 1 Mbit/s, node id 10 (espp's defaults,
+  not yet confirmed on the real controllers).
+- The espp components to build on are `espp/twai`, `espp/canopen` and
+  `espp/mcp266`. This branch only pulls in `espp/twai`, for the raw bridge in
+  `mib_can_bridge.hpp`; that bridge is a bench aid and must not be merged
+  alongside a real driver, since two owners of one TWAI node cannot coexist.
+- espp's testing of the MCP266 over CANopen found that **only CiA 402 profile
+  position mode moves the motor**; the manufacturer speed and duty commands are
+  accepted but inert. If main needs velocity control of these axes, plan for
+  position moves with a profile velocity, or for packet serial over UART
+  (`espp/basicmicro`) instead of CAN.
+- The MCP266 reverts to its EEPROM settings at every power-up, and its factory
+  position-PID clamp is `[0, 0]`, which forces every position target to zero.
+  `espp::Mcp266::configure_position_loop()` handles both; a driver on main must
+  call it once per boot.
+- The object mapping the debugger's CAN page uses (index `0x2000` + packet-serial
+  command number, subindices 1..N for multi-field commands, setter and readback
+  field orders differing) is documented in `tools/mib_debugger/mcp266_objects.py`
+  with a verified / unverified flag per row. Rows the bench confirms should be
+  promoted to verified there, and any that abort should be corrected, so main's
+  driver starts from tested addresses.
+- **How to verify with the debugger:** open the MCP266 / CAN page against the
+  board, read Device; a device name and firmware string prove the transceiver,
+  bit rate and node id. Then read each settings group and note which abort.

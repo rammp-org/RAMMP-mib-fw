@@ -17,6 +17,8 @@ import time
 from collections import deque
 from typing import Dict, List, Optional
 
+import canopen_sdo
+import mcp266_objects
 import mib_messages as msg
 
 # The MIB runs a DHCP server on its Ethernet port and lives at this address.
@@ -49,6 +51,10 @@ GEOMETRY = {
     "invert_right": False,
 }
 ALL_AXES = (0, 1, 2, 3)
+
+# espp's examples assume the MCP266 answers on this CANopen node id.
+DEFAULT_CAN_NODE = 10
+CAN_MONITOR_DEPTH = 400
 
 
 def build_cyclonedds_uri(interface=None, local=False):
@@ -106,6 +112,7 @@ def empty_snapshot() -> dict:
         "axis_labels": {str(a): msg.AXIS_LABELS[a] for a in ALL_AXES},
         "geometry": GEOMETRY,
         "params": None,
+        "can": None,
         "events": [],
     }
 
@@ -144,6 +151,17 @@ class MibLink:
         self._motor_sim = False
         self._motor_sim_seq = 0
         self._sim_position = {axis: 0.0 for axis in ALL_AXES}
+
+        # CAN bridge: bridge health, a ring of recent frames for the monitor,
+        # and the waiters the SDO client parks while it expects a response.
+        self._can_status: Optional[msg.CanStatus] = None
+        self._can_status_time: float = 0.0
+        self._can_frames = deque(maxlen=CAN_MONITOR_DEPTH)
+        self._can_frame_count = 0
+        self._can_waiters: List[dict] = []
+        self._can_tx_seq = 0
+        self._can_node = DEFAULT_CAN_NODE
+        self._can_client = canopen_sdo.CanopenClient(self, node_id=self._can_node)
 
         self._events = deque(maxlen=300)
         self._started_at = time.time()
@@ -206,6 +224,12 @@ class MibLink:
         self._readers["params"] = reader(msg.TOPIC_MIB_PARAMS, msg.ParamState)
         self._writers["param_set"] = writer(msg.TOPIC_JOYSTICK_PARAM_SET, msg.ParamSet, reliable)
 
+        # The firmware's reader for outbound frames is reliable; its rx and
+        # status writers are best-effort like everything else it publishes.
+        self._writers["can_tx"] = writer(msg.TOPIC_JOYSTICK_CAN_TX, msg.CanFrame, reliable)
+        self._readers["can_rx"] = reader(msg.TOPIC_MIB_CAN_RX, msg.CanFrame)
+        self._readers["can_status"] = reader(msg.TOPIC_MIB_CAN_STATUS, msg.CanStatus)
+
         for axis in ALL_AXES:
             self._readers[("motor_cmd", axis)] = reader(
                 msg.motor_command_topic(axis), msg.MotorCommand
@@ -258,6 +282,7 @@ class MibLink:
                 self._drain_status()
                 self._drain_motor_commands()
                 self._drain_params()
+                self._drain_can()
             except Exception as exc:  # keep the thread alive through transients
                 self.log(f"Receive error: {exc}", "bad")
             time.sleep(period)
@@ -293,6 +318,71 @@ class MibLink:
                 self.log(f"Board applied {name} = {pending['value']:g}", "good")
             else:
                 self.log(f"Board REJECTED {name} = {pending['value']:g}", "bad")
+
+    def _drain_can(self) -> None:
+        for sample in valid_samples(self._readers["can_status"], msg.CanStatus):
+            with self._lock:
+                previous = self._can_status
+                self._can_status = sample
+                self._can_status_time = time.time()
+            if previous is None or previous.initialized != sample.initialized:
+                self.log("CAN bridge " + ("up" if sample.initialized else "DOWN (TWAI init failed)"),
+                         "good" if sample.initialized else "bad")
+        frames = valid_samples(self._readers["can_rx"], msg.CanFrame, count=64)
+        for sample in frames:
+            dlc = min(int(sample.dlc), 8)
+            frame = {
+                "t": time.time(), "dir": "rx", "id": int(sample.id), "dlc": dlc,
+                "data": bytes(sample.data[:dlc]),
+                "extended": bool(sample.flags & msg.CAN_FLAG_EXTENDED),
+                "rtr": bool(sample.flags & msg.CAN_FLAG_RTR),
+            }
+            self._record_can_frame(frame)
+            with self._lock:
+                waiters = list(self._can_waiters)
+            for waiter in waiters:
+                try:
+                    hit = waiter["pred"](frame)
+                except Exception:
+                    hit = False
+                if hit and waiter["frame"] is None:
+                    waiter["frame"] = frame
+                    waiter["event"].set()
+
+    def _record_can_frame(self, frame: dict) -> None:
+        frame["desc"] = canopen_sdo.describe_frame(frame["id"], frame["data"], frame["dlc"])
+        with self._lock:
+            self._can_frames.appendleft(frame)
+            self._can_frame_count += 1
+
+    # ------------------------------------------------------- CAN transport
+    # These two methods are the transport canopen_sdo.CanopenClient uses.
+
+    def send_can_frame(self, frame_id: int, data: bytes, extended: bool = False,
+                       rtr: bool = False) -> None:
+        data = bytes(data)[:8]
+        with self._lock:
+            self._can_tx_seq = (self._can_tx_seq + 1) & 0xFF
+            seq = self._can_tx_seq
+        flags = (msg.CAN_FLAG_EXTENDED if extended else 0) | (msg.CAN_FLAG_RTR if rtr else 0)
+        self._writers["can_tx"].write(msg.CanFrame(
+            seq=seq, flags=flags, dlc=len(data), reserved=0, id=int(frame_id),
+            data=list(data) + [0] * (8 - len(data))))
+        self._record_can_frame({
+            "t": time.time(), "dir": "tx", "id": int(frame_id), "dlc": len(data), "data": data,
+            "extended": extended, "rtr": rtr,
+        })
+
+    def wait_can_frame(self, predicate, timeout: float):
+        waiter = {"pred": predicate, "event": threading.Event(), "frame": None}
+        with self._lock:
+            self._can_waiters.append(waiter)
+        try:
+            waiter["event"].wait(timeout)
+            return waiter["frame"]
+        finally:
+            with self._lock:
+                self._can_waiters.remove(waiter)
 
     def _drain_motor_commands(self) -> None:
         for axis in ALL_AXES:
@@ -447,6 +537,111 @@ class MibLink:
         self.log(f"Sent {row[1]} = {float(value):g} (seq {seq})", "info")
         return {"ok": True, "seq": seq}
 
+    # ------------------------------------------------------- CAN commands
+
+    def can_set_node(self, node: int) -> dict:
+        node = int(node)
+        if not 1 <= node <= 127:
+            raise ValueError("node id must be 1..127")
+        with self._lock:
+            self._can_node = node
+            self._can_client.node_id = node
+        self.log(f"CANopen node id set to {node}", "info")
+        return {"ok": True, "node": node}
+
+    def can_nmt(self, command: str, all_nodes: bool = False) -> dict:
+        self._can_client.nmt(command, node=0 if all_nodes else None)
+        self.log(f"NMT {command} sent to " + ("all nodes" if all_nodes else f"node {self._can_node}"),
+                 "warn" if command in ("reset_node", "stop") else "info")
+        return {"ok": True}
+
+    def can_raw_send(self, frame_id: int, data_hex: str, extended: bool = False,
+                     rtr: bool = False) -> dict:
+        data = bytes.fromhex(data_hex.replace(" ", "")) if data_hex else b""
+        self.send_can_frame(int(frame_id), data, extended, rtr)
+        return {"ok": True}
+
+    def can_clear(self) -> dict:
+        with self._lock:
+            self._can_frames.clear()
+        return {"ok": True}
+
+    def _sdo_result(self, fn, what: str) -> dict:
+        try:
+            value = fn()
+        except canopen_sdo.SdoError as exc:
+            self.log(f"{what}: {exc}", "bad")
+            return {"ok": False, "error": str(exc), "code": exc.code}
+        return {"ok": True, "value": value}
+
+    def sdo_read(self, index: int, sub: int, size: int = 0, signed: bool = False) -> dict:
+        index, sub = int(index), int(sub)
+        result = self._sdo_result(lambda: self._can_client.read(index, sub), f"SDO read 0x{index:04X}:{sub}")
+        if not result["ok"]:
+            return result
+        raw = result["value"]
+        if size and len(raw) != size:
+            raw = raw[:size] if len(raw) > size else raw + b"\x00" * (size - len(raw))
+        value = int.from_bytes(raw, "little", signed=bool(signed))
+        self.log(f"SDO read 0x{index:04X}:{sub} = {value} (0x{raw.hex()})", "info")
+        return {"ok": True, "hex": raw.hex(), "size": len(raw), "value": value,
+                "text": raw.split(b"\x00")[0].decode("ascii", "replace") if len(raw) > 4 else None}
+
+    def sdo_write(self, index: int, sub: int, size: int, value: int, signed: bool = False) -> dict:
+        index, sub, size, value = int(index), int(sub), int(size), int(value)
+        data = value.to_bytes(size, "little", signed=bool(signed))
+        result = self._sdo_result(lambda: self._can_client.write(index, sub, data),
+                                  f"SDO write 0x{index:04X}:{sub}")
+        if result["ok"]:
+            self.log(f"SDO write 0x{index:04X}:{sub} = {value} ({size} B) accepted", "good")
+        return result
+
+    def mcp_read(self, group_key: str) -> dict:
+        """Read every readable field of one object group; per-field results."""
+        group = mcp266_objects.GROUP_BY_KEY[group_key]
+        fields = {}
+        errors = 0
+        for field in group["fields"]:
+            if not field["read"]:
+                continue
+            try:
+                fields[field["key"]] = mcp266_objects.read_field(self._can_client, field)
+            except canopen_sdo.SdoError as exc:
+                fields[field["key"]] = {"error": str(exc), "code": exc.code}
+                errors += 1
+        if errors:
+            self.log(f"Read {group['title']}: {errors} of {len(fields)} fields failed", "warn")
+        return {"ok": errors == 0, "group": group_key, "fields": fields, "t": time.time()}
+
+    def mcp_write(self, group_key: str, values: dict) -> dict:
+        """Write the given fields of one group, then read the group back."""
+        group = mcp266_objects.GROUP_BY_KEY[group_key]
+        by_key = {f["key"]: f for f in group["fields"]}
+        results = {}
+        for key, value in values.items():
+            field = by_key.get(key)
+            if field is None or not field["write"]:
+                results[key] = {"error": "not writable"}
+                continue
+            try:
+                raw = mcp266_objects.write_field(self._can_client, field, value)
+                results[key] = {"ok": True, "raw": raw}
+                self.log(f"Wrote {group['title']} {field['label']} = {value} (raw {raw})", "good")
+            except (canopen_sdo.SdoError, ValueError) as exc:
+                results[key] = {"error": str(exc)}
+                self.log(f"Write {group['title']} {field['label']} = {value} failed: {exc}", "bad")
+        readback = self.mcp_read(group_key) if any(f["read"] for f in group["fields"]) else None
+        return {"ok": all(r.get("ok") for r in results.values()), "results": results,
+                "readback": readback}
+
+    def mcp_action(self, key: str) -> dict:
+        action = mcp266_objects.ACTION_BY_KEY[key]
+        size = mcp266_objects.TYPES[action["type"]][0]
+        result = self.sdo_write(action["index"], action["sub"], size, action["value"])
+        if result["ok"]:
+            self.log(f"{action['label']}: accepted", "warn" if action["danger"] else "good")
+        return result
+
     def set_motor_sim(self, enabled: bool) -> None:
         with self._lock:
             self._motor_sim = bool(enabled)
@@ -509,9 +704,36 @@ class MibLink:
                     "pending": self._param_pending,
                 }
 
+            can = None
+            if self._can_status is not None or self._can_frames:
+                st = self._can_status
+                can = {
+                    "node": self._can_node,
+                    "status": None if st is None else {
+                        "initialized": bool(st.initialized),
+                        "enabled": bool(st.enabled),
+                        "bus_state": msg.CAN_BUS_STATES.get(st.bus_state, str(st.bus_state)),
+                        "bitrate": st.bitrate,
+                        "tx_ok": st.tx_ok, "tx_failed": st.tx_failed,
+                        "rx_frames": st.rx_frames, "rx_dropped": st.rx_dropped,
+                        "bus_errors": st.bus_errors,
+                        "tx_error_count": st.tx_error_count, "rx_error_count": st.rx_error_count,
+                        "tx_gpio": st.tx_gpio, "rx_gpio": st.rx_gpio,
+                        "age": round(now - self._can_status_time, 2),
+                    },
+                    "frame_count": self._can_frame_count,
+                    "frames": [
+                        {"t": time.strftime("%H:%M:%S", time.localtime(f["t"])) + f".{int(f['t'] * 1000) % 1000:03d}",
+                         "dir": f["dir"], "id": f["id"], "dlc": f["dlc"], "data": f["data"].hex(),
+                         "ext": f["extended"], "rtr": f["rtr"], "desc": f.get("desc", "")}
+                        for f in list(self._can_frames)[:120]
+                    ],
+                }
+
             return {
                 "connected": connected,
                 "params": params,
+                "can": can,
                 "status_age": round(status_age, 2) if status_age is not None else None,
                 "status_count": self._status_count,
                 "board": board,

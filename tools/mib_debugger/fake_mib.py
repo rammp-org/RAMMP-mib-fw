@@ -16,6 +16,8 @@ import signal
 import sys
 import time
 
+import canopen_sdo
+import mcp266_objects
 import mib_messages as msg
 
 # Geometry and profile limits copied from components/MIBConfig/include/MIBconfig.hpp.
@@ -53,6 +55,171 @@ def wheel_speeds(linear_mps: float, angular_radps: float, params):
     return left_rpm, right_rpm
 
 
+class FakeMcp266:
+    """One MCP266 on a pretend CAN bus: an SDO server over the object table.
+
+    Values live per field, so a write through a setter object (say the
+    position PID at 0x203D, subindex 1 = D) lands in the same slot the readback
+    object (0x203F, subindex 3 = D) reports, which is exactly the field-order
+    quirk the real controller has. "EEPROM" is a second copy: the save action
+    stores the live values, an NMT reset node restores them.
+    """
+
+    def __init__(self, node_id=10):
+        self.node_id = node_id
+        self.nmt_state = 0x7F   # pre-operational after boot
+        self.values = {}
+        self.read_map = {}
+        self.write_map = {}
+        self.actions = {(a["index"], a["sub"]): a for a in mcp266_objects.ACTIONS}
+        for group in mcp266_objects.GROUPS:
+            for field in group["fields"]:
+                slot = (group["key"], field["key"])
+                self.values[slot] = self._default(group, field)
+                if field["read"]:
+                    self.read_map[tuple(field["read"])] = (slot, field)
+                if field["write"]:
+                    self.write_map[tuple(field["write"])] = (slot, field)
+        self.defaults = dict(self.values)
+        self.stored = dict(self.values)
+
+    @staticmethod
+    def _default(group, field):
+        key = (group["key"], field["key"])
+        table = {
+            ("identity", "device_type"): 0x00020192, ("identity", "name"): "MCP266 (fake)",
+            ("identity", "firmware"): "MCP266 v2.2.1 fake", ("identity", "vendor"): 0x0000BA51,
+            ("identity", "product"): 266, ("identity", "revision"): 0x00020201,
+            ("identity", "serial"): 12345678,
+            ("power", "main_battery"): 244, ("power", "logic_battery"): 50,
+            ("power", "temperature"): 312, ("power", "temperature2"): 305,
+            ("battery_limits", "main_min"): 60, ("battery_limits", "main_max"): 340,
+            ("battery_limits", "logic_min"): 30, ("battery_limits", "logic_max"): 60,
+            ("max_current", "m1_max"): 3000, ("max_current", "m2_max"): 3000,
+            ("duty_accel", "m1"): 655360, ("duty_accel", "m2"): 655360,
+            ("pwm_mode", "mode"): 0,
+            ("cia402_m1", "statusword"): 0x0240, ("cia402_m2", "statusword"): 0x0240,
+            ("cia402_m1", "profile_velocity"): 500, ("cia402_m2", "profile_velocity"): 500,
+            ("cia402_m1", "profile_accel"): 500, ("cia402_m2", "profile_accel"): 500,
+        }
+        if key in table:
+            return table[key]
+        if group["key"].startswith("velocity_pid"):
+            return {"p": 65536, "i": 32768, "d": 16384, "qpps": 44000}[field["key"]]
+        if group["key"].startswith("position_pid"):
+            return {"p": 15491, "i": 0, "d": 0, "max_i": 0, "deadzone": 0, "min_pos": 0, "max_pos": 0}[field["key"]]
+        return "" if field["type"] == "str" else 0
+
+    def handle(self, frame_id, data, send):
+        """Process one frame addressed to the bus; reply through send(id, data)."""
+        if frame_id == canopen_sdo.COB_NMT and len(data) >= 2 and data[1] in (0, self.node_id):
+            self._nmt(data[0], send)
+            return
+        if frame_id != canopen_sdo.COB_SDO_RX_BASE + self.node_id or len(data) < 8:
+            return
+        cmd = data[0]
+        index = data[1] | (data[2] << 8)
+        sub = data[3]
+        resp = canopen_sdo.COB_SDO_TX_BASE + self.node_id
+        mux = bytes([data[1], data[2], data[3]])
+
+        def abort(code):
+            send(resp, b"\x80" + mux + code.to_bytes(4, "little"))
+
+        if cmd & 0xE0 == 0x60:          # upload segment request
+            if self._segment is None:
+                return abort(0x05040001)
+            toggle = (cmd >> 4) & 1
+            chunk, self._segment = self._segment[:7], self._segment[7:]
+            last = 1 if not self._segment else 0
+            n = 7 - len(chunk)
+            send(resp, bytes([(toggle << 4) | (n << 1) | last]) + chunk + b"\x00" * n)
+            if last:
+                self._segment = None
+            return
+
+        if cmd & 0xE0 == 0x40:          # initiate upload (read)
+            entry = self.read_map.get((index, sub))
+            if entry is None:
+                return abort(0x06020000 if not any(k[0] == index for k in self.read_map) else 0x06090011)
+            slot, field = entry
+            value = self.values[slot]
+            if field["type"] == "str":
+                payload = value.encode("ascii") + b"\x00"
+                self._segment = payload
+                send(resp, b"\x41" + mux + len(payload).to_bytes(4, "little"))
+                return
+            size, signed = mcp266_objects.TYPES[field["type"]]
+            raw = int(value).to_bytes(size, "little", signed=signed)
+            n = 4 - size
+            send(resp, bytes([0x43 | (n << 2)]) + mux + raw + b"\x00" * n)
+            return
+
+        if cmd & 0xE0 == 0x20:          # initiate download (write), expedited only
+            size = 4 - ((cmd >> 2) & 3) if cmd & 1 else 4
+            raw = data[4:4 + size]
+            action = self.actions.get((index, sub))
+            if action is not None:
+                asize = mcp266_objects.TYPES[action["type"]][0]
+                if int.from_bytes(raw[:asize], "little") != action["value"]:
+                    return abort(0x06090030)
+                self._action(action["key"])
+                send(resp, b"\x60" + mux + b"\x00" * 4)
+                return
+            entry = self.write_map.get((index, sub))
+            if entry is None:
+                if (index, sub) in self.read_map:
+                    return abort(0x06010002)
+                return abort(0x06020000 if not any(k[0] == index for k in self.write_map) else 0x06090011)
+            slot, field = entry
+            fsize, signed = mcp266_objects.TYPES[field["type"]]
+            if size != fsize:
+                return abort(0x06070010)
+            self.values[slot] = int.from_bytes(raw, "little", signed=signed)
+            print(f"mcp266: {slot[0]}.{slot[1]} <- {self.values[slot]}")
+            send(resp, b"\x60" + mux + b"\x00" * 4)
+            return
+        abort(0x05040001)
+
+    _segment = None
+
+    def _nmt(self, code, send):
+        names = {0x01: "operational", 0x02: "stopped", 0x80: "pre-operational"}
+        if code in (0x81, 0x82):
+            self.values = dict(self.stored)   # power-up: back to EEPROM
+            self.nmt_state = 0x7F
+            send(canopen_sdo.COB_HEARTBEAT_BASE + self.node_id, b"\x00")   # boot-up
+            print("mcp266: reset, values restored from EEPROM copy")
+            return
+        self.nmt_state = {0x01: 0x05, 0x02: 0x04, 0x80: 0x7F}.get(code, self.nmt_state)
+        print(f"mcp266: NMT -> {names.get(code, hex(code))}")
+
+    def _action(self, key):
+        if key == "write_eeprom":
+            self.stored = dict(self.values)
+        elif key == "restore_defaults":
+            self.values = dict(self.defaults)
+            self.stored = dict(self.defaults)
+        elif key == "reset_encoders":
+            self.values[("motors", "encoder_m1")] = 0
+            self.values[("motors", "encoder_m2")] = 0
+        elif key == "estop_reset":
+            self.values[("motors", "status")] &= ~1
+        print(f"mcp266: action {key}")
+
+    def heartbeat(self):
+        return canopen_sdo.COB_HEARTBEAT_BASE + self.node_id, bytes([self.nmt_state])
+
+    def tick(self, dt):
+        # Encoders follow the "set encoder" writes and drift with the CiA 402 velocity.
+        for axis in ("m1", "m2"):
+            v = self.values[(f"cia402_{axis}", "velocity")]
+            if v:
+                self.values[("motors", f"encoder_{axis}")] += int(v * dt)
+            self.values[(f"cia402_{axis}", "position")] = self.values[("motors", f"encoder_{axis}")]
+            self.values[("motors", f"speed_{axis}")] = v
+
+
 class FakeMib:
     def __init__(self, domain_id=0, interface=None, boot_delay=1.0, local=False):
         self.domain_id = domain_id
@@ -76,6 +243,12 @@ class FakeMib:
         self.param_seq = 0
         self.last_set_seq = 0
         self.last_set_ok = 0
+
+        # A pretend CAN bus with one MCP266 on it, behind the bridge topics.
+        self.mcp = FakeMcp266()
+        self.can_rx_seq = 0
+        self.can_tx_ok = 0
+        self.can_rx_frames = 0
 
         self.running = True
 
@@ -115,6 +288,9 @@ class FakeMib:
         self.seat_reader = reader(msg.TOPIC_JOYSTICK_SEAT_COMMAND, msg.SeatCommand)
         self.param_set_reader = reader(msg.TOPIC_JOYSTICK_PARAM_SET, msg.ParamSet, reliable)
         self.param_state_writer = writer(msg.TOPIC_MIB_PARAMS, msg.ParamState)
+        self.can_tx_reader = reader(msg.TOPIC_JOYSTICK_CAN_TX, msg.CanFrame, reliable)
+        self.can_rx_writer = writer(msg.TOPIC_MIB_CAN_RX, msg.CanFrame)
+        self.can_status_writer = writer(msg.TOPIC_MIB_CAN_STATUS, msg.CanStatus)
 
         print(f"fake MIB up on domain {self.domain_id}; INIT for {self.boot_delay:.1f}s")
 
@@ -122,6 +298,7 @@ class FakeMib:
         boot_done = time.time() + self.boot_delay
         next_status = time.time()
         next_motor = time.time()
+        next_heartbeat = time.time()
         last_step = time.time()
 
         while self.running:
@@ -136,11 +313,17 @@ class FakeMib:
             dt = now - last_step
             last_step = now
             self._advance_motion(dt)
+            self.mcp.tick(dt)
 
             if now >= next_status:
                 next_status = now + 1.0 / PUBLICATION_HZ
                 self._publish_status()
                 self._publish_params()
+                self._publish_can_status()
+
+            if now >= next_heartbeat:
+                next_heartbeat = now + 1.0
+                self._bus_send(*self.mcp.heartbeat())
 
             if now >= next_motor:
                 next_motor = now + 1.0 / MOTOR_COMMAND_HZ
@@ -159,6 +342,23 @@ class FakeMib:
         samples = valid_samples(self.joystick_reader, msg.XYTwist, count=20)
         if samples:
             self._handle_joystick(samples[-1])
+        for frame in valid_samples(self.can_tx_reader, msg.CanFrame, count=32):
+            self.can_tx_ok += 1
+            dlc = min(frame.dlc, 8)
+            self.mcp.handle(frame.id, bytes(frame.data[:dlc]), self._bus_send)
+
+    def _bus_send(self, frame_id, data):
+        """A frame from the pretend bus, republished the way the bridge does."""
+        self.can_rx_seq = (self.can_rx_seq + 1) & 0xFF
+        self.can_rx_frames += 1
+        self.can_rx_writer.write(msg.CanFrame(
+            seq=self.can_rx_seq, flags=0, dlc=len(data), reserved=0, id=frame_id,
+            data=list(data) + [0] * (8 - len(data))))
+
+    def _publish_can_status(self):
+        self.can_status_writer.write(msg.CanStatus(
+            initialized=1, enabled=1, bus_state=0, bitrate=1000000,
+            tx_ok=self.can_tx_ok, rx_frames=self.can_rx_frames, tx_gpio=17, rx_gpio=16))
 
     def _handle_drive(self, command):
         if command.request == int(msg.DriveRequest.ENABLE):

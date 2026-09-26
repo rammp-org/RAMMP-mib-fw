@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP266 over CAN</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1e242c; --line: #2a313b;
+    --text: #e6e9ee; --muted: #8a94a3; --accent: #4f9cf5;
+    --good: #35c26d; --warn: #f0b429; --bad: #ef5350; --purple: #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; background: var(--panel-2); color: var(--muted); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--text); } .pill.on .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .pill.off .dot { background: var(--bad); } .pill.warn .dot { background: var(--warn); }
+  .stop { background: var(--bad); color: #fff; border: 0; border-radius: 8px; font-weight: 800; font-size: 14px; padding: 9px 18px; cursor: pointer; letter-spacing: 1px; box-shadow: 0 2px 0 #9e2a28; }
+  .stop:active { transform: translateY(1px); box-shadow: none; }
+  main { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; padding: 16px 18px; max-width: 1500px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .panel h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .c4 { grid-column: span 4; } .c6 { grid-column: span 6; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  @media (max-width: 1000px) { .c4,.c6,.c8 { grid-column: span 12; } }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05101f; font-weight: 600; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.small { padding: 4px 9px; font-size: 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .mono { font-family: var(--mono); } .muted { color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv .k { color: var(--muted); } .kv .v { font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  td.num, th.num { text-align: right; font-family: var(--mono); }
+  td.err { color: var(--bad); font-size: 12px; }
+  input[type=number], input[type=text], select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px var(--mono); }
+  input[type=number] { width: 120px; } input[type=text] { width: 110px; }
+  input.changed { border-color: var(--warn); }
+  .badge { font-size: 10px; padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); letter-spacing: .5px; text-transform: none; }
+  .badge.ok { color: var(--good); border-color: var(--good); }
+  .badge.unv { color: var(--warn); border-color: var(--warn); }
+  .group { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; margin-bottom: 12px; background: rgba(255,255,255,.015); }
+  .group h3 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .group h3 .spacer { flex: 1; }
+  .group .age { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
+  .decode { font-size: 11px; color: var(--purple); }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; color: var(--muted); }
+  #frames { font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; }
+  #frames table td { padding: 3px 8px; white-space: nowrap; }
+  #frames .tx { color: var(--accent); } #frames .rx { color: var(--good); }
+  #frames .desc { color: var(--muted); white-space: normal; }
+  #log { font-family: var(--mono); font-size: 12px; max-height: 240px; overflow: auto; }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log .t { color: var(--muted); flex: none; }
+  #log .good { color: var(--good); } #log .warn { color: var(--warn); } #log .bad { color: var(--bad); }
+  .result { font-family: var(--mono); font-size: 12px; margin-top: 8px; min-height: 18px; }
+  .result.bad { color: var(--bad); } .result.good { color: var(--good); }
+  a.nav { color: var(--text); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+  a.nav:hover { border-color: var(--accent); }
+  body.offline .gated { opacity: .4; pointer-events: none; }
+  .busy { opacity: .6; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MCP266 over CAN</h1>
+  <a class="nav" href="/">← Debugger</a>
+  <a class="nav" href="/params">Parameters</a>
+  <span id="conn" class="pill off"><span class="dot"></span><span id="connText">disconnected</span></span>
+  <span id="bridge" class="pill off"><span class="dot"></span><span id="bridgeText">bridge —</span></span>
+  <span id="hb" class="pill"><span class="dot"></span><span id="hbText">no heartbeat</span></span>
+  <span class="spacer"></span>
+  <button class="stop" id="stopBtn" title="Release the stick and send drive DISABLE">STOP</button>
+</header>
+
+<main>
+  <section class="panel c4 gated">
+    <h2>Bridge</h2>
+    <div class="kv" id="bridgeKv"></div>
+    <div class="row" style="margin-top:12px">
+      <span class="muted" style="font-size:12px">Node id</span>
+      <input type="number" id="node" min="1" max="127" value="10" style="width:70px">
+      <button id="nodeBtn" class="small">Apply</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="small" data-nmt="start">NMT start</button>
+      <button class="small" data-nmt="preop">Pre-op</button>
+      <button class="small" data-nmt="stop">Stop</button>
+      <button class="small danger" data-nmt="reset_node">Reset node</button>
+      <button class="small" data-nmt="reset_comm">Reset comm</button>
+    </div>
+    <div class="note">The MIB forwards frames untouched; everything CANopen happens in the tool. The MCP266 answers SDOs in pre-operational, so NMT start is only needed for PDOs. espp assumes node 10 at 1 Mbit/s.</div>
+  </section>
+
+  <section class="panel c8 gated">
+    <h2>Device <span class="spacer"></span><button class="small" id="identBtn">Read</button></h2>
+    <div id="identity"></div>
+  </section>
+
+  <section class="panel c12 gated">
+    <h2>Telemetry</h2>
+    <div class="groups" id="telemetry"></div>
+  </section>
+
+  <section class="panel c12 gated">
+    <h2>Settings <span class="badge ok">verified</span><span class="muted" style="font-size:11px;text-transform:none;letter-spacing:0">object mapping confirmed on hardware by espp</span> <span class="badge unv">unverified</span><span class="muted" style="font-size:11px;text-transform:none;letter-spacing:0">follows the same rule; an SDO abort means the guess is wrong</span></h2>
+    <div class="note" style="margin:0 0 12px">Read fetches the controller's live values. Edit a value and Write sends only the fields you changed, then reads the group back. Nothing survives a power cycle until you save to EEPROM under Actions.</div>
+    <div class="groups" id="settings"></div>
+  </section>
+
+  <section class="panel c6 gated">
+    <h2>Actions</h2>
+    <div id="actions" class="row"></div>
+    <div id="actionNotes" class="note"></div>
+  </section>
+
+  <section class="panel c6 gated">
+    <h2>Raw SDO</h2>
+    <div class="row">
+      <span class="muted" style="font-size:12px">Index</span><input type="text" id="sdoIndex" value="0x1000" style="width:90px">
+      <span class="muted" style="font-size:12px">Sub</span><input type="number" id="sdoSub" value="0" min="0" max="255" style="width:64px">
+      <select id="sdoSize"><option value="1">u8</option><option value="2">u16</option><option value="4" selected>u32</option><option value="0">auto/string</option></select>
+      <label class="toggle"><input type="checkbox" id="sdoSigned"> signed</label>
+    </div>
+    <div class="row">
+      <span class="muted" style="font-size:12px">Value</span><input type="text" id="sdoValue" value="0" style="width:140px" placeholder="decimal or 0x..">
+      <button class="small" id="sdoReadBtn">Read</button>
+      <button class="small primary" id="sdoWriteBtn">Write</button>
+    </div>
+    <div class="result" id="sdoResult"></div>
+    <div class="row" style="margin-top:10px">
+      <span class="muted" style="font-size:12px">Raw frame</span><input type="text" id="rawId" value="0x000" style="width:80px" placeholder="id">
+      <input type="text" id="rawData" value="01 0A" style="width:170px" placeholder="data hex">
+      <button class="small" id="rawSendBtn">Send frame</button>
+    </div>
+    <div class="note">Basicmicro packet-serial command N is at index 0x2000 + N. One value: subindex 0. Several values: subindices 1..N in the command's own order.</div>
+  </section>
+
+  <section class="panel c12">
+    <h2>Bus monitor <span class="spacer"></span>
+      <label class="toggle"><input type="checkbox" id="hideHb" checked> hide heartbeats</label>
+      <label class="toggle"><input type="checkbox" id="pause"> pause</label>
+      <button class="small" id="clearBtn">Clear</button></h2>
+    <div id="frames"><table><thead><tr><th>Time</th><th>Dir</th><th>Id</th><th>Len</th><th>Data</th><th>Decoded</th></tr></thead><tbody id="frameRows"></tbody></table></div>
+  </section>
+
+  <section class="panel c12">
+    <h2>Events</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const post = (body) => fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json()).catch((e) => ({ok: false, error: String(e)}));
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  const parseNum = (s) => { s = String(s).trim(); return /^-?0x/i.test(s) ? parseInt(s, 16) : parseFloat(s); };
+
+  let table = null;
+  const live = {};          // group key -> {fields, t}
+  const auto = {};          // group key -> interval id
+  const busy = {};
+
+  function fmt(field, v) {
+    if (v === undefined || v === null) return '—';
+    if (field.type === 'str') return v;
+    if (field.scale && field.scale !== 1) return (+v).toFixed(field.scale >= 1000 ? 4 : 2);
+    return String(v);
+  }
+
+  function groupCard(g, container) {
+    const div = document.createElement('div'); div.className = 'group'; div.id = 'g_' + g.key;
+    const readable = g.fields.some((f) => f.read);
+    const writable = g.fields.some((f) => f.write);
+    div.innerHTML = `<h3>${esc(g.title)} <span class="badge ${g.verified ? 'ok' : 'unv'}">${g.verified ? 'verified' : 'unverified'}</span><span class="spacer"></span><span class="age" id="age_${g.key}"></span>
+      ${g.kind === 'telemetry' ? `<label class="toggle"><input type="checkbox" data-auto="${g.key}"> auto 1 Hz</label>` : ''}
+      ${readable ? `<button class="small" data-read="${g.key}">Read</button>` : ''}
+      ${writable ? `<button class="small primary" data-write="${g.key}">Write${readable ? ' changed' : ''}</button>` : ''}</h3>
+      <table><tbody>${g.fields.map((f) => `<tr id="r_${g.key}_${f.key}">
+        <td title="${esc(f.note || '')}">${esc(f.label)}${f.note ? ' <span class="muted">ⓘ</span>' : ''}<div class="mono muted" style="font-size:10px">${f.read ? 'r 0x' + f.read[0].toString(16).toUpperCase().padStart(4, '0') + ':' + f.read[1] : ''}${f.read && f.write ? ' · ' : ''}${f.write ? 'w 0x' + f.write[0].toString(16).toUpperCase().padStart(4, '0') + ':' + f.write[1] : ''}</div></td>
+        <td class="num" id="v_${g.key}_${f.key}">—</td>
+        <td class="muted" style="font-size:11px">${esc(f.unit || '')}</td>
+        <td>${f.write ? `<input type="number" step="any" id="in_${g.key}_${f.key}" data-g="${g.key}" data-f="${f.key}">` : ''}</td>
+      </tr>`).join('')}</tbody></table>
+      ${g.note ? `<div class="note">${esc(g.note)}</div>` : ''}`;
+    container.appendChild(div);
+  }
+
+  function build() {
+    const ident = table.groups.find((g) => g.key === 'identity');
+    const tel = $('telemetry'), set = $('settings');
+    $('identity').innerHTML = `<div class="kv" id="identKv">${ident.fields.map((f) => `<span class="k">${esc(f.label)}</span><span class="v" id="v_identity_${f.key}">—</span>`).join('')}</div>`;
+    table.groups.forEach((g) => {
+      if (g.key === 'identity') return;
+      groupCard(g, g.kind === 'telemetry' ? tel : set);
+    });
+    const act = $('actions');
+    table.actions.forEach((a) => {
+      const b = document.createElement('button');
+      b.className = 'small' + (a.danger ? ' danger' : ''); b.textContent = a.label; b.dataset.action = a.key;
+      b.title = a.note; act.appendChild(b);
+    });
+    $('actionNotes').innerHTML = table.actions.map((a) => `<div><b>${esc(a.label)}</b> <span class="badge ${a.verified ? 'ok' : 'unv'}">${a.verified ? 'verified' : 'unverified'}</span> · 0x${a.index.toString(16).toUpperCase()}:${a.sub} ← ${a.value >= 0x10000 ? '0x' + a.value.toString(16).toUpperCase() : a.value} · ${esc(a.note)}</div>`).join('');
+  }
+
+  function paintGroup(key, result) {
+    const g = table.groups.find((x) => x.key === key);
+    live[key] = result;
+    g.fields.forEach((f) => {
+      const r = result.fields[f.key];
+      const cell = $(`v_${key}_${f.key}`);
+      if (!cell || !r) return;
+      if (r.error) { cell.innerHTML = `<span class="err" title="${esc(r.error)}">${esc(r.error.replace(/^SDO /, ''))}</span>`; cell.className = 'err'; return; }
+      cell.className = 'num';
+      cell.innerHTML = esc(fmt(f, r.value)) + (r.text && f.type !== 'str' ? `<div class="decode">${esc(r.text)}</div>` : '');
+      const inp = $(`in_${key}_${f.key}`);
+      if (inp && document.activeElement !== inp && !inp.dataset.touched) { inp.value = fmt(f, r.value); inp.classList.remove('changed'); }
+    });
+    const age = $('age_' + key); if (age) { age.dataset.t = result.t; }
+  }
+
+  async function readGroup(key) {
+    if (busy[key]) return; busy[key] = true;
+    const card = $('g_' + key); if (card) card.classList.add('busy');
+    const r = await post({action: 'mcp_read', group: key});
+    busy[key] = false; if (card) card.classList.remove('busy');
+    if (r.fields) paintGroup(key, r); else if (r.error) log(r.error);
+  }
+
+  async function writeGroup(key) {
+    const g = table.groups.find((x) => x.key === key);
+    const values = {};
+    g.fields.forEach((f) => {
+      const inp = $(`in_${key}_${f.key}`); if (!inp || inp.value === '') return;
+      const cur = live[key] && live[key].fields[f.key] && live[key].fields[f.key].value;
+      const v = parseFloat(inp.value);
+      if (Number.isNaN(v)) return;
+      if (!f.read || cur === undefined || cur === null || Math.abs(v - cur) > 1e-9 || inp.dataset.touched) values[f.key] = v;
+    });
+    if (!Object.keys(values).length) { log('nothing changed in ' + g.title); return; }
+    const r = await post({action: 'mcp_write', group: key, values});
+    g.fields.forEach((f) => { const inp = $(`in_${key}_${f.key}`); if (inp) { delete inp.dataset.touched; inp.classList.remove('changed'); } });
+    if (r.readback && r.readback.fields) paintGroup(key, r.readback);
+    if (r.results) Object.entries(r.results).forEach(([k, res]) => { if (res.error) log(`${g.title} ${k}: ${res.error}`); });
+  }
+
+  const localLog = [];
+  function log(text) { localLog.unshift({t: new Date().toTimeString().slice(0, 8), level: 'bad', text}); if (localLog.length > 20) localLog.pop(); }
+
+  document.addEventListener('click', async (e) => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.dataset.read) readGroup(t.dataset.read);
+    else if (t.dataset.write) writeGroup(t.dataset.write);
+    else if (t.dataset.nmt) { if (t.dataset.nmt === 'reset_node' && !confirm('Reset the MCP266 node? Unsaved settings revert to EEPROM.')) return; post({action: 'can_nmt', command: t.dataset.nmt}); }
+    else if (t.dataset.action) {
+      const a = table.actions.find((x) => x.key === t.dataset.action);
+      if (a.danger && !confirm(`${a.label}?\n\n${a.note}`)) return;
+      const r = await post({action: 'mcp_action', key: a.key});
+      if (r.error) log(`${a.label}: ${r.error}`);
+    }
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.dataset.auto) {
+      const key = e.target.dataset.auto;
+      if (e.target.checked) { readGroup(key); auto[key] = setInterval(() => readGroup(key), 1000); }
+      else { clearInterval(auto[key]); delete auto[key]; }
+    }
+  });
+  document.addEventListener('input', (e) => { if (e.target.matches('input[data-g]')) { e.target.dataset.touched = '1'; e.target.classList.add('changed'); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input[data-g]')) writeGroup(e.target.dataset.g); });
+
+  $('identBtn').addEventListener('click', () => readGroup('identity'));
+  $('nodeBtn').addEventListener('click', () => post({action: 'can_node', node: parseInt($('node').value, 10)}));
+  $('clearBtn').addEventListener('click', () => post({action: 'can_clear'}));
+  $('stopBtn').addEventListener('click', () => post({action: 'stop'}));
+  $('rawSendBtn').addEventListener('click', () => post({action: 'can_send', id: parseNum($('rawId').value), data: $('rawData').value}));
+
+  function sdoArgs() {
+    return {index: parseNum($('sdoIndex').value), sub: parseInt($('sdoSub').value, 10) || 0, size: parseInt($('sdoSize').value, 10), signed: $('sdoSigned').checked};
+  }
+  $('sdoReadBtn').addEventListener('click', async () => {
+    const r = await post({action: 'sdo_read', ...sdoArgs()});
+    const out = $('sdoResult');
+    if (!r.ok) { out.className = 'result bad'; out.textContent = r.error; return; }
+    out.className = 'result good';
+    out.textContent = `= ${r.value} (0x${r.value.toString(16).toUpperCase()}) · ${r.size} bytes · ${r.hex}` + (r.text ? ` · "${r.text}"` : '');
+    $('sdoValue').value = r.value;
+  });
+  $('sdoWriteBtn').addEventListener('click', async () => {
+    const a = sdoArgs(); if (!a.size) { $('sdoResult').textContent = 'pick a size to write'; return; }
+    const r = await post({action: 'sdo_write', ...a, value: parseNum($('sdoValue').value)});
+    const out = $('sdoResult');
+    out.className = 'result ' + (r.ok ? 'good' : 'bad'); out.textContent = r.ok ? 'write accepted' : r.error;
+  });
+
+  let lastHb = null;
+  function paint(s) {
+    const up = !!(s.link && s.link.up);
+    const can = s.can;
+    const st = can && can.status;
+    const ready = up && s.connected && st && st.initialized;
+    document.body.classList.toggle('offline', !(up && s.connected));
+    $('conn').className = 'pill ' + (up && s.connected ? 'on' : 'off');
+    $('connText').textContent = !up ? 'disconnected' : s.connected ? 'board online' : 'searching…';
+    $('bridge').className = 'pill ' + (!st ? 'off' : st.initialized ? (st.bus_state === 'active' ? 'on' : 'warn') : 'off');
+    $('bridgeText').textContent = !st ? 'bridge: no status' : !st.initialized ? 'bridge DOWN' : `bridge ${st.bus_state}`;
+    if (st) {
+      $('bridgeKv').innerHTML = [
+        ['TWAI', st.initialized ? (st.enabled ? 'up, enabled' : 'up, disabled') : 'init failed'],
+        ['Bus state', st.bus_state], ['Bit rate', st.bitrate + ' bit/s'], ['Pins', `tx ${st.tx_gpio} · rx ${st.rx_gpio}`],
+        ['TX ok / failed', `${st.tx_ok} / ${st.tx_failed}`], ['RX / dropped', `${st.rx_frames} / ${st.rx_dropped}`],
+        ['Bus errors', st.bus_errors], ['Error counters', `tx ${st.tx_error_count} · rx ${st.rx_error_count}`],
+        ['Status age', st.age + ' s'],
+      ].map(([k, v]) => `<span class="k">${k}</span><span class="v">${esc(v)}</span>`).join('');
+    }
+    if (can && document.activeElement !== $('node')) $('node').value = can.node;
+
+    if (can && !$('pause').checked) {
+      const hide = $('hideHb').checked;
+      const node = can.node;
+      const hb = can.frames.find((f) => (f.id & 0x780) === 0x700 && (f.id & 0x7f) === node);
+      if (hb) lastHb = hb;
+      $('frameRows').innerHTML = can.frames.filter((f) => !(hide && (f.id & 0x780) === 0x700)).slice(0, 80).map((f) =>
+        `<tr><td class="muted">${f.t}</td><td class="${f.dir}">${f.dir}</td><td>0x${f.id.toString(16).toUpperCase().padStart(3, '0')}${f.ext ? 'x' : ''}${f.rtr ? ' R' : ''}</td><td>${f.dlc}</td><td>${(f.data.match(/../g) || []).join(' ')}</td><td class="desc">${esc(f.desc)}</td></tr>`).join('');
+    }
+    if (lastHb) { $('hb').className = 'pill on'; $('hbText').textContent = `node ${can.node}: ${lastHb.desc.replace(/^heartbeat node \d+: /, '')} (${lastHb.t})`; }
+    else { $('hb').className = 'pill'; $('hbText').textContent = 'no heartbeat seen'; }
+
+    const now = Date.now() / 1000;
+    document.querySelectorAll('.age').forEach((a) => { if (a.dataset.t) a.textContent = `read ${Math.max(0, now - a.dataset.t).toFixed(0)} s ago`; });
+    const events = [...localLog, ...(s.events || [])].slice(0, 40);
+    $('log').innerHTML = events.map((e) => `<div><span class="t">${e.t}</span><span class="${e.level}">${esc(e.text)}</span></div>`).join('');
+  }
+
+  async function poll() {
+    try { const r = await fetch('/api/state'); paint(await r.json()); }
+    catch (e) { $('conn').className = 'pill off'; $('connText').textContent = 'server unreachable'; }
+  }
+  (async () => { table = await (await fetch('/api/can_objects')).json(); build(); poll(); setInterval(poll, 250); })();
+})();
+</script>
+</body>
+</html>

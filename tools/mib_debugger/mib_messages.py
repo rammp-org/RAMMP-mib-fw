@@ -281,3 +281,49 @@ class ParamState(IdlStruct, typename="rammp/msg/ParamState"):
     count: pt.uint8 = PARAM_COUNT
     values: pt.array[pt.float32, PARAM_COUNT] = field(
         default_factory=lambda: list(PARAM_DEFAULTS))
+
+
+# --------------------------------------------------------------------------
+# CAN bridge. Mirrors components/MIBConfig/include/mib_can_bridge.hpp. The MIB
+# forwards frames untouched in both directions; the CANopen layer is in
+# canopen_sdo.py and the MCP266 object dictionary in mcp266_objects.py.
+# --------------------------------------------------------------------------
+
+TOPIC_JOYSTICK_CAN_TX = "rammp/joystick/can_tx"
+TOPIC_MIB_CAN_RX = "rammp/mib/can_rx"
+TOPIC_MIB_CAN_STATUS = "rammp/mib/can_status"
+
+CAN_FLAG_EXTENDED = 0x01
+CAN_FLAG_RTR = 0x02
+
+CAN_BUS_STATES = {0: "active", 1: "warning", 2: "passive", 3: "bus-off"}
+
+
+@dataclass
+class CanFrame(IdlStruct, typename="rammp/msg/CanFrame"):
+    """One classic CAN frame. 16 bytes on the wire."""
+    seq: pt.uint8 = 0
+    flags: pt.uint8 = 0
+    dlc: pt.uint8 = 0
+    reserved: pt.uint8 = 0
+    id: pt.uint32 = 0
+    data: pt.array[pt.uint8, 8] = field(default_factory=lambda: [0] * 8)
+
+
+@dataclass
+class CanStatus(IdlStruct, typename="rammp/msg/CanStatus"):
+    """Bridge health, published with the other periodic status. 36 bytes."""
+    initialized: pt.uint8 = 0
+    enabled: pt.uint8 = 0
+    bus_state: pt.uint8 = 0
+    reserved: pt.uint8 = 0
+    bitrate: pt.uint32 = 0
+    tx_ok: pt.uint32 = 0
+    tx_failed: pt.uint32 = 0
+    rx_frames: pt.uint32 = 0
+    rx_dropped: pt.uint32 = 0
+    bus_errors: pt.uint32 = 0
+    tx_error_count: pt.uint16 = 0
+    rx_error_count: pt.uint16 = 0
+    tx_gpio: pt.int16 = -1
+    rx_gpio: pt.int16 = -1

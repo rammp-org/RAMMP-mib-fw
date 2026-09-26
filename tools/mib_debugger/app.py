@@ -146,7 +146,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         pages = {"/": "index.html", "/index.html": "index.html",
-                 "/params": "params.html", "/params.html": "params.html"}
+                 "/params": "params.html", "/params.html": "params.html",
+                 "/can": "can.html", "/can.html": "can.html"}
         if self.path.split("?")[0] in pages:
             try:
                 with open(os.path.join(STATIC_DIR, pages[self.path.split("?")[0]]), "rb") as handle:
@@ -166,6 +167,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps([
                 {"id": r[0], "name": r[1], "label": r[2], "unit": r[3],
                  "min": r[4], "max": r[5], "default": r[6]} for r in mib_messages.PARAM_TABLE]))
+            return
+
+        if self.path.startswith("/api/can_objects"):
+            import mcp266_objects
+            self._send(200, json.dumps(mcp266_objects.table_json()))
             return
 
         if self.path.startswith("/api/interfaces"):
@@ -229,6 +235,36 @@ def dispatch(link, body: dict):
 
     if action == "param_set":
         return link.set_param(int(body["id"]), float(body["value"]))
+
+    if action == "can_node":
+        return link.can_set_node(int(body["node"]))
+
+    if action == "can_nmt":
+        return link.can_nmt(str(body["command"]), bool(body.get("all")))
+
+    if action == "can_send":
+        return link.can_raw_send(int(body["id"]), str(body.get("data", "")),
+                                 bool(body.get("extended")), bool(body.get("rtr")))
+
+    if action == "can_clear":
+        return link.can_clear()
+
+    if action == "sdo_read":
+        return link.sdo_read(int(body["index"]), int(body.get("sub", 0)),
+                             int(body.get("size", 0)), bool(body.get("signed")))
+
+    if action == "sdo_write":
+        return link.sdo_write(int(body["index"]), int(body.get("sub", 0)), int(body["size"]),
+                              int(body["value"]), bool(body.get("signed")))
+
+    if action == "mcp_read":
+        return link.mcp_read(str(body["group"]))
+
+    if action == "mcp_write":
+        return link.mcp_write(str(body["group"]), dict(body.get("values", {})))
+
+    if action == "mcp_action":
+        return link.mcp_action(str(body["key"]))
 
     if action == "motor_sim":
         link.set_motor_sim(bool(body.get("enabled")))
