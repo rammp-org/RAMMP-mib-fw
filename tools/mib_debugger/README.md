@@ -4,6 +4,10 @@ A browser-based bench tool for the RAMMP MIB. It joins the board's DDS domain
 over Ethernet, stands in for the joystick, and shows what the MIB sends to the
 wheel controllers. Nothing in the firmware needs to change to use it.
 
+This tool lives on the `feature/18-mib-debugger` branch, which is not merged
+to `main`. Anything it reveals that `main` should fix is tracked in
+[`BRANCH_NOTES.md`](../../BRANCH_NOTES.md) at the repository root.
+
 ## What it does
 
 - Shows the board's live system state, drive profile, seat state and status age.
