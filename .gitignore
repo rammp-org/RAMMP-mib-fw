@@ -35,3 +35,6 @@ sdkconfig
 sdkconfig.old
 dependencies.lock
 managed_components/
+
+# MIB debugger virtual environment
+tools/mib_debugger/.venv/

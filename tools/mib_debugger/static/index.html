@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIB Debugger</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1e242c; --line: #2a313b;
+    --text: #e6e9ee; --muted: #8a94a3; --accent: #4f9cf5;
+    --good: #35c26d; --warn: #f0b429; --bad: #ef5350; --purple: #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+    border-radius: 999px; border: 1px solid var(--line); font-size: 12px;
+    background: var(--panel-2); color: var(--muted);
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--text); }
+  .pill.on .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .pill.off .dot { background: var(--bad); }
+  .state-badge {
+    font-family: var(--mono); font-weight: 700; font-size: 13px; padding: 5px 12px;
+    border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .state-badge[data-s="IDLE"] { color: var(--accent); border-color: var(--accent); }
+  .state-badge[data-s="ENABLED"] { color: var(--warn); border-color: var(--warn); }
+  .state-badge[data-s="INITIALIZING"] { color: var(--muted); }
+  .state-badge[data-s="ERROR"] { color: var(--bad); border-color: var(--bad); }
+  .stop {
+    background: var(--bad); color: #fff; border: 0; border-radius: 8px;
+    font-weight: 800; font-size: 14px; padding: 9px 18px; cursor: pointer;
+    letter-spacing: 1px; box-shadow: 0 2px 0 #9e2a28;
+  }
+  .stop:active { transform: translateY(1px); box-shadow: none; }
+
+  main {
+    display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px;
+    padding: 16px 18px; max-width: 1400px; margin: 0 auto;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; min-width: 0;
+  }
+  .panel h2 {
+    margin: 0 0 12px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); font-weight: 600;
+  }
+  .c4 { grid-column: span 4; } .c5 { grid-column: span 5; }
+  .c6 { grid-column: span 6; } .c7 { grid-column: span 7; }
+  .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  @media (max-width: 1000px) { .c4,.c5,.c6,.c7,.c8 { grid-column: span 12; } }
+
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 12px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05101f; font-weight: 600; }
+  button.warn { background: var(--warn); border-color: var(--warn); color: #1a1200; font-weight: 600; }
+  button.sel { outline: 2px solid var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .label { color: var(--muted); font-size: 12px; min-width: 64px; }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+
+  /* State strip */
+  .strip { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chip {
+    padding: 7px 12px; border-radius: 7px; border: 1px dashed var(--line);
+    font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: default;
+    position: relative;
+  }
+  .chip.click { border-style: solid; cursor: pointer; color: var(--text); }
+  .chip.click:hover { border-color: var(--accent); }
+  .chip.cur { background: var(--panel-2); color: var(--text); border-color: var(--accent); border-style: solid; }
+  .chip.cur::before {
+    content: ""; position: absolute; left: 6px; top: 50%; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent); transform: translateY(-50%);
+  }
+  .chip.cur { padding-left: 18px; }
+  .arrow { color: var(--muted); font-size: 12px; }
+
+  /* Joystick */
+  .joy-wrap { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  #pad {
+    width: 220px; height: 220px; border-radius: 50%; background: var(--panel-2);
+    border: 2px solid var(--line); position: relative; touch-action: none;
+    cursor: crosshair; user-select: none; flex: none;
+  }
+  #pad.live { border-color: var(--warn); box-shadow: 0 0 0 4px rgba(240,180,41,.15); }
+  #pad .axis { position: absolute; background: var(--line); }
+  #pad .axis.h { left: 0; right: 0; top: 50%; height: 1px; }
+  #pad .axis.v { top: 0; bottom: 0; left: 50%; width: 1px; }
+  #knob {
+    position: absolute; width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent); left: 50%; top: 50%; transform: translate(-50%,-50%);
+    box-shadow: 0 2px 10px rgba(0,0,0,.5); pointer-events: none;
+  }
+  #pad.live #knob { background: var(--warn); }
+  .joy-side { flex: 1; min-width: 220px; }
+  .readout { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-family: var(--mono); font-size: 13px; }
+  .readout .k { color: var(--muted); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .slider-row { display: grid; grid-template-columns: 90px 1fr 74px; gap: 10px; align-items: center; margin: 6px 0; }
+  .slider-row .v { font-family: var(--mono); text-align: right; font-size: 12px; }
+  .presets button { min-width: 84px; }
+  .hold { font-size: 11px; color: var(--muted); }
+
+  /* Motor table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  td.mono { font-family: var(--mono); }
+  td.num { text-align: right; font-family: var(--mono); }
+  th.num { text-align: right; }
+  .tag { padding: 2px 7px; border-radius: 5px; font-family: var(--mono); font-size: 11px; background: var(--panel-2); }
+  .tag.ARMED { color: var(--warn); } .tag.DISARMED { color: var(--muted); }
+  .stale { color: var(--muted); }
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; position: relative; overflow: hidden; margin-top: 4px; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+
+  /* Seat */
+  .seat-row { display: grid; grid-template-columns: 96px 1fr 80px 62px; gap: 10px; align-items: center; margin: 8px 0; }
+  .seat-row .cur { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+
+  /* Log */
+  #log { font-family: var(--mono); font-size: 12px; max-height: 240px; overflow: auto; }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log .t { color: var(--muted); flex: none; }
+  #log .good { color: var(--good); } #log .warn { color: var(--warn); } #log .bad { color: var(--bad); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: var(--mono); }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font: inherit; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.sel { background: var(--accent); color: #05101f; outline: none; font-weight: 600; }
+  body.offline .gated { opacity: .4; pointer-events: none; }
+  .rec { color: var(--good); font-size: 11px; margin-left: 6px; }
+  .err { color: var(--bad); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MIB Debugger</h1>
+  <a class="nav" href="/params" style="color:var(--text);text-decoration:none;padding:6px 12px;border:1px solid var(--line);border-radius:7px;font-size:13px">Parameters →</a>
+  <span id="conn" class="pill off"><span class="dot"></span><span id="connText">no board</span></span>
+  <span id="stateBadge" class="state-badge" data-s="">—</span>
+  <span id="profileBadge" class="pill">profile —</span>
+  <span class="spacer"></span>
+  <span id="joyPill" class="pill"><span class="dot"></span>stick released</span>
+  <button class="stop" id="stopBtn" title="Release the stick and send drive DISABLE">STOP</button>
+</header>
+
+<main>
+
+  <!-- Connection -->
+  <section class="panel c12" id="connPanel">
+    <h2>Connection</h2>
+    <div class="row">
+      <span class="label">Target</span>
+      <span class="seg" id="modeSeg">
+        <button data-m="board">Board</button>
+        <button data-m="local">Simulator</button>
+      </span>
+      <span class="label" style="margin-left:10px">Interface</span>
+      <select id="ifaceSel"><option value="">Auto-detect</option></select>
+      <button class="primary" id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <span class="muted" id="connHint" style="font-size:12px;margin-left:6px"></span>
+    </div>
+    <div class="err" id="connErr" hidden></div>
+    <div class="note" id="modeNote"></div>
+  </section>
+
+  <!-- System state -->
+  <section class="panel c7 gated">
+    <h2>System state</h2>
+    <div class="strip" id="strip">
+      <span class="chip" data-s="INITIALIZING">INIT</span>
+      <span class="arrow">→</span>
+      <span class="chip click" data-s="IDLE" data-go="idle" title="Send drive DISABLE">IDLE</span>
+      <span class="arrow">⇄</span>
+      <span class="chip click" data-s="ENABLED" data-go="enable" title="Send drive ENABLE with the selected profile">DRIVE_ENABLED</span>
+      <span class="arrow" style="margin-left:10px">·</span>
+      <span class="chip" data-s="CALIBRATE" title="No firmware path enters this state">CALIBRATE</span>
+      <span class="chip" data-s="ERROR" title="Entered by the firmware on failure only">ERROR</span>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <span class="label">Profile</span>
+      <button data-p="0" class="pbtn">LOW</button>
+      <button data-p="1" class="pbtn">NORMAL</button>
+      <button data-p="2" class="pbtn">HIGH</button>
+      <span class="muted" style="font-size:12px;margin-left:6px">applies on the next Enable, or immediately while enabled</span>
+    </div>
+    <div class="row">
+      <button class="warn" id="enableBtn">Enable drive</button>
+      <button id="disableBtn">Disable drive</button>
+    </div>
+    <div class="note">
+      Solid chips are reachable from the network. INIT and ERROR are set by the firmware itself,
+      and nothing in the current firmware enters CALIBRATE. Enable is only accepted from IDLE;
+      seat commands are only accepted in IDLE; the stick only moves the chassis in DRIVE_ENABLED.
+    </div>
+  </section>
+
+  <!-- Board -->
+  <section class="panel c5 gated">
+    <h2>Board</h2>
+    <div class="kv">
+      <span class="k">Status samples</span><span class="v" id="bCount">0</span>
+      <span class="k">Last status age</span><span class="v" id="bAge">—</span>
+      <span class="k">Reported speed</span><span class="v" id="bSpeed">—</span>
+      <span class="k">Status seq</span><span class="v" id="bSeq">—</span>
+      <span class="k">Error message</span><span class="v" id="bErr">—</span>
+    </div>
+    <div class="note">The board publishes status twice per second. Age above two seconds counts as lost.</div>
+    <div class="row" style="margin-top:10px">
+      <label class="toggle"><input type="checkbox" id="simChk"> Simulate PACE RACER motor boards</label>
+    </div>
+    <div class="note">Publishes MotorState on all four axes so the MIB sees controllers present. Off by default.</div>
+  </section>
+
+  <!-- Drive -->
+  <section class="panel c7 gated">
+    <h2>Drive</h2>
+    <div class="joy-wrap">
+      <div id="pad"><div class="axis h"></div><div class="axis v"></div><div id="knob"></div></div>
+      <div class="joy-side">
+        <div class="readout">
+          <span class="k">x (angular)</span><span id="rx">0.00</span>
+          <span class="k">y (linear)</span><span id="ry">0.00</span>
+          <span class="k">twist</span><span id="rt">0.00</span>
+        </div>
+        <div class="slider-row" style="margin-top:12px">
+          <span class="label">twist</span>
+          <input type="range" id="twist" min="-100" max="100" value="0">
+          <span class="v" id="twistV">0.00</span>
+        </div>
+        <div class="row presets" style="margin-top:12px">
+          <button data-xy="0,1">▲ Forward</button>
+          <button data-xy="0,-1">▼ Reverse</button>
+          <button data-xy="-1,0">↺ Spin L</button>
+          <button data-xy="1,0">↻ Spin R</button>
+          <button data-xy="0,0.4">Creep</button>
+        </div>
+        <div class="hold" style="margin-top:6px">Hold the pad or a preset to drive. Releasing sends zero.</div>
+        <div class="row" style="margin-top:12px">
+          <button id="latchBtn">Latch current values</button>
+          <button id="releaseBtn">Release</button>
+        </div>
+        <div class="hold">Latch keeps publishing the values shown without holding. The tool releases it automatically if the browser stops polling.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Motor commands -->
+  <section class="panel c5 gated">
+    <h2>Motor commands from the MIB</h2>
+    <div class="row" style="margin-bottom:10px">
+      <span class="seg" id="frameSeg">
+        <button data-f="chassis" class="sel">Chassis frame</button>
+        <button data-f="shaft">Motor shaft (raw)</button>
+      </span>
+    </div>
+    <div class="kv" id="chassis" style="margin-bottom:10px">
+      <span class="k">Linear</span><span class="v" id="cLin">—</span>
+      <span class="k">Angular</span><span class="v" id="cAng">—</span>
+      <span class="k">Motion</span><span class="v" id="cDesc">—</span>
+    </div>
+    <table>
+      <thead><tr><th>Axis</th><th>State</th><th>Mode</th><th class="num">rad/s</th><th class="num">seq</th><th class="num">age</th></tr></thead>
+      <tbody id="motors"></tbody>
+    </table>
+    <div class="note" id="frameNote"></div>
+  </section>
+
+  <!-- Seat -->
+  <section class="panel c7 gated">
+    <h2>Seat</h2>
+    <div id="seat"></div>
+    <div class="note">Absolute targets in whole units. Accepted only while IDLE. The firmware currently stores the value and echoes it back; no actuator moves yet.</div>
+  </section>
+
+  <!-- Log -->
+  <section class="panel c5">
+    <h2>Events</h2>
+    <div id="log"></div>
+  </section>
+
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const post = (body) => fetch('/api/command', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  }).catch(() => {});
+
+  // ---------------------------------------------------------------- joystick
+  const pad = $('pad'), knob = $('knob');
+  let joy = {x: 0, y: 0, twist: 0};
+  let holding = false;     // pointer or preset currently held
+  let latched = false;     // user asked to keep publishing without holding
+  let lastSent = '';
+
+  function drawKnob() {
+    const r = pad.clientWidth / 2 - 17;
+    knob.style.left = (50 + joy.x * r / (pad.clientWidth / 2) * 50) + '%';
+    knob.style.top = (50 - joy.y * r / (pad.clientHeight / 2) * 50) + '%';
+    $('rx').textContent = joy.x.toFixed(2);
+    $('ry').textContent = joy.y.toFixed(2);
+    $('rt').textContent = joy.twist.toFixed(2);
+  }
+
+  function sendJoy(force) {
+    const key = joy.x.toFixed(3) + joy.y.toFixed(3) + joy.twist.toFixed(3);
+    if (!force && key === lastSent) return;
+    lastSent = key;
+    post({action: 'joystick', x: joy.x, y: joy.y, twist: joy.twist, button: false});
+  }
+
+  function setLive(live) {
+    pad.classList.toggle('live', live);
+    post({action: 'joystick_live', live});
+  }
+
+  function padPoint(ev) {
+    const b = pad.getBoundingClientRect();
+    let nx = ((ev.clientX - b.left) / b.width) * 2 - 1;
+    let ny = -(((ev.clientY - b.top) / b.height) * 2 - 1);
+    const m = Math.hypot(nx, ny);
+    if (m > 1) { nx /= m; ny /= m; }
+    joy.x = Math.abs(nx) < 0.04 ? 0 : nx;
+    joy.y = Math.abs(ny) < 0.04 ? 0 : ny;
+  }
+
+  pad.addEventListener('pointerdown', (ev) => {
+    pad.setPointerCapture(ev.pointerId);
+    holding = true; latched = false;
+    padPoint(ev); drawKnob(); sendJoy(true); setLive(true);
+  });
+  pad.addEventListener('pointermove', (ev) => {
+    if (!holding) return;
+    padPoint(ev); drawKnob(); sendJoy(false);
+  });
+  const endHold = () => {
+    if (!holding) return;
+    holding = false;
+    if (!latched) { joy.x = 0; joy.y = 0; drawKnob(); sendJoy(true); setLive(false); }
+  };
+  pad.addEventListener('pointerup', endHold);
+  pad.addEventListener('pointercancel', endHold);
+  window.addEventListener('blur', () => { latched = false; endHold(); release(); });
+
+  // presets: hold to drive
+  document.querySelectorAll('.presets button').forEach((b) => {
+    const [x, y] = b.dataset.xy.split(',').map(Number);
+    const down = (ev) => { ev.preventDefault(); holding = true; latched = false; joy.x = x; joy.y = y; drawKnob(); sendJoy(true); setLive(true); };
+    b.addEventListener('pointerdown', down);
+    b.addEventListener('pointerup', endHold);
+    b.addEventListener('pointerleave', endHold);
+    b.addEventListener('pointercancel', endHold);
+  });
+
+  $('twist').addEventListener('input', (e) => {
+    joy.twist = e.target.value / 100; $('twistV').textContent = joy.twist.toFixed(2);
+    drawKnob(); if (holding || latched) sendJoy(false);
+  });
+
+  function release() {
+    latched = false; holding = false;
+    joy.x = 0; joy.y = 0; joy.twist = 0; $('twist').value = 0; $('twistV').textContent = '0.00';
+    drawKnob(); sendJoy(true); setLive(false);
+  }
+  $('latchBtn').addEventListener('click', () => { latched = true; sendJoy(true); setLive(true); });
+  $('releaseBtn').addEventListener('click', release);
+
+  // keep-alive republish while live so the server always has a fresh value
+  setInterval(() => { if (holding || latched) sendJoy(true); }, 200);
+
+  // ---------------------------------------------------------------- state
+  let profile = 1;
+  const pbtns = document.querySelectorAll('.pbtn');
+  function paintProfile() { pbtns.forEach((b) => b.classList.toggle('sel', +b.dataset.p === profile)); }
+  pbtns.forEach((b) => b.addEventListener('click', () => {
+    profile = +b.dataset.p; paintProfile();
+    if (currentState === 'ENABLED') post({action: 'drive', enable: true, profile});
+  }));
+  paintProfile();
+
+  $('enableBtn').addEventListener('click', () => post({action: 'drive', enable: true, profile}));
+  $('disableBtn').addEventListener('click', () => post({action: 'drive', enable: false}));
+  document.querySelectorAll('#strip .chip.click').forEach((c) => c.addEventListener('click', () => {
+    if (c.dataset.go === 'enable') post({action: 'drive', enable: true, profile});
+    else post({action: 'drive', enable: false});
+  }));
+  $('stopBtn').addEventListener('click', () => { release(); post({action: 'stop'}); });
+  $('simChk').addEventListener('change', (e) => post({action: 'motor_sim', enabled: e.target.checked}));
+
+  // ---------------------------------------------------------------- seat
+  // Ranges from RAMMP_SEAT_AXIS_TABLE, converted from raw tenths to whole units.
+  const seatAxes = [
+    {id: 0, key: 'front_back_tilt', label: 'FB tilt',     min: -45, max: 90,  step: 2.5, unit: 'deg'},
+    {id: 1, key: 'lateral_tilt',    label: 'Side tilt',   min: -30, max: 30,  step: 2.5, unit: 'deg'},
+    {id: 2, key: 'elevation',       label: 'Elevation',   min: 0,   max: 250, step: 5,   unit: 'mm'},
+    {id: 3, key: 'translation',     label: 'Translation', min: 0,   max: 50,  step: 2.5, unit: 'mm'},
+  ];
+  const seatEl = $('seat');
+  seatAxes.forEach((a) => {
+    const row = document.createElement('div'); row.className = 'seat-row';
+    row.innerHTML = `
+      <span class="label">${a.label}</span>
+      <input type="range" min="${a.min}" max="${a.max}" step="${a.step}" value="${Math.max(a.min, 0)}" id="seat${a.id}">
+      <span class="cur"><span id="seatV${a.id}">${Math.max(a.min, 0)}</span> ${a.unit} <span class="muted">/ <span id="seatCur${a.id}">—</span></span></span>
+      <button data-a="${a.id}">Send</button>`;
+    seatEl.appendChild(row);
+    row.querySelector('input').addEventListener('input', (e) => $('seatV' + a.id).textContent = e.target.value);
+    row.querySelector('button').addEventListener('click', () =>
+      post({action: 'seat', axis: a.id, target: +$('seat' + a.id).value}));
+  });
+
+  // ---------------------------------------------------------------- connection
+  let mode = 'board';
+  let linkUp = false;
+  const modeNotes = {
+    board: 'Plug the board into an Ethernet port. The firmware runs a DHCP server at 192.168.4.1, so the interface that receives a 192.168.4.x address is the one to use. Auto-detect picks it when present.',
+    local: 'Talks to fake_mib.py over loopback. Start it in another terminal with ./sim.sh before connecting.',
+  };
+  function paintMode() {
+    document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('sel', b.dataset.m === mode));
+    $('ifaceSel').disabled = mode === 'local' || linkUp;
+    $('modeNote').textContent = modeNotes[mode];
+  }
+  document.querySelectorAll('#modeSeg button').forEach((b) => b.addEventListener('click', () => {
+    if (linkUp) return; mode = b.dataset.m; paintMode();
+  }));
+  async function loadInterfaces() {
+    try {
+      const list = await (await fetch('/api/interfaces')).json();
+      const sel = $('ifaceSel'); const keep = sel.value;
+      sel.innerHTML = '<option value="">Auto-detect</option>' + list
+        .filter((i) => i.name !== 'lo0')
+        .map((i) => `<option value="${i.name}">${i.name}  ${i.address}${i.mib ? '  (board subnet)' : ''}</option>`).join('');
+      sel.value = keep;
+    } catch (e) {}
+  }
+  $('connectBtn').addEventListener('click', async () => {
+    $('connErr').hidden = true; $('connectBtn').disabled = true;
+    const r = await fetch('/api/connect', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode, interface: $('ifaceSel').value || null})});
+    if (!r.ok) { const e = await r.json().catch(() => ({})); $('connErr').textContent = e.error || 'connect failed'; $('connErr').hidden = false; $('connectBtn').disabled = false; }
+    poll();
+  });
+  $('disconnectBtn').addEventListener('click', async () => {
+    release();
+    await fetch('/api/disconnect', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    poll();
+  });
+  paintMode(); loadInterfaces(); setInterval(loadInterfaces, 5000);
+
+  // ---------------------------------------------------------------- motor frame
+  // "Chassis frame" undoes the firmware's per-wheel inversion so both wheels
+  // read positive when the chassis moves forward. "Motor shaft" is the raw
+  // value on the wire, which is what the wheel controller actually receives.
+  let frame = 'chassis';
+  const frameNotes = {
+    chassis: 'Wheel speeds with the per-wheel inversion undone, so forward reads positive on both wheels. Linear and angular are recovered from the two wheel speeds using the geometry and inversion flags the board currently reports on the Parameters page. Angular positive is counter-clockwise, a left turn.',
+    shaft: 'Exactly what goes on the wire to each wheel controller at 20 Hz. The left motor is mirrored, so the firmware negates it and straight ahead shows opposite signs here.',
+  };
+  function paintFrame() {
+    document.querySelectorAll('#frameSeg button').forEach((b) => b.classList.toggle('sel', b.dataset.f === frame));
+    $('frameNote').textContent = frameNotes[frame];
+    $('chassis').hidden = frame !== 'chassis';
+  }
+  document.querySelectorAll('#frameSeg button').forEach((b) => b.addEventListener('click', () => { frame = b.dataset.f; paintFrame(); }));
+  paintFrame();
+
+  // ---------------------------------------------------------------- polling
+  let currentState = '';
+  const axisOrder = ['2', '3', '0', '1'];
+
+  let modeSynced = false;   // take the server's preselected mode once, at load
+  let wasReady = false;
+  function paint(s) {
+    linkUp = !!(s.link && s.link.up);
+    // Controls unlock only when the board is actually answering, not merely
+    // when our own DDS participant exists and is still searching for it.
+    const ready = linkUp && s.connected;
+    document.body.classList.toggle('offline', !ready);
+    if (wasReady && !ready) release();   // board went away: drop the stick
+    wasReady = ready;
+    $('connectBtn').disabled = linkUp;
+    $('disconnectBtn').disabled = !linkUp;
+    if (s.link) {
+      if (!modeSynced && s.link.mode) { mode = s.link.mode; modeSynced = true; }
+      paintMode();
+      const det = s.link.detected;
+      const via = s.link.mode === 'local' ? 'loopback' : (s.link.interface || det || 'default interface');
+      $('connHint').textContent = linkUp
+        ? (ready ? 'board online via ' + via : 'searching for the board via ' + via + '…')
+        : (mode === 'board' ? (det ? 'board subnet seen on ' + det : 'no interface on 192.168.4.x yet') : 'simulator mode');
+      if (s.link.error) { $('connErr').textContent = s.link.error; $('connErr').hidden = false; }
+    }
+    const conn = $('conn');
+    conn.className = 'pill ' + (s.connected ? 'on' : 'off');
+    $('connText').textContent = !linkUp ? 'disconnected' : s.connected ? 'board online' : (s.status_count ? 'board lost' : 'searching…');
+
+    const st = s.board ? s.board.systemState : '';
+    currentState = st;
+    const badge = $('stateBadge');
+    badge.textContent = st || '—'; badge.dataset.s = st;
+    document.querySelectorAll('#strip .chip').forEach((c) => c.classList.toggle('cur', c.dataset.s === st));
+    $('profileBadge').textContent = 'profile ' + (s.board ? s.board.activeProfile : '—');
+
+    $('bCount').textContent = s.status_count;
+    $('bAge').textContent = s.status_age == null ? '—' : s.status_age.toFixed(2) + ' s';
+    $('bSpeed').textContent = s.board ? s.board.speed.toFixed(3) + ' m/s' : '—';
+    $('bSeq').textContent = s.board ? s.board.seq : '—';
+    $('bErr').textContent = s.board ? s.board.error_message : '—';
+
+    const jp = $('joyPill');
+    jp.className = 'pill ' + (s.joystick.live ? 'on' : '');
+    jp.lastChild.textContent = s.joystick.live ? 'stick live' : 'stick released';
+    $('simChk').checked = s.motor_sim;
+
+    // Prefer the board's live parameter table for geometry and inversion, so the
+    // chassis-frame view stays right after a parameter change; fall back to the
+    // compiled-in defaults until the first ParamState arrives.
+    let g = s.geometry || {};
+    if (s.params && s.params.values && s.params.values.length >= 4) {
+      const v = s.params.values;
+      g = {invert_left: v[0] >= 0.5, invert_right: v[1] >= 0.5, wheel_diameter_m: v[2], wheel_separation_m: v[3]};
+    }
+    const unInvert = (k, v) => (frame === 'chassis' && ((k === '2' && g.invert_left) || (k === '3' && g.invert_right))) ? -v : v;
+    const rows = axisOrder.map((k) => {
+      const m = s.motors[k]; const label = s.axis_labels[k];
+      if (!m) return `<tr class="stale"><td>${label}</td><td colspan="5">no commands seen</td></tr>`;
+      const vel = unInvert(k, m.velocity);
+      const pct = Math.min(100, Math.abs(vel) / 8 * 100);
+      const dir = vel >= 0 ? 'left:50%;width:' + pct/2 + '%' : 'right:50%;width:' + pct/2 + '%';
+      return `<tr class="${m.age > 0.5 ? 'stale' : ''}">
+        <td>${label}<div class="bar"><i style="${dir}"></i></div></td>
+        <td><span class="tag ${m.requested_state}">${m.requested_state}</span></td>
+        <td class="mono">${m.mode}</td>
+        <td class="num">${vel.toFixed(3)}</td>
+        <td class="num">${m.seq}</td>
+        <td class="num">${m.age.toFixed(2)}s</td></tr>`;
+    });
+    $('motors').innerHTML = rows.join('');
+
+    // Recover chassis motion from the two drive wheels (inverse of the
+    // firmware's DifferentialDrive::compute).
+    const L = s.motors['2'], R = s.motors['3'];
+    if (L && R && g.wheel_diameter_m) {
+      const r = g.wheel_diameter_m / 2;
+      const vl = unInvert('2', L.velocity) * r, vr = unInvert('3', R.velocity) * r;   // rad/s -> m/s
+      const lin = (vl + vr) / 2, ang = (vr - vl) / g.wheel_separation_m;
+      $('cLin').textContent = lin.toFixed(3) + ' m/s';
+      $('cAng').textContent = ang.toFixed(3) + ' rad/s';
+      const parts = [];
+      if (Math.abs(lin) > 0.01) parts.push(lin > 0 ? 'forward' : 'reverse');
+      if (Math.abs(ang) > 0.01) parts.push(ang > 0 ? 'turning left (CCW)' : 'turning right (CW)');
+      $('cDesc').textContent = parts.length ? parts.join(', ') : 'stopped';
+    } else { $('cLin').textContent = $('cAng').textContent = $('cDesc').textContent = '—'; }
+
+    if (s.board) seatAxes.forEach((a) => $('seatCur' + a.id).textContent = s.board.seat[a.key].toFixed(1));
+
+    $('log').innerHTML = s.events.map((e) =>
+      `<div><span class="t">${e.t}</span><span class="${e.level}">${e.text}</span></div>`).join('');
+  }
+
+  async function poll() {
+    try { const r = await fetch('/api/state'); paint(await r.json()); }
+    catch (e) { $('conn').className = 'pill off'; $('connText').textContent = 'server unreachable'; }
+  }
+  setInterval(poll, 100);
+  poll(); drawKnob();
+})();
+</script>
+</body>
+</html>

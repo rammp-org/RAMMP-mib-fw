@@ -1,0 +1,4 @@
+# The only third-party dependency. Prebuilt wheels exist for CPython 3.9 to 3.12
+# on macOS arm64; Python 3.13 and newer have no wheel and would try to build the
+# C library from source. setup.sh picks a suitable interpreter for you.
+cyclonedds==0.10.5
