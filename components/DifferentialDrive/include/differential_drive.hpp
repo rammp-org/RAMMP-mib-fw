@@ -36,6 +36,10 @@ public:
   /// @return True if wheel diameter and separation are both greater than zero.
   bool is_valid() const { return valid_; }
 
+  /// @brief Replace the geometry and inversion flags at runtime.
+  /// @return True if the new geometry is valid (both dimensions > 0).
+  bool set_config(const Config &config);
+
   /// @brief Convert a velocity command into wheel speeds.
   /// @param linear_mps Forward speed of the platform, in meters per second.
   /// @param angular_radps Rotation speed of the platform, in radians per second.

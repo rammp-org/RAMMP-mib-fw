@@ -18,6 +18,19 @@ DifferentialDrive::DifferentialDrive(const Config &config)
   }
 }
 
+bool DifferentialDrive::set_config(const Config &config) {
+  wheel_diameter_m_ = config.wheel_diameter_m;
+  wheel_separation_m_ = config.wheel_separation_m;
+  invert_left_ = config.invert_left;
+  invert_right_ = config.invert_right;
+  valid_ = config.wheel_diameter_m > 0.0f && config.wheel_separation_m > 0.0f;
+  if (!valid_) {
+    logger_.warn("Invalid geometry: wheel diameter={} m, separation={} m; both must be > 0.",
+                 config.wheel_diameter_m, config.wheel_separation_m);
+  }
+  return valid_;
+}
+
 DifferentialDrive::WheelSpeeds DifferentialDrive::compute(float linear_mps,
                                                           float angular_radps) const {
   if (!valid_) {

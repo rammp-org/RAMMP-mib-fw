@@ -5,6 +5,8 @@
 #include "base_component.hpp"
 #include "differential_drive.hpp"
 #include "MIBconfig.hpp"
+#include "mib_params.hpp"
+#include <mutex>
 #include "messages.hpp"
 #include "trajectory_planner.hpp"
 
@@ -53,9 +55,17 @@ public:
   /// @param target Target position in the axis' configured units.
   void set_seat_target(uint8_t axis, float target);
 
+  /// @brief Re-read mib::Params and apply geometry, inversion and the active profile's
+  ///        limits immediately. Called after a ParamSet is accepted.
+  /// @return True if the geometry is valid and the planner accepted the limits.
+  bool apply_params();
+
 private:
   static Config default_config();
+  /// Limits for a profile, read from the live mib::Params store.
   static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
+  static DifferentialDrive::Config geometry_from_params();
+  mutable std::mutex mutex_; ///< Guards the differential drive and active profile.
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;

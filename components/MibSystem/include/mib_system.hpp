@@ -8,6 +8,7 @@
 #include "base_component.hpp"
 #include "drive_controller.hpp"
 #include "messages.hpp"
+#include "mib_params.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
 
@@ -67,6 +68,14 @@ private:
   /// Handle a motor controller status report.
   void handle_motor_status();
 
+  /// Validate and apply one runtime parameter change, then re-apply it to the drive.
+  /// \note Runs on an RTPS receive thread.
+  void handle_param_set(const mib::ParamSet &request);
+
+  /// Publish the whole parameter table with the outcome of the last ParamSet.
+  /// \note Runs on the publication task.
+  void publish_param_state();
+
   /// Publish the current system state.
   /// \note Runs on the publication task.
   void publish_system_state();
@@ -93,12 +102,17 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t param_state_sequence_{0};            ///< Sequence number for ParamState samples.
+  std::atomic<uint8_t> last_param_set_seq_{0}; ///< seq of the last ParamSet handled.
+  std::atomic<bool> last_param_set_ok_{false}; ///< Whether that ParamSet was applied.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
+  std::unique_ptr<espp::Subscriber<mib::ParamSet>> param_set_subscriber_;   ///< Parameter writes.
+  std::unique_ptr<espp::Publisher<mib::ParamState>> param_state_publisher_; ///< Parameter table.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.

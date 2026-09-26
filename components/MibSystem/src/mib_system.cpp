@@ -41,6 +41,7 @@ void MibSystem::start() {
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
+        publish_param_state();
         log_drive_status();
 
         std::unique_lock<std::mutex> lock(mutex);
@@ -152,6 +153,32 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
+  // Parameter writes are rare and must not be lost, so this one endpoint is reliable.
+  param_set_subscriber_ = std::make_unique<espp::Subscriber<mib::ParamSet>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<mib::ParamSet>::Config{
+          .topic = RAMMP_TOPIC_JOYSTICK_PARAM_SET,
+          .type_name = RAMMP_TYPE_PARAM_SET,
+          .reliability = Reliability::RELIABLE,
+          .on_message = [this](const mib::ParamSet &request) { handle_param_set(request); }});
+
+  if (!param_set_subscriber_->is_valid()) {
+    logger_.error("Failed to create MIB RTPS parameter subscriber");
+    return false;
+  }
+
+  param_state_publisher_ = std::make_unique<espp::Publisher<mib::ParamState>>(
+      mib_.rtps_participant(),
+      espp::Publisher<mib::ParamState>::Config{
+          .topic = RAMMP_TOPIC_MIB_PARAMS,
+          .type_name = RAMMP_TYPE_PARAM_STATE,
+          .reliability = Reliability::BEST_EFFORT});
+
+  if (!param_state_publisher_->is_valid()) {
+    logger_.error("Failed to create MIB parameter state publisher");
+    return false;
+  }
+
   return true;
 }
 
@@ -166,8 +193,10 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
 
   switch (state_.load()) {
   case SystemState::DRIVE_ENABLED:
-    // The MIB maps y to linear velocity and x to angular velocity.
-    drive_controller_.set_target(sample.y, sample.x);
+    // The MIB maps y to linear velocity and x to angular velocity. The sign of x is a
+    // runtime parameter so the turn direction can be checked on the bench.
+    drive_controller_.set_target(
+        sample.y, sample.x * mib::Params::instance().get(mib::ParamId::JOYSTICK_X_SIGN));
     break;
   case SystemState::INIT:
   case SystemState::IDLE:
@@ -245,6 +274,35 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
 
 void MibSystem::handle_motor_status() {
   logger_.info("Motor status received - placeholder");
+}
+
+void MibSystem::handle_param_set(const mib::ParamSet &request) {
+  const auto index = static_cast<size_t>(request.id);
+  bool ok = mib::Params::instance().set(request.id, request.value);
+  if (ok) {
+    ok = drive_controller_.apply_params();
+  }
+  last_param_set_seq_.store(request.seq);
+  last_param_set_ok_.store(ok);
+  if (ok) {
+    logger_.info("Param {} set to {} (seq {})",
+                 index < mib::kParamCount ? mib::kParamSpecs[index].name : "?", request.value,
+                 request.seq);
+  } else {
+    logger_.warn("Rejected param id {} value {} (seq {})", index, request.value, request.seq);
+  }
+}
+
+void MibSystem::publish_param_state() {
+  mib::ParamState state{};
+  state.seq = ++param_state_sequence_;
+  state.last_set_seq = last_param_set_seq_.load();
+  state.last_set_ok = last_param_set_ok_.load() ? 1 : 0;
+  state.count = static_cast<uint8_t>(mib::kParamCount);
+  state.values = mib::Params::instance().snapshot();
+  if (!param_state_publisher_->publish(state)) {
+    logger_.warn("Failed to publish parameter state");
+  }
 }
 
 void MibSystem::publish_system_state() {
