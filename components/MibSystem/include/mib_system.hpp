@@ -8,9 +8,11 @@
 #include "base_component.hpp"
 #include "drive_controller.hpp"
 #include "messages.hpp"
+#include "mib_can_bridge.hpp"
 #include "mib_params.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
+#include "twai.hpp"
 
 /// @brief Top-level MIB application: owns the system state machine and RTPS endpoints.
 ///
@@ -76,6 +78,19 @@ private:
   /// \note Runs on the publication task.
   void publish_param_state();
 
+  /// Bring up the TWAI peripheral for the CAN bridge. Failure is logged, not fatal:
+  /// the MIB runs without a transceiver, it just reports the bridge as down.
+  /// \return True if the TWAI node is on the bus.
+  bool initialize_can_bridge();
+
+  /// Transmit one frame from the bench tool on the CAN bus.
+  /// \note Runs on an RTPS receive thread; blocks for at most one frame timeout.
+  void handle_can_tx(const mib::CanFrame &frame);
+
+  /// Publish the CAN bridge health.
+  /// \note Runs on the publication task.
+  void publish_can_status();
+
   /// Publish the current system state.
   /// \note Runs on the publication task.
   void publish_system_state();
@@ -113,6 +128,17 @@ private:
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
   std::unique_ptr<espp::Subscriber<mib::ParamSet>> param_set_subscriber_;   ///< Parameter writes.
   std::unique_ptr<espp::Publisher<mib::ParamState>> param_state_publisher_; ///< Parameter table.
+  std::unique_ptr<espp::Twai> twai_;                                         ///< CAN bridge bus.
+  std::unique_ptr<espp::Subscriber<mib::CanFrame>> can_tx_subscriber_;  ///< Frames to transmit.
+  std::unique_ptr<espp::Publisher<mib::CanFrame>> can_rx_publisher_;    ///< Frames received.
+  std::unique_ptr<espp::Publisher<mib::CanStatus>> can_status_publisher_; ///< Bridge health.
+  std::atomic<bool> can_initialized_{false};  ///< TWAI node created and enabled.
+  std::atomic<uint32_t> can_tx_ok_{0};        ///< CanStatus counters, see mib_can_bridge.hpp.
+  std::atomic<uint32_t> can_tx_failed_{0};
+  std::atomic<uint32_t> can_rx_frames_{0};
+  std::atomic<uint32_t> can_rx_dropped_{0};
+  std::atomic<uint32_t> can_bus_errors_{0};
+  std::atomic<uint8_t> can_rx_sequence_{0};   ///< Sequence number for republished frames.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
