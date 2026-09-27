@@ -1,4 +1,4 @@
-# Branch notes: feature/18-mib-debugger
+# Branch notes: feature/21-mib-debugger
 
 This branch carries the bench debugger in `tools/mib_debugger` and the firmware
 support it needs: the runtime parameter store (`mib_params.hpp`) and the raw
