@@ -4,6 +4,9 @@ A browser-based bench tool for the RAMMP MIB. It joins the board's DDS domain
 over Ethernet, stands in for the joystick, and shows what the MIB sends to the
 wheel controllers. Nothing in the firmware needs to change to use it.
 
+New to the tool? [TUTORIAL.md](TUTORIAL.md) walks through it in order, from
+install to programming an MCP266 over CAN.
+
 This tool lives on the `feature/21-mib-debugger` branch, which is not merged
 to `main`. Anything it reveals that `main` should fix is tracked in
 [`BRANCH_NOTES.md`](../../BRANCH_NOTES.md) at the repository root.
@@ -185,6 +188,7 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 | `static/index.html` | The main GUI |
 | `static/params.html` | The Parameters page |
 | `static/can.html` | The MCP266 / CAN page |
+| `TUTORIAL.md` | Step-by-step walkthrough of all three pages |
 | `canopen_sdo.py` | NMT and SDO client over the bridge, frame decoding for the monitor |
 | `mcp266_objects.py` | The MCP266 object table: settings, telemetry, actions |
 | `fake_mib.py` | Firmware stand-in for use without hardware |
