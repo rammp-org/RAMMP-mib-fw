@@ -107,10 +107,7 @@ bool MIB::init_actuators() {
 		return false;
 	}
 
-	std::error_code ec;
-	if (!range_store_.init(ec)) {
-		logger_.warn("NVS unavailable, calibrated ranges will not persist: {}", ec.message());
-	}
+	range_store_.init(); // logs itself if NVS is unavailable
 
 	// Controllers are created on first use, so a re-pairing of legs in MIBconfig.hpp
 	// needs no change here. All are created before any actuator is initialized, because
@@ -143,13 +140,14 @@ bool MIB::init_actuators() {
 	// controller is reported here and retried on the next use of its actuators.
 	for (auto &controller : controllers_) {
 		std::lock_guard<std::mutex> lock(controller->mutex);
+		std::error_code ec;
 		if (!controller->mcp->start(ec)) {
 			logger_.error("MCP266 node {} did not answer: {}", controller->node_id, ec.message());
 		}
 	}
 	size_t ready = 0;
 	for (auto &actuator : actuators_) {
-		if (actuator->initialize(ec)) {
+		if (actuator->initialize()) {
 			++ready;
 		}
 	}
@@ -160,8 +158,7 @@ bool MIB::init_actuators() {
 bool MIB::stop_all_actuators() {
 	bool all = true;
 	for (auto &actuator : actuators_) {
-		std::error_code ec;
-		if (actuator && !actuator->stop(ec)) {
+		if (actuator && !actuator->stop()) {
 			all = false;
 		}
 	}
@@ -172,21 +169,19 @@ std::array<std::optional<int32_t>, config::leg_count> MIB::read_all_positions() 
 	std::array<std::optional<int32_t>, config::leg_count> positions{};
 	for (size_t i = 0; i < actuators_.size(); ++i) {
 		int32_t counts = 0;
-		std::error_code ec;
-		if (actuators_[i] && actuators_[i]->get_position(counts, ec)) {
+		if (actuators_[i] && actuators_[i]->get_position(counts)) {
 			positions[i] = counts;
 		}
 	}
 	return positions;
 }
 
-bool MIB::save_actuator_range(config::Leg leg, const Actuator::Range &range,
-															std::error_code &ec) {
+bool MIB::save_actuator_range(config::Leg leg, const Actuator::Range &range) {
 	auto &actuator = this->actuator(leg);
-	if (!range_store_.save(actuator.name(), range, ec)) {
+	if (!range_store_.save(actuator.name(), range)) {
 		return false;
 	}
-	return actuator.set_range(range, ec);
+	return actuator.set_range(range);
 }
 
 } // namespace mib::bsp

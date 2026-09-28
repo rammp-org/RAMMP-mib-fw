@@ -6,7 +6,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include "rtps_participant.hpp"
@@ -108,8 +107,7 @@ public:
   std::array<std::optional<int32_t>, config::leg_count> read_all_positions();
 
   /// @brief Persist a calibrated range for a leg and apply it to its actuator.
-  bool save_actuator_range(config::Leg leg, const Actuator::Range &range,
-                           std::error_code &ec);
+  bool save_actuator_range(config::Leg leg, const Actuator::Range &range);
 
   /// @}
 

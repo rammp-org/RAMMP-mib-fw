@@ -1,6 +1,7 @@
 #include "actuator_range_store.hpp"
 
 #include <string>
+#include <system_error>
 
 namespace mib {
 
@@ -10,10 +11,16 @@ std::string key(std::string_view name, const char *suffix) {
 }
 } // namespace
 
-bool ActuatorRangeStore::init(std::error_code &ec) {
-  ec.clear();
+ActuatorRangeStore::ActuatorRangeStore()
+    : BaseComponent("ActuatorRangeStore", espp::Logger::Verbosity::INFO) {}
+
+bool ActuatorRangeStore::init() {
+  std::error_code ec;
   nvs_.init(ec);
   ready_ = !ec;
+  if (!ready_) {
+    logger_.warn("NVS unavailable, calibrated ranges will not persist: {}", ec.message());
+  }
   return ready_;
 }
 
@@ -26,7 +33,7 @@ bool ActuatorRangeStore::load(std::string_view name, Actuator::Range &range) {
   int32_t max = 0;
   nvs_.get_var(kNamespace, key(name, "_min"), min, ec);
   if (ec) {
-    return false;
+    return false; // nothing saved for this name, the normal case on a fresh board
   }
   nvs_.get_var(kNamespace, key(name, "_max"), max, ec);
   if (ec) {
@@ -36,29 +43,35 @@ bool ActuatorRangeStore::load(std::string_view name, Actuator::Range &range) {
   return true;
 }
 
-bool ActuatorRangeStore::save(std::string_view name, const Actuator::Range &range,
-                              std::error_code &ec) {
-  ec.clear();
+bool ActuatorRangeStore::save(std::string_view name, const Actuator::Range &range) {
   if (!ready_) {
-    ec = std::make_error_code(std::errc::not_connected);
+    logger_.error("{}: cannot save range, NVS is not initialised", name);
     return false;
   }
+  std::error_code ec;
   nvs_.set_var(kNamespace, key(name, "_min"), range.min, ec);
+  if (!ec) {
+    nvs_.set_var(kNamespace, key(name, "_max"), range.max, ec);
+  }
   if (ec) {
+    logger_.error("{}: saving range failed: {}", name, ec.message());
     return false;
   }
-  nvs_.set_var(kNamespace, key(name, "_max"), range.max, ec);
-  return !ec;
+  logger_.info("{}: range [{}, {}] saved", name, range.min, range.max);
+  return true;
 }
 
-bool ActuatorRangeStore::erase(std::string_view name, std::error_code &ec) {
-  ec.clear();
+bool ActuatorRangeStore::erase(std::string_view name) {
   if (!ready_) {
-    ec = std::make_error_code(std::errc::not_connected);
+    logger_.error("{}: cannot erase range, NVS is not initialised", name);
     return false;
   }
+  std::error_code ec;
   const bool a = nvs_.erase(kNamespace, key(name, "_min"), ec);
   const bool b = nvs_.erase(kNamespace, key(name, "_max"), ec);
+  if (!(a && b)) {
+    logger_.warn("{}: erasing range: {}", name, ec.message());
+  }
   return a && b;
 }
 
