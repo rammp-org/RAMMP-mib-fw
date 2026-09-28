@@ -107,7 +107,7 @@ bool MIB::init_actuators() {
 		return false;
 	}
 
-	range_store_.init(); // logs itself if NVS is unavailable
+	store_.init(); // logs itself if NVS is unavailable
 
 	// Controllers are created on first use, so a re-pairing of legs in MIBconfig.hpp
 	// needs no change here. All are created before any actuator is initialized, because
@@ -126,14 +126,20 @@ bool MIB::init_actuators() {
 				.jog_step = row.jog_step,
 				.tolerance = row.tolerance,
 				.hardware_limits = row.hardware_limits,
+				.homing = {.required = row.incremental_encoder,
+									 .direction = row.home_direction,
+									 .home_count = row.home_count},
+				.model = nullptr, // joint models arrive with the base measurements
+				.store = &store_,
 		};
-		if (Actuator::Range saved{}; range_store_.load(row.name, saved)) {
+		if (Actuator::Range saved{}; store_.load_range(row.name, saved)) {
 			logger_.info("{}: using calibrated range [{}, {}] from NVS", row.name, saved.min,
 									 saved.max);
 			config.range = saved;
 		}
 		auto &slot = actuators_[static_cast<size_t>(row.leg)];
-		slot = std::make_unique<Actuator>(*controller.mcp, controller.mutex, config);
+		slot = std::make_unique<Actuator>(*controller.mcp, *controller.client, controller.mutex,
+																			config);
 	}
 
 	// Each controller is NMT-started once; then each axis is prepared. A silent
@@ -147,12 +153,33 @@ bool MIB::init_actuators() {
 	}
 	size_t ready = 0;
 	for (auto &actuator : actuators_) {
-		if (actuator->initialize()) {
+		actuator->initialize();
+		if (actuator->ready()) {
 			++ready;
 		}
 	}
 	logger_.info("{} of {} leg actuators ready", ready, actuators_.size());
 	return true;
+}
+
+bool MIB::home_actuator(config::Leg leg) { return actuator(leg).home(); }
+
+bool MIB::home_actuators() {
+	bool all = true;
+	for (auto &actuator : actuators_) {
+		if (actuator && !actuator->ready() && !actuator->home()) {
+			all = false;
+		}
+	}
+	return all;
+}
+
+void MIB::save_actuator_positions() {
+	for (auto &actuator : actuators_) {
+		if (actuator) {
+			actuator->save_position();
+		}
+	}
 }
 
 bool MIB::stop_all_actuators() {
@@ -169,19 +196,15 @@ std::array<std::optional<int32_t>, config::leg_count> MIB::read_all_positions() 
 	std::array<std::optional<int32_t>, config::leg_count> positions{};
 	for (size_t i = 0; i < actuators_.size(); ++i) {
 		int32_t counts = 0;
-		if (actuators_[i] && actuators_[i]->get_position(counts)) {
+		if (actuators_[i] && actuators_[i]->read_position(counts)) {
 			positions[i] = counts;
 		}
 	}
 	return positions;
 }
 
-bool MIB::save_actuator_range(config::Leg leg, const Actuator::Range &range) {
-	auto &actuator = this->actuator(leg);
-	if (!range_store_.save(actuator.name(), range)) {
-		return false;
-	}
-	return actuator.set_range(range);
+bool MIB::set_actuator_range(config::Leg leg, const Actuator::Range &range) {
+	return actuator(leg).set_range(range); // persists through the store it was given
 }
 
 } // namespace mib::bsp
