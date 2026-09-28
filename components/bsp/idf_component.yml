@@ -1,0 +1,3 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espp/twai: '>=1.3.5'

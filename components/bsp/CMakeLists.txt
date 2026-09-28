@@ -13,5 +13,9 @@ idf_component_register(
     "MIBConfig"
     "bno055"
     "timer"
+    "Actuator"
+    "twai"
+    "canopen"
+    "mcp266"
   REQUIRED_IDF_TARGETS "esp32p4"
 )
