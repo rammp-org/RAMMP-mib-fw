@@ -14,6 +14,7 @@ idf_component_register(
     "bno055"
     "timer"
     "Actuator"
+    "JointModel"
     "twai"
     "canopen"
     "mcp266"
