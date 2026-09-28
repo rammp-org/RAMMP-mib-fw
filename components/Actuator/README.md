@@ -13,19 +13,21 @@ above it and the component survives a redesign of the base.
 
 | Method | Purpose |
 |---|---|
-| `initialize(ec)` | Once per boot: clear faults, install the range as the controller's clamp and software limits |
-| `get_position(counts, ec)` | Read the joint position; also cached for `last_position()` |
-| `move_absolute(target, ec)` | Profile move to a count, clamped to the range; an overload takes a one-off `Profile` |
-| `move_relative(delta, ec)` | Read the position, add the delta, move |
-| `increment(ec)`, `decrement(ec)` | Move one jog step; for calibration and manual positioning |
-| `stop(ec)` | CiA 402 quick stop |
-| `is_target_reached(reached, ec)` | The controller's arrival flag |
-| `get_drive_state(state, ec)` | Decoded CiA 402 state, for fault reporting |
-| `set_calibration_mode(on, ec)` | Lift or restore the clamp so the joint can reach its mechanical ends |
-| `set_range(range, ec)` | Install a calibrated range at runtime |
+| `initialize()` | Once per boot: clear faults, install the range as the controller's clamp and software limits |
+| `get_position(counts)` | Read the joint position; also cached for `last_position()` |
+| `move_absolute(target)` | Profile move to a count, clamped to the range; an overload takes a one-off `Profile` |
+| `move_relative(delta)` | Read the position, add the delta, move |
+| `increment()`, `decrement()` | Move one jog step; for calibration and manual positioning |
+| `stop()` | CiA 402 quick stop |
+| `is_target_reached(reached)` | The controller's arrival flag |
+| `get_drive_state(state)` | Decoded CiA 402 state, for fault reporting |
+| `set_calibration_mode(on)` | Lift or restore the clamp so the joint can reach its mechanical ends |
+| `set_range(range)` | Install a calibrated range at runtime |
 
-Every method that talks to the controller blocks for one or more SDO round
-trips, a few milliseconds each, and must be called from a task that may wait.
+Every method returns true on success and logs the reason on failure, as the
+rest of the firmware does; espp's error codes stay inside the component. Every
+method that talks to the controller blocks for one or more SDO round trips, a
+few milliseconds each, and must be called from a task that may wait.
 
 Two actuators share one controller (its M1 and M2) through a mutex passed to
 both. A controller that stops answering is marked offline and skipped until a
