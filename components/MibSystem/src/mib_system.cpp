@@ -10,13 +10,13 @@
 using namespace std::chrono_literals;
 
 MibSystem::MibSystem()
-    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-  mib_(mib::bsp::MIB::instance()), drive_controller_() {}
+    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
+    , mib_(mib::bsp::MIB::instance())
+    , drive_controller_() {}
 
 void MibSystem::start() {
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [this](std::mutex &mutex,
-                         std::condition_variable &condition_variable) -> bool {
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         run_state_step();
 
         std::unique_lock<std::mutex> lock(mutex);
@@ -37,8 +37,7 @@ void MibSystem::start() {
   }
 
   publication_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [this](std::mutex &mutex,
-                         std::condition_variable &condition_variable) -> bool {
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
         log_drive_status();
@@ -52,19 +51,19 @@ void MibSystem::start() {
   publication_task_->start();
 
   motor_command_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [this](std::mutex &mutex,
-                         std::condition_variable &condition_variable) -> bool {
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         publish_motor_commands();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::motor_command_task_interval);
         return false;
       },
-      .task_config = {
-          .name = "MIB motor commands",
-          .stack_size_bytes = 4 * 1024,
-          .priority = 2,
-      },
+      .task_config =
+          {
+              .name = "MIB motor commands",
+              .stack_size_bytes = 4 * 1024,
+              .priority = 2,
+          },
   });
   motor_command_task_->start();
 
@@ -76,15 +75,13 @@ void MibSystem::start() {
 bool MibSystem::initialize_pubsub() {
   using Reliability = espp::RtpsParticipant::Reliability;
 
-    joystick_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
+  joystick_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
       mib_.rtps_participant(),
       espp::Subscriber<rammp::XYTwist>::Config{
-        .topic = rammp::kJoystickXYTwist.name,
-        .type_name = rammp::kJoystickXYTwist.type,
+          .topic = rammp::kJoystickXYTwist.name,
+          .type_name = rammp::kJoystickXYTwist.type,
           .reliability = Reliability::BEST_EFFORT,
-          .on_message = [this](const rammp::XYTwist &sample) {
-            handle_joystick_message(sample);
-          }});
+          .on_message = [this](const rammp::XYTwist &sample) { handle_joystick_message(sample); }});
 
   if (!joystick_subscriber_->is_valid()) {
     logger_.error("Failed to create MIB RTPS joystick subscriber");
@@ -92,14 +89,13 @@ bool MibSystem::initialize_pubsub() {
   }
 
   seat_command_subscriber_ = std::make_unique<espp::Subscriber<rammp::SeatCommand>>(
-      mib_.rtps_participant(),
-      espp::Subscriber<rammp::SeatCommand>::Config{
-          .topic = rammp::kJoystickSeatCommand.name,
-          .type_name = rammp::kJoystickSeatCommand.type,
-          .reliability = Reliability::BEST_EFFORT,
-          .on_message = [this](const rammp::SeatCommand &command) {
-            handle_seat_control_command(command);
-          }});
+      mib_.rtps_participant(), espp::Subscriber<rammp::SeatCommand>::Config{
+                                   .topic = rammp::kJoystickSeatCommand.name,
+                                   .type_name = rammp::kJoystickSeatCommand.type,
+                                   .reliability = Reliability::BEST_EFFORT,
+                                   .on_message = [this](const rammp::SeatCommand &command) {
+                                     handle_seat_control_command(command);
+                                   }});
 
   if (!seat_command_subscriber_->is_valid()) {
     logger_.error("Failed to create MIB RTPS seat command subscriber");
@@ -107,14 +103,13 @@ bool MibSystem::initialize_pubsub() {
   }
 
   drive_command_subscriber_ = std::make_unique<espp::Subscriber<rammp::DriveCommand>>(
-      mib_.rtps_participant(),
-      espp::Subscriber<rammp::DriveCommand>::Config{
-          .topic = rammp::kJoystickDriveCommand.name,
-          .type_name = rammp::kJoystickDriveCommand.type,
-          .reliability = Reliability::BEST_EFFORT,
-          .on_message = [this](const rammp::DriveCommand &command) {
-            handle_drive_command(command);
-          }});
+      mib_.rtps_participant(), espp::Subscriber<rammp::DriveCommand>::Config{
+                                   .topic = rammp::kJoystickDriveCommand.name,
+                                   .type_name = rammp::kJoystickDriveCommand.type,
+                                   .reliability = Reliability::BEST_EFFORT,
+                                   .on_message = [this](const rammp::DriveCommand &command) {
+                                     handle_drive_command(command);
+                                   }});
 
   if (!drive_command_subscriber_->is_valid()) {
     logger_.error("Failed to create MIB RTPS drive command subscriber");
@@ -123,10 +118,9 @@ bool MibSystem::initialize_pubsub() {
 
   status_publisher_ = std::make_unique<espp::Publisher<MIB::MibStatus>>(
       mib_.rtps_participant(),
-      espp::Publisher<MIB::MibStatus>::Config{
-          .topic = MIB::kMibStatus.name,
-          .type_name = MIB::kMibStatus.type,
-          .reliability = Reliability::BEST_EFFORT});
+      espp::Publisher<MIB::MibStatus>::Config{.topic = MIB::kMibStatus.name,
+                                              .type_name = MIB::kMibStatus.type,
+                                              .reliability = Reliability::BEST_EFFORT});
 
   if (!status_publisher_->is_valid()) {
     logger_.error("Failed to create MIB status publisher");
@@ -134,11 +128,10 @@ bool MibSystem::initialize_pubsub() {
   }
 
   left_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
-      mib_.rtps_participant(),
-      espp::Publisher<rammp::MotorCommand>::Config{
-          .topic = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.name,
-          .type_name = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.type,
-          .reliability = Reliability::BEST_EFFORT});
+      mib_.rtps_participant(), espp::Publisher<rammp::MotorCommand>::Config{
+                                   .topic = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.name,
+                                   .type_name = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.type,
+                                   .reliability = Reliability::BEST_EFFORT});
 
   right_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
       mib_.rtps_participant(),
@@ -243,16 +236,14 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   }
 }
 
-void MibSystem::handle_motor_status() {
-  logger_.info("Motor status received - placeholder");
-}
+void MibSystem::handle_motor_status() { logger_.info("Motor status received - placeholder"); }
 
 void MibSystem::publish_system_state() {
   MIB::MibStatus status{};
   status.activeProfile = drive_profile_.load();
   switch (state_.load()) {
   case SystemState::INIT:
-  case SystemState::CALIBRATE:  // TODO: Handle calibration state separately if needed.
+  case SystemState::CALIBRATE: // TODO: Handle calibration state separately if needed.
     status.systemState = MIB::MibSystemState::INITIALIZING;
     break;
   case SystemState::IDLE:
@@ -277,9 +268,7 @@ void MibSystem::publish_system_state() {
   }
 }
 
-void MibSystem::publish_seat_state() {
-  logger_.debug("Publishing seat state - placeholder");
-}
+void MibSystem::publish_seat_state() { logger_.debug("Publishing seat state - placeholder"); }
 
 void MibSystem::log_drive_status() {
   rammp::XYTwist joystick{};
@@ -317,9 +306,10 @@ void MibSystem::log_drive_status() {
     right_rad_per_second = wheel_speeds.right_rpm * kRpmToRadPerSecond;
   }
 
-  logger_.info("Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} rad/s",
-               state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
-               right_rad_per_second);
+  logger_.debug(
+      "Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} rad/s",
+      state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
+      right_rad_per_second);
 }
 
 void MibSystem::publish_motor_commands() {
@@ -393,5 +383,4 @@ void MibSystem::run_state_step() {
     logger_.error("System state: ERROR - running error placeholder");
     break;
   }
-
 }
