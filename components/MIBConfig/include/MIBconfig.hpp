@@ -37,8 +37,8 @@ struct DifferentialDriveConfig {
 inline constexpr DifferentialDriveConfig differential_drive{
     .wheel_diameter_m = 0.254f,
     .wheel_separation_m = 0.558f,
-    .invert_left = true,
-    .invert_right = false,
+    .invert_left = false,
+    .invert_right = true,
 };
 
 /// @brief Trajectory limits for one MIB drive response profile.
