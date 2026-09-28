@@ -40,10 +40,15 @@ the compiled default from `MIBconfig.hpp` at boot.
 
 ## Example
 
-[`example/`](example) is a standalone project with a serial console that
-brings up the bus, creates the six leg actuators from `MIBconfig.hpp`, and
-exercises them command by command. It doubles as the bench test for new
-hardware; its README lists the commands and the order to run them in.
+[`example/`](example) is a standalone project that brings up one actuator on
+one MCP266 channel, with its pins, node id, range and profile written in the
+example, and offers a serial console to exercise the API command by command:
+`status`, `pos`, `abs`, `rel`, `inc`, `dec`, `wait`, `stop`, `cal`, `range`,
+`forget` and `selftest`. It doubles as the bench test for one actuator:
+`status` proves the controller answers, `pos` the encoder, `inc` the
+direction, `selftest` the position loop, and `cal` plus `range` performs the
+once-per-installation calibration. Build it from that directory with
+`idf.py set-target esp32p4` then `idf.py build flash monitor`.
 
 ## Behaviour of the controller worth knowing
 
