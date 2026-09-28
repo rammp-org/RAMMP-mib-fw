@@ -3,16 +3,27 @@
 /// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
 /// console over the serial monitor to exercise its API:
 ///
-///   status                position, drive state, target reached, online, range
-///   pos                   read the position
+///   status                position (counts, fraction, units), state, range
+///   pos                   read the position from the encoder
 ///   abs <counts>          move to an absolute count
+///   to <units>            move to a joint value through the joint model
+///   frac <0..1>           move to a fraction of the calibrated travel
 ///   rel <delta>           move by a signed number of counts
 ///   inc / dec             move one jog step
 ///   wait                  block until the drive reports target reached
 ///   stop                  quick stop
-///   cal on|off            lift or restore the range clamp for calibration
+///
+///   Calibration (absolute encoder, once per installation):
+///   cal on|off            lift or restore the range clamp
 ///   range <min> <max>     install a calibrated range and save it to NVS
 ///   forget                erase the saved range; the compiled default applies
+///
+///   Homing (incremental encoder, every boot; only with kHomingRequired):
+///   home                  drive into the limit switch and install the home count
+///   restore               install the position saved on a previous run
+///   save                  save the current position now
+///   setenc <counts>       write the controller's encoder count directly
+///
 ///   selftest              inc, wait, dec, wait; passes if it returns to start
 ///
 /// The settings below would come from a configuration file in the real
@@ -26,10 +37,11 @@
 #include <thread>
 
 #include "actuator.hpp"
-#include "actuator_range_store.hpp"
+#include "actuator_store.hpp"
 #include "canopen_client.hpp"
 #include "cli.hpp"
 #include "format.hpp"
+#include "joint_model.hpp"
 #include "logger.hpp"
 #include "mcp266.hpp"
 #include "twai.hpp"
@@ -46,15 +58,23 @@ constexpr uint32_t kBitrate = 1'000'000;
 // Which controller and channel the actuator is on.
 constexpr uint8_t kNodeId = 10;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
+// Set true for an incremental (AB) encoder, which must be homed every boot.
+constexpr bool kHomingRequired = false;
+// What the calibrated travel means for the joint: 0 m at the low end, 120 mm at
+// the high end. A real joint gets its own JointModel once the geometry is known.
+constexpr mib::LinearJointModel kJointModel{0.0f, 0.120f, "m"};
 // How the actuator behaves. Positions are the joint encoder's counts.
 constexpr mib::Actuator::Config kActuatorConfig{
-    .name = "example",              // also the NVS key prefix for the saved range
+    .name = "example",              // also the NVS key prefix
     .axis = kAxis,
     .range = {0, 4095},             // calibrated travel; a range saved to NVS overrides it
     .profile = {500, 500, 500},     // counts/s, counts/s^2, counts/s^2
     .jog_step = 50,                 // counts per inc / dec
-    .tolerance = 10,                // counts within which selftest counts as returned
-    .hardware_limits = false,       // no limit switches wired to this channel
+    .tolerance = 10,                // counts within which a position counts as at target
+    .hardware_limits = kHomingRequired, // limit switches wired to this channel
+    .homing = {.required = kHomingRequired, .direction = -1, .home_count = 0},
+    .model = &kJointModel,
+    .store = nullptr,               // filled in at bring-up
 };
 // -----------------------------------------------------------------------------
 
@@ -67,8 +87,8 @@ std::unique_ptr<espp::Twai> twai;
 std::unique_ptr<espp::CanopenClient> client;
 std::unique_ptr<espp::Mcp266> mcp;
 std::mutex mcp_mutex;
+mib::ActuatorStore store;
 std::unique_ptr<mib::Actuator> actuator;
-mib::ActuatorRangeStore range_store;
 
 bool bring_up() {
   //! [actuator example bring-up]
@@ -118,16 +138,19 @@ bool bring_up() {
     // Carry on: the actuator marks itself offline and retries on its next use.
   }
 
-  // A range saved by an earlier `range` command wins over the compiled default.
+  // The store keeps the calibrated range (and, for an incremental encoder, the
+  // last position) across boots. A saved range wins over the compiled default.
+  store.init();
   auto config = kActuatorConfig;
-  range_store.init();
-  if (mib::Actuator::Range saved{}; range_store.load(config.name, saved)) {
+  config.store = &store;
+  if (mib::Actuator::Range saved{}; store.load_range(config.name, saved)) {
     logger.info("using calibrated range [{}, {}] from NVS", saved.min, saved.max);
     config.range = saved;
   }
 
-  actuator = std::make_unique<mib::Actuator>(*mcp, mcp_mutex, config);
-  logger.info("initialize: {}", actuator->initialize() ? "ready" : "NOT ready (see log)");
+  actuator = std::make_unique<mib::Actuator>(*mcp, *client, mcp_mutex, config);
+  actuator->initialize();
+  logger.info("actuator {}", actuator->ready() ? "ready" : "NOT ready (see log)");
   //! [actuator example bring-up]
   return true;
 }
@@ -149,12 +172,14 @@ const char *state_name(mib::Actuator::DriveState state) {
 
 void print_position(std::ostream &out) {
   int32_t counts = 0;
-  if (actuator->get_position(counts)) {
-    const auto r = actuator->range();
-    out << fmt::format("{} counts (range [{}, {}])\n", counts, r.min, r.max);
-  } else {
+  if (!actuator->read_position(counts)) {
     out << "read failed (see log)\n";
+    return;
   }
+  const auto r = actuator->range();
+  out << fmt::format("{} counts = {:.3f} of travel = {:.4f} {}  (range [{}, {}])\n", counts,
+                     *actuator->current_fraction(), *actuator->current_units(),
+                     kJointModel.unit(), r.min, r.max);
 }
 
 /// Poll until the drive reports target reached. Prints progress once a second.
@@ -168,7 +193,7 @@ bool wait_for_target(std::ostream &out, std::chrono::seconds timeout = 30s) {
       return false;
     }
     int32_t counts = 0;
-    actuator->get_position(counts);
+    actuator->read_position(counts);
     if (reached) {
       out << fmt::format("target reached at {} counts\n", counts);
       return true;
@@ -198,12 +223,14 @@ std::unique_ptr<cli::Menu> build_menu() {
         const bool have_state = actuator->get_drive_state(state);
         const bool have_reached = have_state && actuator->is_target_reached(reached);
         const auto r = actuator->range();
-        out << fmt::format("{}: {}, drive {}, target {}, range [{}, {}], jog {}{}\n",
+        out << fmt::format("{}: {}, {}, drive {}, target {}, range [{}, {}], jog {}{}{}\n",
                            actuator->name(), actuator->online() ? "online" : "OFFLINE",
+                           actuator->ready() ? "ready" : "NOT ready",
                            have_state ? state_name(state) : "unreadable",
                            have_reached ? (reached ? "reached" : "not reached") : "?", r.min,
                            r.max, actuator->config().jog_step,
-                           actuator->calibration_mode() ? ", CALIBRATING (clamp lifted)" : "");
+                           actuator->calibration_mode() ? ", CALIBRATING (clamp lifted)" : "",
+                           kHomingRequired ? (actuator->homed() ? ", homed" : ", NOT homed") : "");
         print_position(out);
       },
       "Position, drive state, target reached, online, range");
@@ -212,6 +239,13 @@ std::unique_ptr<cli::Menu> build_menu() {
   menu->Insert(
       "abs", [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts), "move"); },
       "Move to an absolute count: abs <counts>");
+  menu->Insert(
+      "to", [](std::ostream &out, float units) { report(out, actuator->move_to(units), "move"); },
+      "Move to a joint value through the joint model: to <units>");
+  menu->Insert(
+      "frac",
+      [](std::ostream &out, float fraction) { report(out, actuator->move_fraction(fraction), "move"); },
+      "Move to a fraction of the calibrated travel: frac <0..1>");
   menu->Insert(
       "rel", [](std::ostream &out, int delta) { report(out, actuator->move_relative(delta), "move"); },
       "Move by a signed count: rel <delta>");
@@ -224,6 +258,7 @@ std::unique_ptr<cli::Menu> build_menu() {
   menu->Insert("stop", [](std::ostream &out) { report(out, actuator->stop(), "stop"); },
                "Quick stop");
 
+  // Calibration: absolute encoders, once per installation.
   menu->Insert(
       "cal",
       [](std::ostream &out, std::string mode) {
@@ -236,26 +271,34 @@ std::unique_ptr<cli::Menu> build_menu() {
   menu->Insert(
       "range",
       [](std::ostream &out, int min, int max) {
-        if (!range_store.save(actuator->name(), {min, max})) {
-          out << "NVS save failed (see log)\n";
-        }
-        report(out, actuator->set_range({min, max}), "range install");
+        report(out, actuator->set_range({min, max}), "range install and save");
       },
       "Install a calibrated range and save it to NVS: range <min> <max>");
   menu->Insert(
       "forget",
       [](std::ostream &out) {
-        out << (range_store.erase(actuator->name())
+        out << (store.erase_range(actuator->name())
                     ? "saved range erased; the compiled default applies after reboot\n"
                     : "erase failed (see log)\n");
       },
       "Erase the saved range");
 
+  // Homing: incremental encoders, every boot.
+  menu->Insert("home", [](std::ostream &out) { report(out, actuator->home(), "homing"); },
+               "Drive into the limit switch and install the home count");
+  menu->Insert("restore", [](std::ostream &out) { report(out, actuator->restore_position(), "restore"); },
+               "Install the position saved on a previous run");
+  menu->Insert("save", [](std::ostream &out) { report(out, actuator->save_position(true), "save"); },
+               "Save the current position now");
+  menu->Insert(
+      "setenc", [](std::ostream &out, int counts) { report(out, actuator->set_encoder(counts), "set encoder"); },
+      "Write the controller's encoder count: setenc <counts>");
+
   menu->Insert(
       "selftest",
       [](std::ostream &out) {
         int32_t start = 0;
-        if (!actuator->get_position(start)) {
+        if (!actuator->read_position(start)) {
           out << "FAIL: cannot read position (see log)\n";
           return;
         }
@@ -265,13 +308,13 @@ std::unique_ptr<cli::Menu> build_menu() {
           return;
         }
         int32_t up = 0;
-        actuator->get_position(up);
+        actuator->read_position(up);
         if (!actuator->decrement() || !wait_for_target(out)) {
           out << "FAIL: decrement (see log)\n";
           return;
         }
         int32_t back = 0;
-        actuator->get_position(back);
+        actuator->read_position(back);
         const int32_t tolerance = actuator->config().tolerance;
         const bool moved_up = (up - start) > tolerance;
         const bool returned = std::abs(back - start) <= tolerance;

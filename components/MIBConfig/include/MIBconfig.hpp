@@ -111,18 +111,25 @@ struct ActuatorConfig {
   std::int32_t jog_step;     ///< Counts per increment() / decrement().
   std::int32_t tolerance;    ///< Counts within which the joint counts as at target.
   bool hardware_limits;      ///< Limit switches wired to the controller.
+  bool incremental_encoder;  ///< AB encoder: arbitrary count at power-up, must be homed.
+  std::int8_t home_direction; ///< +1 or -1: which way the home switch lies (incremental only).
+  std::int32_t home_count;   ///< Count installed at the home switch (incremental only).
 };
 
 // TODO(bench): node ids, channels, ranges and profiles are placeholders. Node ids follow
 // espp's default of 10 for the first controller. Confirm each with the debugger's
 // MCP266 / CAN page, calibrate the ranges, then replace these values.
+// The four casters and main legs carry absolute encoders: calibrated once per
+// installation. The carriages carry incremental (AB) optical encoders on the rail and
+// limit switches: homed against the switch at min every boot, or restored from the
+// position saved while running.
 inline constexpr ActuatorConfig actuators[leg_count] = {
-    {Leg::FRONT_CASTER, "FC", 10, 0, 0, 4095, 500, 500, 500, 50, 10, false},
-    {Leg::REAR_CASTER, "RC", 10, 1, 0, 4095, 500, 500, 500, 50, 10, false},
-    {Leg::MAIN_LEFT, "ML", 11, 0, 0, 4095, 500, 500, 500, 50, 10, false},
-    {Leg::MAIN_RIGHT, "MR", 11, 1, 0, 4095, 500, 500, 500, 50, 10, false},
-    {Leg::LEFT_CARRIAGE, "LCarr", 12, 0, 0, 4095, 500, 500, 500, 50, 10, true},
-    {Leg::RIGHT_CARRIAGE, "RCarr", 12, 1, 0, 4095, 500, 500, 500, 50, 10, true},
+    {Leg::FRONT_CASTER, "FC", 10, 0, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
+    {Leg::REAR_CASTER, "RC", 10, 1, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
+    {Leg::MAIN_LEFT, "ML", 11, 0, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
+    {Leg::MAIN_RIGHT, "MR", 11, 1, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
+    {Leg::LEFT_CARRIAGE, "LCarr", 12, 0, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
+    {Leg::RIGHT_CARRIAGE, "RCarr", 12, 1, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
 };
 
 inline constexpr const ActuatorConfig &actuator_config(Leg leg) {

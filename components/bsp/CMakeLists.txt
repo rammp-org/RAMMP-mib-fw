@@ -12,6 +12,7 @@ idf_component_register(
     "logger"
     "MIBConfig"
     "Actuator"
+    "JointModel"
     "twai"
     "canopen"
     "mcp266"

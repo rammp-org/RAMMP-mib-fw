@@ -11,7 +11,7 @@
 #include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
 #include "actuator.hpp"
-#include "actuator_range_store.hpp"
+#include "actuator_store.hpp"
 #include "base_component.hpp"
 #include "canopen_client.hpp"
 #include "esp32-p4-eth.hpp"
@@ -87,10 +87,24 @@ public:
   ///
   /// Starts TWAI, creates a CANopen client and MCP266 object per controller in
   /// MIBconfig.hpp, loads any calibrated ranges from NVS over the compiled
-  /// defaults, and initializes every actuator. An actuator whose controller
-  /// does not answer is left offline and logged; it retries on its next use.
-  /// @return True if the bus is up. Per-actuator readiness is Actuator::online().
+  /// defaults, and initializes every actuator. An incremental-encoder leg
+  /// restores its last saved position if one exists; otherwise it needs
+  /// home_actuator() before it will move. A controller that does not answer
+  /// is left offline and logged; it retries on its next use.
+  /// @return True if the bus is up. Per-actuator readiness is Actuator::ready().
   bool init_actuators();
+
+  /// @brief Home one incremental-encoder leg against its limit switch. Blocks
+  /// for the approach. A no-op for an absolute-encoder leg.
+  bool home_actuator(config::Leg leg);
+
+  /// @brief Home every leg that needs it and is not yet homed.
+  /// @return True if every leg is ready afterwards.
+  bool home_actuators();
+
+  /// @brief Persist the incremental-encoder legs' positions (throttled inside
+  /// the actuator). Call from the periodic actuator poll.
+  void save_actuator_positions();
 
   /// @brief Whether init_actuators() brought the bus up.
   bool actuators_ready() const { return twai_ != nullptr; }
@@ -106,8 +120,9 @@ public:
   /// @return One entry per leg in config::Leg order; empty where the read failed.
   std::array<std::optional<int32_t>, config::leg_count> read_all_positions();
 
-  /// @brief Persist a calibrated range for a leg and apply it to its actuator.
-  bool save_actuator_range(config::Leg leg, const Actuator::Range &range);
+  /// @brief Install and persist a calibrated range for a leg (absolute encoders,
+  /// once per installation).
+  bool set_actuator_range(config::Leg leg, const Actuator::Range &range);
 
   /// @}
 
@@ -156,7 +171,7 @@ private:
   std::unique_ptr<espp::Twai> twai_;
   std::vector<std::unique_ptr<Controller>> controllers_;
   std::array<std::unique_ptr<Actuator>, config::leg_count> actuators_;
-  ActuatorRangeStore range_store_;
+  ActuatorStore store_;
 };
 
 } // namespace mib::bsp

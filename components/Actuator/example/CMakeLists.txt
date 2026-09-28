@@ -11,7 +11,7 @@ set(EXTRA_COMPONENT_DIRS
 
 set(
   COMPONENTS
-  "main esptool_py Actuator"
+  "main esptool_py Actuator JointModel"
   CACHE STRING
   "List of components to include"
   )
