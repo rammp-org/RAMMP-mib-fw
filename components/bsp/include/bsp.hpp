@@ -1,13 +1,23 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <system_error>
+#include <vector>
 
 #include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
+#include "actuator.hpp"
+#include "actuator_range_store.hpp"
 #include "base_component.hpp"
+#include "canopen_client.hpp"
 #include "esp32-p4-eth.hpp"
+#include "mcp266.hpp"
+#include "twai.hpp"
 
 namespace mib::bsp {
 
@@ -16,6 +26,11 @@ namespace mib::bsp {
 /// Provides the MIB firmware with a singleton interface to the ESP32-P4-ETH
 /// board and initializes Ethernet using the settings from MIBconfig.hpp.
 /// Ethernet runs as a DHCP server by default at 192.168.4.1.
+///
+/// It also owns the CAN bus to the leg actuators: one TWAI node, one CANopen
+/// client and MCP266 object per controller, and one Actuator per leg. The
+/// actuator calls are synchronous (each is a few CAN round trips) and must be
+/// made from a task that may block, not from an RTPS callback.
 class MIB : public espp::BaseComponent {
 public:
   /// @brief Access the singleton MIB board-support instance.
@@ -66,7 +81,50 @@ public:
   /// @return Reference to the RTPS participant owned by the MIB BSP.
   espp::RtpsParticipant &rtps_participant() { return *rtps_participant_; }
 
+  /// @name Leg actuators
+  /// @{
+
+  /// @brief Bring up the CAN bus and the six leg actuators.
+  ///
+  /// Starts TWAI, creates a CANopen client and MCP266 object per controller in
+  /// MIBconfig.hpp, loads any calibrated ranges from NVS over the compiled
+  /// defaults, and initializes every actuator. An actuator whose controller
+  /// does not answer is left offline and logged; it retries on its next use.
+  /// @return True if the bus is up. Per-actuator readiness is Actuator::online().
+  bool init_actuators();
+
+  /// @brief Whether init_actuators() brought the bus up.
+  bool actuators_ready() const { return twai_ != nullptr; }
+
+  /// @brief The actuator of one leg. Only valid after init_actuators().
+  Actuator &actuator(config::Leg leg) { return *actuators_[static_cast<size_t>(leg)]; }
+
+  /// @brief Quick-stop every actuator. Continues past failures.
+  /// @return True if every actuator accepted the stop.
+  bool stop_all_actuators();
+
+  /// @brief Read every leg's joint position, in encoder counts.
+  /// @return One entry per leg in config::Leg order; empty where the read failed.
+  std::array<std::optional<int32_t>, config::leg_count> read_all_positions();
+
+  /// @brief Persist a calibrated range for a leg and apply it to its actuator.
+  bool save_actuator_range(config::Leg leg, const Actuator::Range &range,
+                           std::error_code &ec);
+
+  /// @}
+
 private:
+  /// One MCP266 on the bus and everything needed to talk to it.
+  struct Controller {
+    uint8_t node_id;
+    std::unique_ptr<espp::CanopenClient> client;
+    std::unique_ptr<espp::Mcp266> mcp;
+    std::mutex mutex; ///< The controller has one SDO channel; both axes share it.
+  };
+
+  Controller &controller_for(uint8_t node_id);
+  bool init_twai();
+
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};
     config.mode = mib::config::ethernet_dhcp_server
@@ -96,6 +154,11 @@ private:
   espp::Esp32P4Eth *board_{nullptr};
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_{nullptr};
   std::string ethernet_ip_address_;
+
+  std::unique_ptr<espp::Twai> twai_;
+  std::vector<std::unique_ptr<Controller>> controllers_;
+  std::array<std::unique_ptr<Actuator>, config::leg_count> actuators_;
+  ActuatorRangeStore range_store_;
 };
 
 } // namespace mib::bsp
