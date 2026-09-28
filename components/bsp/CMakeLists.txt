@@ -11,5 +11,9 @@ idf_component_register(
     "cdr"
     "logger"
     "MIBConfig"
+    "Actuator"
+    "twai"
+    "canopen"
+    "mcp266"
   REQUIRED_IDF_TARGETS "esp32p4"
 )
