@@ -18,7 +18,7 @@ Actuator::Actuator(espp::Mcp266 &mcp, std::mutex &mcp_mutex, const Config &confi
 
 // ------------------------------------------------------------------ online marking
 
-bool Actuator::check_online(std::error_code &ec) {
+bool Actuator::check_online() {
   std::lock_guard<std::mutex> lock(state_mutex_);
   if (online_) {
     return true;
@@ -27,7 +27,7 @@ bool Actuator::check_online(std::error_code &ec) {
   if (waited >= config_.offline_retry) {
     return true; // let this call probe the controller again
   }
-  ec = std::make_error_code(std::errc::host_unreachable);
+  logger_.debug("{}: skipped, controller offline", config_.name);
   return false;
 }
 
@@ -70,6 +70,21 @@ void Actuator::note_result(bool ok, const std::error_code &ec, const char *what)
   offline_since_ = std::chrono::steady_clock::now();
 }
 
+bool Actuator::initialized() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return initialized_;
+}
+
+bool Actuator::online() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return online_;
+}
+
+bool Actuator::calibration_mode() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return calibration_mode_;
+}
+
 // ------------------------------------------------------------------ setup
 
 bool Actuator::apply_limits(const Range &range, std::error_code &ec) {
@@ -82,40 +97,40 @@ bool Actuator::apply_limits(const Range &range, std::error_code &ec) {
   return mcp_.set_software_position_limits(config_.axis, range.min, range.max, ec);
 }
 
-bool Actuator::initialize(std::error_code &ec) {
-  ec.clear();
-  if (!check_online(ec)) {
+bool Actuator::initialize() {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
     ok = mcp_.reset_faults(ec);
   }
+  Range range;
+  bool calibrating;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    range = range_;
+    calibrating = calibration_mode_;
+  }
   if (ok) {
-    Range range;
-    bool calibrating;
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      range = range_;
-      calibrating = calibration_mode_;
-    }
     ok = apply_limits(calibrating ? kUnlimited : range, ec);
   }
   note_result(ok, ec, "initialize");
   if (ok) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     initialized_ = true;
-    logger_.info("{}: ready, range [{}, {}] counts{}", config_.name, range_.min, range_.max,
+    logger_.info("{}: ready, range [{}, {}] counts{}", config_.name, range.min, range.max,
                  config_.hardware_limits ? ", limit switches on the controller" : "");
   }
   return ok;
 }
 
-bool Actuator::set_range(const Range &range, std::error_code &ec) {
-  ec.clear();
+bool Actuator::set_range(const Range &range) {
   if (range.min > range.max) {
-    ec = std::make_error_code(std::errc::invalid_argument);
+    logger_.error("{}: rejected range [{}, {}], min is above max", config_.name, range.min,
+                  range.max);
     return false;
   }
   bool write_now;
@@ -128,9 +143,10 @@ bool Actuator::set_range(const Range &range, std::error_code &ec) {
   if (!write_now) {
     return true;
   }
-  if (!check_online(ec)) {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   const bool ok = apply_limits(range, ec);
   note_result(ok, ec, "set_range");
   return ok;
@@ -141,8 +157,7 @@ Actuator::Range Actuator::range() const {
   return range_;
 }
 
-bool Actuator::set_calibration_mode(bool enabled, std::error_code &ec) {
-  ec.clear();
+bool Actuator::set_calibration_mode(bool enabled) {
   Range range;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -155,12 +170,16 @@ bool Actuator::set_calibration_mode(bool enabled, std::error_code &ec) {
       return true; // initialize() will install whichever limits apply then
     }
   }
-  if (!check_online(ec)) {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   const bool ok = apply_limits(enabled ? kUnlimited : range, ec);
   note_result(ok, ec, "set_calibration_mode");
-  logger_.warn("{}: calibration mode {}", config_.name, enabled ? "ON, range clamp lifted" : "off");
+  if (ok) {
+    logger_.warn("{}: calibration mode {}", config_.name,
+                 enabled ? "ON, range clamp lifted" : "off, range clamp restored");
+  }
   return ok;
 }
 
@@ -174,11 +193,11 @@ int32_t Actuator::clamp(int32_t target) const {
 
 // ------------------------------------------------------------------ reads
 
-bool Actuator::get_position(int32_t &counts, std::error_code &ec) {
-  ec.clear();
-  if (!check_online(ec)) {
+bool Actuator::get_position(int32_t &counts) {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
@@ -197,11 +216,11 @@ std::optional<int32_t> Actuator::last_position() const {
   return last_position_;
 }
 
-bool Actuator::is_target_reached(bool &reached, std::error_code &ec) {
-  ec.clear();
-  if (!check_online(ec)) {
+bool Actuator::is_target_reached(bool &reached) {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
@@ -211,11 +230,11 @@ bool Actuator::is_target_reached(bool &reached, std::error_code &ec) {
   return ok;
 }
 
-bool Actuator::get_drive_state(DriveState &state, std::error_code &ec) {
-  ec.clear();
-  if (!check_online(ec)) {
+bool Actuator::get_drive_state(DriveState &state) {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
@@ -227,25 +246,19 @@ bool Actuator::get_drive_state(DriveState &state, std::error_code &ec) {
 
 // ------------------------------------------------------------------ moves
 
-bool Actuator::do_move(int32_t target, const Profile &profile, std::error_code &ec) {
-  ec.clear();
-  bool ready;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    ready = initialized_;
-  }
-  if (!ready) {
+bool Actuator::do_move(int32_t target, const Profile &profile) {
+  if (!initialized()) {
     logger_.error("{}: move refused, initialize() has not succeeded", config_.name);
-    ec = std::make_error_code(std::errc::not_connected);
     return false;
   }
-  if (!check_online(ec)) {
+  if (!check_online()) {
     return false;
   }
   const int32_t clamped = clamp(target);
   if (clamped != target) {
     logger_.warn("{}: target {} clamped to {}", config_.name, target, clamped);
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
@@ -259,37 +272,33 @@ bool Actuator::do_move(int32_t target, const Profile &profile, std::error_code &
   return ok;
 }
 
-bool Actuator::move_absolute(int32_t target, std::error_code &ec) {
-  return do_move(target, config_.profile, ec);
+bool Actuator::move_absolute(int32_t target) { return do_move(target, config_.profile); }
+
+bool Actuator::move_absolute(int32_t target, const Profile &profile) {
+  return do_move(target, profile);
 }
 
-bool Actuator::move_absolute(int32_t target, const Profile &profile, std::error_code &ec) {
-  return do_move(target, profile, ec);
-}
+bool Actuator::move_relative(int32_t delta) { return move_relative(delta, config_.profile); }
 
-bool Actuator::move_relative(int32_t delta, std::error_code &ec) {
-  return move_relative(delta, config_.profile, ec);
-}
-
-bool Actuator::move_relative(int32_t delta, const Profile &profile, std::error_code &ec) {
+bool Actuator::move_relative(int32_t delta, const Profile &profile) {
   int32_t current = 0;
-  if (!get_position(current, ec)) {
+  if (!get_position(current)) {
     return false;
   }
   const int64_t target = static_cast<int64_t>(current) + delta;
-  return do_move(static_cast<int32_t>(std::clamp<int64_t>(target, INT32_MIN, INT32_MAX)), profile,
-                 ec);
+  return do_move(static_cast<int32_t>(std::clamp<int64_t>(target, INT32_MIN, INT32_MAX)),
+                 profile);
 }
 
-bool Actuator::increment(std::error_code &ec) { return move_relative(config_.jog_step, ec); }
+bool Actuator::increment() { return move_relative(config_.jog_step); }
 
-bool Actuator::decrement(std::error_code &ec) { return move_relative(-config_.jog_step, ec); }
+bool Actuator::decrement() { return move_relative(-config_.jog_step); }
 
-bool Actuator::stop(std::error_code &ec) {
-  ec.clear();
-  if (!check_online(ec)) {
+bool Actuator::stop() {
+  if (!check_online()) {
     return false;
   }
+  std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);

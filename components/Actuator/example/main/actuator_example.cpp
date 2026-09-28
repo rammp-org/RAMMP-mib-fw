@@ -157,11 +157,7 @@ void initialize_all(std::ostream &out) {
     }
   }
   for (auto &a : actuators) {
-    if (a->initialize(ec)) {
-      out << fmt::format("{}: ready\n", a->name());
-    } else {
-      out << fmt::format("{}: NOT ready ({})\n", a->name(), ec.message());
-    }
+    out << fmt::format("{}: {}\n", a->name(), a->initialize() ? "ready" : "NOT ready (see log)");
   }
 }
 
@@ -203,12 +199,11 @@ const char *state_name(mib::Actuator::DriveState state) {
 
 void print_position(std::ostream &out, mib::Actuator &a) {
   int32_t counts = 0;
-  std::error_code ec;
-  if (a.get_position(counts, ec)) {
+  if (a.get_position(counts)) {
     const auto r = a.range();
     out << fmt::format("{}: {} counts (range [{}, {}])\n", a.name(), counts, r.min, r.max);
   } else {
-    out << fmt::format("{}: read failed: {}\n", a.name(), ec.message());
+    out << fmt::format("{}: read failed (see log)\n", a.name());
   }
 }
 
@@ -218,13 +213,12 @@ bool wait_for_target(std::ostream &out, mib::Actuator &a, std::chrono::seconds t
   auto next_print = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() < deadline) {
     bool reached = false;
-    std::error_code ec;
-    if (!a.is_target_reached(reached, ec)) {
-      out << fmt::format("{}: status read failed: {}\n", a.name(), ec.message());
+    if (!a.is_target_reached(reached)) {
+      out << fmt::format("{}: status read failed (see log)\n", a.name());
       return false;
     }
     int32_t counts = 0;
-    a.get_position(counts, ec);
+    a.get_position(counts);
     if (reached) {
       out << fmt::format("{}: target reached at {} counts\n", a.name(), counts);
       return true;
@@ -239,13 +233,8 @@ bool wait_for_target(std::ostream &out, mib::Actuator &a, std::chrono::seconds t
   return false;
 }
 
-void report(std::ostream &out, mib::Actuator &a, bool ok, const std::error_code &ec,
-            const char *what) {
-  if (ok) {
-    out << fmt::format("{}: {} accepted\n", a.name(), what);
-  } else {
-    out << fmt::format("{}: {} failed: {}\n", a.name(), what, ec.message());
-  }
+void report(std::ostream &out, mib::Actuator &a, bool ok, const char *what) {
+  out << fmt::format("{}: {} {}\n", a.name(), what, ok ? "accepted" : "FAILED (see log)");
 }
 
 std::unique_ptr<cli::Menu> build_menu() {
@@ -295,8 +284,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "abs",
       [](std::ostream &out, std::string which, int counts) {
         if (auto *a = leg(out, which)) {
-          std::error_code ec;
-          report(out, *a, a->move_absolute(counts, ec), ec, "move");
+          report(out, *a, a->move_absolute(counts), "move");
         }
       },
       "Move to an absolute count: abs <leg> <counts>");
@@ -304,8 +292,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "rel",
       [](std::ostream &out, std::string which, int delta) {
         if (auto *a = leg(out, which)) {
-          std::error_code ec;
-          report(out, *a, a->move_relative(delta, ec), ec, "move");
+          report(out, *a, a->move_relative(delta), "move");
         }
       },
       "Move by a signed count: rel <leg> <delta>");
@@ -313,8 +300,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "inc",
       [](std::ostream &out, std::string which) {
         if (auto *a = leg(out, which)) {
-          std::error_code ec;
-          report(out, *a, a->increment(ec), ec, "increment");
+          report(out, *a, a->increment(), "increment");
         }
       },
       "Move one jog step up: inc <leg>");
@@ -322,8 +308,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "dec",
       [](std::ostream &out, std::string which) {
         if (auto *a = leg(out, which)) {
-          std::error_code ec;
-          report(out, *a, a->decrement(ec), ec, "decrement");
+          report(out, *a, a->decrement(), "decrement");
         }
       },
       "Move one jog step down: dec <leg>");
@@ -340,8 +325,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "stop",
       [](std::ostream &out) {
         for (auto &a : actuators) {
-          std::error_code ec;
-          report(out, *a, a->stop(ec), ec, "stop");
+          report(out, *a, a->stop(), "stop");
         }
       },
       "Quick-stop every leg");
@@ -349,8 +333,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "stop",
       [](std::ostream &out, std::string which) {
         if (auto *a = leg(out, which)) {
-          std::error_code ec;
-          report(out, *a, a->stop(ec), ec, "stop");
+          report(out, *a, a->stop(), "stop");
         }
       },
       "Quick-stop one leg: stop <leg>");
@@ -362,15 +345,14 @@ std::unique_ptr<cli::Menu> build_menu() {
         if (!a) {
           return;
         }
-        std::error_code ec;
         mib::Actuator::DriveState state{};
         bool reached = false;
-        const bool have_state = a->get_drive_state(state, ec);
-        const bool have_reached = have_state && a->is_target_reached(reached, ec);
+        const bool have_state = a->get_drive_state(state);
+        const bool have_reached = have_state && a->is_target_reached(reached);
         const auto r = a->range();
         out << fmt::format("{}: {}, drive {}, target {}, range [{}, {}]{}\n", a->name(),
                            a->online() ? "online" : "OFFLINE",
-                           have_state ? state_name(state) : ec.message().c_str(),
+                           have_state ? state_name(state) : "unreadable",
                            have_reached ? (reached ? "reached" : "not reached") : "?", r.min,
                            r.max, a->calibration_mode() ? ", CALIBRATING (clamp lifted)" : "");
       },
@@ -384,8 +366,7 @@ std::unique_ptr<cli::Menu> build_menu() {
           return;
         }
         const bool on = mode == "on" || mode == "1";
-        std::error_code ec;
-        report(out, *a, a->set_calibration_mode(on, ec), ec,
+        report(out, *a, a->set_calibration_mode(on),
                on ? "calibration mode ON (clamp lifted, mind the mechanical ends)"
                   : "calibration mode off");
       },
@@ -397,11 +378,10 @@ std::unique_ptr<cli::Menu> build_menu() {
         if (!a) {
           return;
         }
-        std::error_code ec;
-        if (!range_store.save(a->name(), {min, max}, ec)) {
-          out << fmt::format("{}: NVS save failed: {}\n", a->name(), ec.message());
+        if (!range_store.save(a->name(), {min, max})) {
+          out << fmt::format("{}: NVS save failed (see log)\n", a->name());
         }
-        report(out, *a, a->set_range({min, max}, ec), ec, "range install");
+        report(out, *a, a->set_range({min, max}), "range install");
       },
       "Install a calibrated range and save it to NVS: range <leg> <min> <max>");
   menu->Insert(
@@ -411,12 +391,11 @@ std::unique_ptr<cli::Menu> build_menu() {
         if (!a) {
           return;
         }
-        std::error_code ec;
-        if (range_store.erase(a->name(), ec)) {
+        if (range_store.erase(a->name())) {
           out << fmt::format("{}: saved range erased; compiled default applies after reboot\n",
                              a->name());
         } else {
-          out << fmt::format("{}: erase failed: {}\n", a->name(), ec.message());
+          out << fmt::format("{}: erase failed (see log)\n", a->name());
         }
       },
       "Erase the saved range for a leg: forget <leg>");
@@ -428,26 +407,25 @@ std::unique_ptr<cli::Menu> build_menu() {
         if (!a) {
           return;
         }
-        std::error_code ec;
         int32_t start = 0;
-        if (!a->get_position(start, ec)) {
-          out << fmt::format("FAIL {}: cannot read position: {}\n", a->name(), ec.message());
+        if (!a->get_position(start)) {
+          out << fmt::format("FAIL {}: cannot read position (see log)\n", a->name());
           return;
         }
         out << fmt::format("{}: start at {} counts, jog step {}\n", a->name(), start,
                            a->config().jog_step);
-        if (!a->increment(ec) || !wait_for_target(out, *a)) {
-          out << fmt::format("FAIL {}: increment ({})\n", a->name(), ec.message());
+        if (!a->increment() || !wait_for_target(out, *a)) {
+          out << fmt::format("FAIL {}: increment (see log)\n", a->name());
           return;
         }
         int32_t up = 0;
-        a->get_position(up, ec);
-        if (!a->decrement(ec) || !wait_for_target(out, *a)) {
-          out << fmt::format("FAIL {}: decrement ({})\n", a->name(), ec.message());
+        a->get_position(up);
+        if (!a->decrement() || !wait_for_target(out, *a)) {
+          out << fmt::format("FAIL {}: decrement (see log)\n", a->name());
           return;
         }
         int32_t back = 0;
-        a->get_position(back, ec);
+        a->get_position(back);
         const int32_t tolerance = a->config().tolerance;
         const bool moved_up = (up - start) > tolerance;
         const bool returned = std::abs(back - start) <= tolerance;
@@ -472,10 +450,7 @@ extern "C" void app_main(void) {
   fmt::print("Actuator example: {} legs on {} controllers\n", mib::config::leg_count,
              std::size(mib::config::actuators));
 
-  std::error_code ec;
-  if (!range_store.init(ec)) {
-    fmt::print("NVS unavailable, calibrated ranges will not persist: {}\n", ec.message());
-  }
+  range_store.init(); // logs itself if NVS is unavailable
   if (!bring_up_bus()) {
     return;
   }

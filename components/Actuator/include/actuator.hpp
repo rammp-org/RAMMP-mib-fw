@@ -24,14 +24,17 @@ namespace mib {
 /// few milliseconds each, up to the client's SDO timeout when the controller is silent)
 /// and must be called from a task that may wait, never from an RTPS callback.
 ///
+/// Methods return true on success and log the reason on failure, like the rest of the
+/// MIB firmware. The espp error codes stay inside.
+///
 /// Two actuators can share one Mcp266 (its M1 and M2 channels). The controller has a
 /// single SDO channel, so both must be given the same mutex, which every call here holds
 /// for the duration of its exchange.
 ///
-/// A controller that stops answering is marked offline: further calls fail at once with
-/// std::errc::host_unreachable, without touching the bus, until the retry interval has
-/// passed. One dead controller therefore costs the rest of the system one SDO timeout
-/// per retry interval rather than one per call.
+/// A controller that stops answering is marked offline: further calls fail at once,
+/// without touching the bus, until the retry interval has passed. One dead controller
+/// therefore costs the rest of the system one SDO timeout per retry interval rather than
+/// one per call.
 class Actuator : public espp::BaseComponent {
 public:
   using Axis = espp::Mcp266::Axis;
@@ -70,71 +73,71 @@ public:
   /// range as the controller's position clamp and software limits. The MCP266 reverts
   /// to its EEPROM at power-up, so call once per boot before any move.
   /// @return True when the controller accepted everything.
-  bool initialize(std::error_code &ec);
+  bool initialize();
 
   /// Read the joint position from the controller.
   /// @param counts Out: encoder counts.
-  bool get_position(int32_t &counts, std::error_code &ec);
+  bool get_position(int32_t &counts);
 
   /// The last position read from the controller by any method, without a bus exchange.
   std::optional<int32_t> last_position() const;
 
   /// Move to an absolute count with the default profile.
   /// The target is clamped to the range unless calibration mode is on.
-  bool move_absolute(int32_t target, std::error_code &ec);
+  bool move_absolute(int32_t target);
 
   /// Move to an absolute count with a one-off profile.
-  bool move_absolute(int32_t target, const Profile &profile, std::error_code &ec);
+  bool move_absolute(int32_t target, const Profile &profile);
 
   /// Move by a signed number of counts from the current position (read from the
   /// controller first).
-  bool move_relative(int32_t delta, std::error_code &ec);
-  bool move_relative(int32_t delta, const Profile &profile, std::error_code &ec);
+  bool move_relative(int32_t delta);
+  bool move_relative(int32_t delta, const Profile &profile);
 
   /// Move one jog step up or down. Intended for calibration and manual positioning.
-  bool increment(std::error_code &ec);
-  bool decrement(std::error_code &ec);
+  bool increment();
+  bool decrement();
 
   /// Stop the current move with a CiA 402 quick stop. The next move re-enables the axis.
-  bool stop(std::error_code &ec);
+  bool stop();
 
   /// Whether the controller reports the last commanded target as reached.
-  bool is_target_reached(bool &reached, std::error_code &ec);
+  bool is_target_reached(bool &reached);
 
   /// The CiA 402 drive state of the axis, decoded from its statusword.
-  bool get_drive_state(DriveState &state, std::error_code &ec);
+  bool get_drive_state(DriveState &state);
 
   /// Lift or restore the range clamp on the controller so the axis can be driven to its
   /// mechanical ends (or into its limit switches) while a calibration routine records the
   /// readings. Blocks: it rewrites the controller's limits.
-  bool set_calibration_mode(bool enabled, std::error_code &ec);
-  bool calibration_mode() const { return calibration_mode_; }
+  bool set_calibration_mode(bool enabled);
+  bool calibration_mode() const;
 
   /// Install a new calibrated range and, if the axis is initialized and not in
   /// calibration mode, write it to the controller.
-  bool set_range(const Range &range, std::error_code &ec);
+  bool set_range(const Range &range);
   Range range() const;
 
   /// Clamp a target to the range (identity in calibration mode).
   int32_t clamp(int32_t target) const;
 
-  bool initialized() const { return initialized_; }
-  bool online() const { return online_; }
+  bool initialized() const;
+  bool online() const;
   const Config &config() const { return config_; }
   const char *name() const { return config_.name; }
 
 private:
   /// Fail fast while the controller is marked offline and the retry interval has not
-  /// passed. Returns false and sets ec in that case.
-  bool check_online(std::error_code &ec);
+  /// passed.
+  bool check_online();
 
-  /// Update the offline marking from the outcome of a controller exchange.
+  /// Update the offline marking from the outcome of a controller exchange and log it.
   void note_result(bool ok, const std::error_code &ec, const char *what);
 
   /// Write a clamp and software limits to the controller (under the mutex).
   bool apply_limits(const Range &range, std::error_code &ec);
 
-  bool do_move(int32_t target, const Profile &profile, std::error_code &ec);
+  bool do_move(int32_t target, const Profile &profile);
 
   espp::Mcp266 &mcp_;
   std::mutex &mcp_mutex_;
