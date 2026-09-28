@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espp/mcp266: '>=1.3.5'
+  espp/nvs: '>=1.3.5'
