@@ -129,7 +129,6 @@ bool MIB::init_actuators() {
 				.homing = {.required = row.incremental_encoder,
 									 .direction = row.home_direction,
 									 .home_count = row.home_count},
-				.model = nullptr, // joint models arrive with the base measurements
 				.store = &store_,
 		};
 		if (Actuator::Range saved{}; store_.load_range(row.name, saved)) {

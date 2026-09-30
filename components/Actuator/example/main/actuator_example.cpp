@@ -3,10 +3,9 @@
 /// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
 /// console over the serial monitor to exercise its API:
 ///
-///   status                position (counts, fraction, units), state, range
+///   status                position (counts, fraction), state, range
 ///   pos                   read the position from the encoder
 ///   abs <counts>          move to an absolute count
-///   to <units>            move to a joint value through the joint model
 ///   frac <0..1>           move to a fraction of the calibrated travel
 ///   rel <delta>           move by a signed number of counts
 ///   inc / dec             move one jog step
@@ -41,7 +40,6 @@
 #include "canopen_client.hpp"
 #include "cli.hpp"
 #include "format.hpp"
-#include "joint_model.hpp"
 #include "logger.hpp"
 #include "mcp266.hpp"
 #include "twai.hpp"
@@ -60,9 +58,6 @@ constexpr uint8_t kNodeId = 10;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = false;
-// What the calibrated travel means for the joint: 0 m at the low end, 120 mm at
-// the high end. A real joint gets its own JointModel once the geometry is known.
-constexpr mib::LinearJointModel kJointModel{0.0f, 0.120f, "m"};
 // How the actuator behaves. Positions are the joint encoder's counts.
 constexpr mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
@@ -73,7 +68,6 @@ constexpr mib::Actuator::Config kActuatorConfig{
     .tolerance = 10,                // counts within which a position counts as at target
     .hardware_limits = kHomingRequired, // limit switches wired to this channel
     .homing = {.required = kHomingRequired, .direction = -1, .home_count = 0},
-    .model = &kJointModel,
     .store = nullptr,               // filled in at bring-up
 };
 // -----------------------------------------------------------------------------
@@ -177,9 +171,8 @@ void print_position(std::ostream &out) {
     return;
   }
   const auto r = actuator->range();
-  out << fmt::format("{} counts = {:.3f} of travel = {:.4f} {}  (range [{}, {}])\n", counts,
-                     *actuator->current_fraction(), *actuator->current_units(),
-                     kJointModel.unit(), r.min, r.max);
+  out << fmt::format("{} counts = {:.3f} of travel  (range [{}, {}])\n", counts,
+                     *actuator->current_fraction(), r.min, r.max);
 }
 
 /// Poll until the drive reports target reached. Prints progress once a second.
@@ -239,9 +232,6 @@ std::unique_ptr<cli::Menu> build_menu() {
   menu->Insert(
       "abs", [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts), "move"); },
       "Move to an absolute count: abs <counts>");
-  menu->Insert(
-      "to", [](std::ostream &out, float units) { report(out, actuator->move_to(units), "move"); },
-      "Move to a joint value through the joint model: to <units>");
   menu->Insert(
       "frac",
       [](std::ostream &out, float fraction) { report(out, actuator->move_fraction(fraction), "move"); },

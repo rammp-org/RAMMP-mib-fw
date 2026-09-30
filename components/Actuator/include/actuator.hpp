@@ -9,7 +9,6 @@
 #include "actuator_store.hpp"
 #include "base_component.hpp"
 #include "canopen_client.hpp"
-#include "joint_model.hpp"
 #include "mcp266.hpp"
 
 namespace mib {
@@ -22,11 +21,12 @@ namespace mib {
 /// counts, its default motion profile and a jog step, and it turns "go there" into the
 /// CiA 402 profile-position exchange that espp::Mcp266 implements.
 ///
-/// Positions come in three forms, all interchangeable through the calibrated range:
+/// Positions come in two forms, interchangeable through the calibrated range:
 /// - **counts**, the encoder's own units, used for calibration, homing and jogging;
-/// - a **fraction** of the calibrated travel, 0 at the low end and 1 at the high end;
-/// - **engineering units** (metres, degrees), through the JointModel the config names.
-///   The actuator never contains kinematics; the model does the mapping.
+/// - a **fraction** of the calibrated travel, 0 at the low end and 1 at the high end, for
+///   layers that must not know counts.
+/// Engineering units (metres, degrees) and the kinematics behind them are not this
+/// class's concern; an application layer above the BSP maps them onto fractions.
 ///
 /// Two kinds of encoder, two separate procedures that must not be confused:
 /// - An **absolute** encoder reports the joint's position from the moment of power-up.
@@ -85,7 +85,6 @@ public:
     int32_t tolerance;        ///< Counts within which a position counts as at target.
     bool hardware_limits;     ///< Limit switches are wired to the controller for this axis.
     Homing homing{};          ///< Leave required=false for an absolute encoder.
-    const JointModel *model{nullptr}; ///< Units mapping; nullptr means units are fractions.
     ActuatorStore *store{nullptr};    ///< Where ranges and positions persist; may be null.
     std::chrono::milliseconds offline_retry{2000}; ///< How long to skip a silent controller.
     std::chrono::milliseconds position_save_interval{5000}; ///< Throttle for save_position().
@@ -126,14 +125,12 @@ public:
   std::optional<int32_t> current_position() const;
   std::chrono::milliseconds position_age() const;
 
-  /// Latest reading as a fraction of the calibrated travel, or as joint units through
-  /// the model. Empty when nothing has been read yet.
+  /// Latest reading as a fraction of the calibrated travel. Empty when nothing has been
+  /// read yet.
   std::optional<float> current_fraction() const;
-  std::optional<float> current_units() const;
 
   /// Bus read, then convert.
   bool read_fraction(float &fraction);
-  bool read_units(float &units);
 
   /// The last count this actuator commanded, for layers that queue moves.
   std::optional<int32_t> last_target() const;
@@ -149,7 +146,6 @@ public:
   bool move_relative(int32_t delta, const Profile &profile);
   bool move_fraction(float fraction);
   bool move_relative_fraction(float delta);
-  bool move_to(float units);            ///< Through the JointModel.
   bool increment();                     ///< One jog step, in counts.
   bool decrement();
   bool stop();                          ///< CiA 402 quick stop; the next move re-enables.
