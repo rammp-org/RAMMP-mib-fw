@@ -5,18 +5,19 @@
 small: the controller closes the position loop, runs the motion profile,
 enforces its clamp and stops on limit switches; this class knows the axis's
 calibrated travel, its default motion profile and a jog step, and turns "go
-there" into the controller exchange. Kinematics live in a `JointModel` the
-config names, so the component survives a redesign of the base.
+there" into the controller exchange. Engineering units and the kinematics
+behind them are an application layer's job, above the BSP; the actuator only
+ever speaks counts and fractions of its calibrated travel, so it survives a
+redesign of the base unchanged.
 
 ## Positions
 
-Three interchangeable forms, all through the calibrated range:
+Two interchangeable forms, through the calibrated range:
 
 | Form | Meaning | Used for |
 |---|---|---|
 | counts | the encoder's own units | calibration, homing, jogging |
-| fraction | 0 at the low calibrated end, 1 at the high end | layers that must not know counts |
-| units | metres or degrees, via the `JointModel` | the state machine |
+| fraction | 0 at the low calibrated end, 1 at the high end | the layer above, which maps it to metres or degrees |
 
 The current position is not held as state. `read_position()` asks the encoder
 (one SDO), and `current_position()` returns whatever the last read produced
@@ -31,9 +32,9 @@ layer that wants the other meaning).
 |---|---|
 | `initialize()` | Once per boot: clear faults, install the range as the controller's clamp and software limits, restore a saved position for an incremental encoder |
 | `ready()` | Initialised and, where required, homed. Moves are refused otherwise |
-| `read_position(counts)`, `read_fraction(f)`, `read_units(u)` | Ask the encoder |
-| `current_position()`, `current_fraction()`, `current_units()`, `position_age()` | The last reading, without a bus exchange |
-| `move_absolute(counts)`, `move_fraction(f)`, `move_to(units)` | Profile move, clamped to the range; `move_absolute` has a per-move `Profile` overload |
+| `read_position(counts)`, `read_fraction(f)` | Ask the encoder |
+| `current_position()`, `current_fraction()`, `position_age()` | The last reading, without a bus exchange |
+| `move_absolute(counts)`, `move_fraction(f)` | Profile move, clamped to the range; `move_absolute` has a per-move `Profile` overload |
 | `move_relative(delta)`, `move_relative_fraction(df)` | Read the encoder, add, move |
 | `increment()`, `decrement()` | One jog step in counts |
 | `stop()` | CiA 402 quick stop |
@@ -71,20 +72,12 @@ the joint did not move while powered off; `home()` when in doubt.
 
 `ActuatorStore` keeps both kinds of record in NVS under separate keys.
 
-## JointModel
-
-`components/JointModel` holds the interface (`to_fraction`, `to_units`,
-`unit`) and a `LinearJointModel` for a joint proportional to actuator travel.
-The real models for the main legs, casters and carriages are written once the
-base is measured; they are pure arithmetic, so they can be unit-tested on the
-host.
-
 ## Example
 
 [`example/`](example) is a standalone project that brings up one actuator on
-one MCP266 channel, with its pins, node id, range, profile and a linear joint
-model written in the example, and offers a serial console to exercise the API:
-`status`, `pos`, `abs`, `to`, `frac`, `rel`, `inc`, `dec`, `wait`, `stop`, the
+one MCP266 channel, with its pins, node id, range and profile written in the
+example, and offers a serial console to exercise the API:
+`status`, `pos`, `abs`, `frac`, `rel`, `inc`, `dec`, `wait`, `stop`, the
 calibration commands `cal`, `range`, `forget`, the homing commands `home`,
 `restore`, `save`, `setenc`, and `selftest`. It doubles as the bench test for
 one actuator: `status` proves the controller answers, `pos` the encoder, `inc`
