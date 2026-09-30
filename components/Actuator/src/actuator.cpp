@@ -259,29 +259,12 @@ std::optional<float> Actuator::current_fraction() const {
   return counts_to_fraction(*counts);
 }
 
-std::optional<float> Actuator::current_units() const {
-  const auto fraction = current_fraction();
-  if (!fraction) {
-    return std::nullopt;
-  }
-  return config_.model ? config_.model->to_units(*fraction) : *fraction;
-}
-
 bool Actuator::read_fraction(float &fraction) {
   int32_t counts = 0;
   if (!read_position(counts)) {
     return false;
   }
   fraction = counts_to_fraction(counts);
-  return true;
-}
-
-bool Actuator::read_units(float &units) {
-  float fraction = 0.0f;
-  if (!read_fraction(fraction)) {
-    return false;
-  }
-  units = config_.model ? config_.model->to_units(fraction) : fraction;
   return true;
 }
 
@@ -382,11 +365,6 @@ bool Actuator::move_relative_fraction(float delta) {
     return false;
   }
   return move_fraction(current + delta);
-}
-
-bool Actuator::move_to(float units) {
-  const float fraction = config_.model ? config_.model->to_fraction(units) : units;
-  return move_fraction(fraction);
 }
 
 bool Actuator::increment() { return move_relative(config_.jog_step); }
