@@ -1,6 +1,7 @@
 #include "mib_system.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -273,6 +274,21 @@ void MibSystem::publish_system_state() {
     std::lock_guard<std::mutex> lock(seat_state_mutex_);
     status.currentSeatState = seat_state_;
   }
+
+  // Speed is the average of the commanded wheel speeds, matching what
+  // publish_motor_commands() sends: zero unless drive is enabled.
+  if (state_.load() == SystemState::DRIVE_ENABLED) {
+    const auto wheel_speeds = drive_controller_.wheel_speeds();
+    const auto &drive = mib::config::differential_drive;
+    // wheel_speeds() carries each motor's mounting inversion; undo it so both
+    // wheels are positive when the chassis moves forward.
+    const float left_rpm = drive.invert_left ? -wheel_speeds.left_rpm : wheel_speeds.left_rpm;
+    const float right_rpm = drive.invert_right ? -wheel_speeds.right_rpm : wheel_speeds.right_rpm;
+    const float rpm_to_mps = 3.14159265358979323846f * drive.wheel_diameter_m / 60.0f;
+    // Ground speed has no direction; the joystick shows 0.0 for negative values.
+    status.speed = std::fabs((left_rpm + right_rpm) / 2.0f * rpm_to_mps);
+  }
+
   status.seq = ++status_sequence_;
   if (!status_publisher_->publish(status)) {
     logger_.warn("Failed to publish MIB status");
