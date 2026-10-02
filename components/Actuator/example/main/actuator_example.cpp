@@ -3,10 +3,9 @@
 /// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
 /// console over the serial monitor to exercise its API:
 ///
-///   status                position (counts, fraction), state, range
+///   status                position, state, range
 ///   pos                   read the position from the encoder
 ///   abs <counts>          move to an absolute count
-///   frac <0..1>           move to a fraction of the calibrated travel
 ///   rel <delta>           move by a signed number of counts
 ///   inc / dec             move one jog step
 ///   wait                  block until the drive reports target reached
@@ -171,8 +170,7 @@ void print_position(std::ostream &out) {
     return;
   }
   const auto r = actuator->range();
-  out << fmt::format("{} counts = {:.3f} of travel  (range [{}, {}])\n", counts,
-                     *actuator->current_fraction(), r.min, r.max);
+  out << fmt::format("{} counts  (range [{}, {}])\n", counts, r.min, r.max);
 }
 
 /// Poll until the drive reports target reached. Prints progress once a second.
@@ -232,10 +230,6 @@ std::unique_ptr<cli::Menu> build_menu() {
   menu->Insert(
       "abs", [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts), "move"); },
       "Move to an absolute count: abs <counts>");
-  menu->Insert(
-      "frac",
-      [](std::ostream &out, float fraction) { report(out, actuator->move_fraction(fraction), "move"); },
-      "Move to a fraction of the calibrated travel: frac <0..1>");
   menu->Insert(
       "rel", [](std::ostream &out, int delta) { report(out, actuator->move_relative(delta), "move"); },
       "Move by a signed count: rel <delta>");
