@@ -7,8 +7,8 @@ The rule behind the split: the **BSP is the electronics interface** (Ethernet,
 CAN, the MCP266s, their encoders, the calibration of those encoders) and
 nothing in it knows what a joint means. Kinematics, units and any move that
 spans joints live in an **application layer above the BSP**, which is not
-designed here yet; it will hold references to the BSP's actuators and speak
-to them in fractions of travel.
+designed here yet; it will hold references to the BSP's actuators, read
+their calibrated ranges, and speak to them in encoder counts.
 
 ## The flow
 
@@ -19,18 +19,17 @@ to them in fractions of travel.
                                      ▼
         ┌────────────────────────────────────────────────────────────┐
         │  Application layer                        (planned)        │
-        │  per joint: units ⇄ fraction of travel (0..1)              │
-        │  one kinematics class per family: main legs, casters,      │
-        │  carriages; written once the base is measured              │
-        │  pure arithmetic, host-testable, never sees counts         │
+        │  per joint: units ⇄ encoder counts, using the actuator's   │
+        │  calibrated range; one kinematics class per family: main   │
+        │  legs, casters, carriages; written once measured           │
+        │  pure arithmetic, host-testable                            │
         │  holds references to the BSP's actuators                   │
         └────────────────────────────────────────────────────────────┘
                                      │
-                                     │  move_fraction(f)      f in 0..1
+                                     │  move_absolute(counts) / move_relative(delta)
                                      ▼
         ┌────────────────────────────────────────────────────────────┐
         │  mib::Actuator            (this component, owned by BSP)   │
-        │  • fraction ⇄ counts using its calibrated range            │
         │  • clamps to the range (unless calibrating), logs the clip │
         │  • holds the range, jog step, default profile              │
         │  • initialize(): writes the range to the controller        │
@@ -65,15 +64,13 @@ to them in fractions of travel.
 ```
 
 Reads go the other way along the same path: `read_position()` is one SDO for
-the counts, the range turns them into a fraction (`read_fraction`,
-`current_fraction`), and the application layer turns the fraction into units.
+the counts, and the application layer turns counts into units.
 
 ## Who owns what
 
 | Concern | Where | Notes |
 |---|---|---|
-| Units (m, deg) and kinematics | Application layer, constants from `MIBconfig.hpp` | Planned. Not in the BSP. |
-| Counts and the fraction ⇄ counts mapping | Actuator | The only layer that knows what a count is. |
+| Units (m, deg) and kinematics | Application layer, constants from `MIBconfig.hpp` | Planned. Not in the BSP. Reads `range()` from the actuator. |
 | Range in counts | Actuator (source of truth), persisted in MIB NVS | Compiled default in `MIBconfig.hpp`, overridden by the calibrated value from NVS. |
 | Enforcing the range | Both | Actuator clamps before sending; the controller clamps again (see below). |
 | Current position | The encoder, read on demand | `read_position()` asks; `current_position()` is the last reading plus its age, fresh as often as the owner polls. |
@@ -83,28 +80,26 @@ the counts, the range turns them into a fraction (`read_fraction`,
 | Fault reset, NMT start | Actuator / BSP | Once per boot, and again when a move finds the controller's clamp gone (it reset). |
 | Last known position (incremental) | Actuator via `ActuatorStore` | Saved from the periodic poll, throttled; restored at boot instead of homing. |
 
-## Fractions, absolute and relative
+## Absolute and relative
 
 ```cpp
-bool move_fraction(float f);            // 0..1 of the calibrated travel, clamped
-bool read_fraction(float &f);           // read the encoder, convert with the range
-bool move_relative_fraction(float df);  // read, add, command absolute
+bool move_absolute(int32_t counts);     // clamped to the range
+bool move_relative(int32_t delta);      // read the encoder, add, command absolute
+bool increment(); bool decrement();     // move_relative by the jog step
 std::optional<int32_t> last_target();   // last count commanded, for queued moves
 ```
 
-`f = (counts - min) / (max - min)` and back. Because the encoders are
-absolute, the fraction is well defined as soon as the range is calibrated.
-
-**Absolute** moves are the natural fit: the converter turns units into a
-fraction from constants, and the Actuator does the rest.
+**Absolute** moves are the natural fit: the application layer turns units
+into counts using the actuator's calibrated range and its own kinematics, and
+the Actuator does the rest.
 
 **Relative** moves need the current position, and it comes from the encoder,
 not from stored state. `move_relative` reads the position from the controller
-(one SDO), adds the delta, clamps, and commands the absolute result.
-`move_relative_fraction` does the same in fraction space. For a linear joint a
-delta in units is a fixed delta in fraction and can be passed straight down;
-for a non-linear joint the caller goes through the absolute path (read the
-fraction, convert to units, add, convert back, `move_fraction`).
+(one SDO), adds the delta, clamps, and commands the absolute result. For a
+linear joint a delta in units is a fixed delta in counts and can be passed
+straight down; for a non-linear joint the caller goes through the absolute
+path (read the position, convert to units, add, convert back,
+`move_absolute`).
 
 `current_position()` is not a second source of truth: it is the last reading,
 with `position_age()`, and the owner's periodic poll (which also publishes the
@@ -117,10 +112,8 @@ not from the previous target. That is the safer meaning when a move was
 clipped or stopped; a layer that wants "relative to the last target" can use
 `last_target()`.
 
-**`increment` and `decrement` stay in counts.** They serve calibration and
-manual jogging, where the range may not exist yet or is deliberately lifted,
-so a fraction of the travel is not defined. A jog step in raw counts is the
-right unit there.
+**`increment` and `decrement`** are `move_relative` by the configured jog
+step, for calibration and manual jogging.
 
 ## Where the limits actually live
 

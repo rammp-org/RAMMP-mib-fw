@@ -1,7 +1,6 @@
 #include "actuator.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <thread>
 
 #include "detail/mcp266_core.hpp"
@@ -235,39 +234,6 @@ std::chrono::milliseconds Actuator::position_age() const {
                                                                position_time_);
 }
 
-float Actuator::counts_to_fraction(int32_t counts) const {
-  const Range r = range();
-  const int64_t span = static_cast<int64_t>(r.max) - r.min;
-  if (span <= 0) {
-    return 0.0f;
-  }
-  return static_cast<float>(static_cast<int64_t>(counts) - r.min) / static_cast<float>(span);
-}
-
-int32_t Actuator::fraction_to_counts(float fraction) const {
-  const Range r = range();
-  const double span = static_cast<double>(r.max) - r.min;
-  const double counts = r.min + static_cast<double>(fraction) * span;
-  return static_cast<int32_t>(std::lround(std::clamp(counts, -2.0e9, 2.0e9)));
-}
-
-std::optional<float> Actuator::current_fraction() const {
-  const auto counts = current_position();
-  if (!counts) {
-    return std::nullopt;
-  }
-  return counts_to_fraction(*counts);
-}
-
-bool Actuator::read_fraction(float &fraction) {
-  int32_t counts = 0;
-  if (!read_position(counts)) {
-    return false;
-  }
-  fraction = counts_to_fraction(counts);
-  return true;
-}
-
 std::optional<int32_t> Actuator::last_target() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return last_target_;
@@ -353,18 +319,6 @@ bool Actuator::move_relative(int32_t delta, const Profile &profile) {
   const int64_t target = static_cast<int64_t>(current) + delta;
   return do_move(static_cast<int32_t>(std::clamp<int64_t>(target, INT32_MIN, INT32_MAX)),
                  profile);
-}
-
-bool Actuator::move_fraction(float fraction) {
-  return do_move(fraction_to_counts(fraction), config_.profile);
-}
-
-bool Actuator::move_relative_fraction(float delta) {
-  float current = 0.0f;
-  if (!read_fraction(current)) {
-    return false;
-  }
-  return move_fraction(current + delta);
 }
 
 bool Actuator::increment() { return move_relative(config_.jog_step); }
