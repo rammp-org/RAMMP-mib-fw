@@ -21,12 +21,9 @@ namespace mib {
 /// counts, its default motion profile and a jog step, and it turns "go there" into the
 /// CiA 402 profile-position exchange that espp::Mcp266 implements.
 ///
-/// Positions come in two forms, interchangeable through the calibrated range:
-/// - **counts**, the encoder's own units, used for calibration, homing and jogging;
-/// - a **fraction** of the calibrated travel, 0 at the low end and 1 at the high end, for
-///   layers that must not know counts.
-/// Engineering units (metres, degrees) and the kinematics behind them are not this
-/// class's concern; an application layer above the BSP maps them onto fractions.
+/// Positions are encoder counts, always. Engineering units (metres, degrees) and the
+/// kinematics behind them are not this class's concern; an application layer above the
+/// BSP maps them onto counts using the calibrated range it can read from range().
 ///
 /// Two kinds of encoder, two separate procedures that must not be confused:
 /// - An **absolute** encoder reports the joint's position from the moment of power-up.
@@ -125,13 +122,6 @@ public:
   std::optional<int32_t> current_position() const;
   std::chrono::milliseconds position_age() const;
 
-  /// Latest reading as a fraction of the calibrated travel. Empty when nothing has been
-  /// read yet.
-  std::optional<float> current_fraction() const;
-
-  /// Bus read, then convert.
-  bool read_fraction(float &fraction);
-
   /// The last count this actuator commanded, for layers that queue moves.
   std::optional<int32_t> last_target() const;
   /// @}
@@ -144,8 +134,6 @@ public:
   bool move_absolute(int32_t counts, const Profile &profile);
   bool move_relative(int32_t delta);
   bool move_relative(int32_t delta, const Profile &profile);
-  bool move_fraction(float fraction);
-  bool move_relative_fraction(float delta);
   bool increment();                     ///< One jog step, in counts.
   bool decrement();
   bool stop();                          ///< CiA 402 quick stop; the next move re-enables.
@@ -204,8 +192,6 @@ private:
   bool verify_limits();
   bool do_move(int32_t counts, const Profile &profile);
   bool read_position_locked(int32_t &counts, std::error_code &ec);
-  int32_t fraction_to_counts(float fraction) const;
-  float counts_to_fraction(int32_t counts) const;
   Range installed_limits() const;
 
   espp::Mcp266 &mcp_;
