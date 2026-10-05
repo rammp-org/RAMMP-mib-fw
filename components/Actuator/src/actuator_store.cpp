@@ -15,6 +15,12 @@ ActuatorStore::ActuatorStore()
     : BaseComponent("ActuatorStore", espp::Logger::Verbosity::INFO) {}
 
 bool ActuatorStore::init() {
+  // nvs_flash_init() returns ESP_OK when the partition is already initialised (it looks
+  // it up first), so another component initialising NVS before or after us is harmless.
+  // espp's wrapper erases the partition and retries on NO_FREE_PAGES / NEW_VERSION_FOUND,
+  // which loses saved records; both only arise when the partition is unreadable anyway.
+  // The ESP-IDF NVS API takes a global lock in every call, so one store may be used from
+  // several tasks.
   std::error_code ec;
   nvs_.init(ec);
   ready_ = !ec;
