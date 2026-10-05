@@ -130,6 +130,8 @@ Actuator::Range Actuator::installed_limits() const {
 }
 
 bool Actuator::verify_limits() {
+  // Reads MinPos/MaxPos of the position PID record straight from the client because
+  // espp::Mcp266 (1.3.6) exposes no read-back of the clamp it writes.
   const Range expected = installed_limits();
   std::error_code ec;
   int32_t min = 0;
@@ -410,6 +412,8 @@ Actuator::Range Actuator::range() const {
 // ------------------------------------------------------------------ homing
 
 bool Actuator::set_encoder(int32_t counts) {
+  // Basicmicro command 22/23 mirrored at 0x2016/0x2017; espp::Mcp266 (1.3.6) has no
+  // wrapper for it, hence the direct client write.
   if (!check_online()) {
     return false;
   }
