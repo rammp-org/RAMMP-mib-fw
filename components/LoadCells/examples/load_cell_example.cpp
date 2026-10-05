@@ -28,13 +28,13 @@ using namespace std::chrono_literals;
 extern "C" void app_main(void) {
   static espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosity::INFO});
 
-  // Set up channel 
-  std::vector<espp::AdcConfig> channels{
-      {.unit = ADC_UNIT_1, .channel = ADC_CHANNEL_6, .attenuation = ADC_ATTEN_DB_12}};// GPIO 22 for ESP32 P4
+  // Set up channel
+  std::vector<espp::AdcConfig> channels{{.unit = ADC_UNIT_1,
+                                         .channel = ADC_CHANNEL_4,
+                                         .attenuation = ADC_ATTEN_DB_12}}; // GPIO 22 for ESP32 P4
   // Set up ADC reading
   static espp::OneshotAdc adc({.unit = ADC_UNIT_1, .channels = channels});
 
-  
   auto read_mv = [&channels]() -> float {
     auto maybe_mv = adc.read_mv(channels[0]);
     return maybe_mv.has_value() ? static_cast<float>(maybe_mv.value()) : 0.0f;
@@ -54,9 +54,8 @@ extern "C" void app_main(void) {
       .log_level = espp::Logger::Verbosity::INFO,
   });
 
-
-  logger.info("full-scale span: {:.1f} mV, ~{:.2f} lbf per 12-bit LSB",
-              load_cell.nominal_span_mv(), load_cell.resolution_per_lsb(3100.0f / 4096.0f));
+  logger.info("full-scale span: {:.1f} mV, ~{:.2f} lbf per 12-bit LSB", load_cell.nominal_span_mv(),
+              load_cell.resolution_per_lsb(3100.0f / 4096.0f));
 
   // bring-up check: this should sit close to the REF voltage (1650 mV here).
   // If it is pinned near 0 or near the ADC ceiling, the in-amp is clipping and
@@ -96,4 +95,3 @@ extern "C" void app_main(void) {
                                  .log_level = espp::Logger::Verbosity::WARN});
   task.start();
 }
-

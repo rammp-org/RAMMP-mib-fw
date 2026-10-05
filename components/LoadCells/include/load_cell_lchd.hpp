@@ -99,25 +99,39 @@ public:
     NEWTONS, ///< Newtons
   };
 
+  /// @brief One reading, expressed at every stage of the signal chain.
+  /// @details All fields come from the same set of ADC samples.
+  struct Reading {
+    float amplifier_mv{0.0f};  ///< Raw INA118 output in mV, as the ADC saw it
+    float bridge_mv{0.0f};     ///< Differential bridge output in mV: REF offset removed and
+                               ///< divided by the gain. Not tared, so at zero load this is the
+                               ///< cell's zero balance (LCHD spec: +/-1% FSO, i.e. +/-0.3 mV)
+    float mv_per_v{0.0f};      ///< bridge_mv normalized by excitation, to compare directly
+                               ///< against the FSO on the calibration sheet
+    float excitation_mv{0.0f}; ///< Excitation used for this reading, measured if available
+    float load{0.0f};          ///< Tared, span-corrected, filtered load in the configured units
+    bool overloaded{false};    ///< Whether |load| exceeded the overload threshold
+  };
+
   /// @brief Configuration struct for LoadCell.
   struct Config {
-    float capacity{1000.0f}; ///< Rated capacity, in `units`, e.g. 1000 for an LCHD-1K
-    float rated_output_mv_per_v{3.0f};    ///< Full-scale output (mV/V). Prefer the value on the
-                                          ///< calibration sheet over the nominal 3.0
-    float excitation_mv{10000.0f};        ///< Nominal bridge excitation in mV, e.g. 10000
-    float amplifier_gain{40.0f};          ///< In-amp gain; for an INA118, 1 + 50000/Rg
-    float amp_offset_mv{0.0f};            ///< Amplifier output at zero load, i.e. the INA118
-                                          ///< REF pin voltage in mV
-    read_mv_fn read_mv{nullptr};          ///< Reads the amplifier output, in mV
+    float capacity{1000.0f};           ///< Rated capacity, in `units`, e.g. 1000 for an LCHD-1K
+    float rated_output_mv_per_v{3.0f}; ///< Full-scale output (mV/V). Prefer the value on the
+                                       ///< calibration sheet over the nominal 3.0
+    float excitation_mv{10000.0f};     ///< Nominal bridge excitation in mV, e.g. 10000
+    float amplifier_gain{40.0f};       ///< In-amp gain; for an INA118, 1 + 50000/Rg
+    float amp_offset_mv{0.0f};         ///< Amplifier output at zero load, i.e. the INA118
+                                       ///< REF pin voltage in mV
+    read_mv_fn read_mv{nullptr};       ///< Reads the amplifier output, in mV
     read_mv_fn read_excitation_mv{nullptr}; ///< Optional. Reads actual excitation (mV, already
                                             ///< scaled back up through any divider) for a
                                             ///< ratiometric measurement
-    size_t num_samples{1};                ///< Samples averaged per read (oversampling)
-    float filter_alpha{1.0f};             ///< One-pole IIR coefficient in (0, 1]; 1.0 disables
-                                          ///< filtering, smaller is smoother and slower
-    Units units{Units::LBF};              ///< Units of `capacity` and of get_load()
-    float overload_fraction{1.5f};        ///< Fraction of capacity treated as overload. The LCHD
-                                          ///< safe overload is 150%, ultimate 300%
+    size_t num_samples{1};                  ///< Samples averaged per read (oversampling)
+    float filter_alpha{1.0f};               ///< One-pole IIR coefficient in (0, 1]; 1.0 disables
+                                            ///< filtering, smaller is smoother and slower
+    Units units{Units::LBF};                ///< Units of `capacity` and of get_load()
+    float overload_fraction{1.5f};          ///< Fraction of capacity treated as overload. The LCHD
+                                            ///< safe overload is 150%, ultimate 300%
     Logger::Verbosity log_level = Logger::Verbosity::WARN; ///< Log level for this class
   };
 
@@ -205,44 +219,73 @@ public:
     return get_bridge_mv() / (exc / 1000.0f);
   }
 
+  /// @brief Take one reading and report every stage of the signal chain.
+  /// @details One set of ADC samples, so the voltages and the load are
+  ///          consistent with each other. This is what to print while bringing
+  ///          the hardware up: it lets you see the amplifier output and the
+  ///          implied mV/V next to the force.
+  /// @return A populated Reading.
+  Reading read() {
+    Reading r;
+    r.amplifier_mv = get_amplifier_mv();
+    r.excitation_mv = excitation_mv();
+    if (r.excitation_mv <= 0.0f) {
+      logger_.error("excitation is 0");
+      return r;
+    }
+    r.bridge_mv = (r.amplifier_mv - amp_offset_mv_) / gain_;
+    r.mv_per_v = r.bridge_mv / (r.excitation_mv / 1000.0f);
+
+    // mV at the amplifier output corresponding to full capacity
+    float span_mv = span_mv_for_excitation(r.excitation_mv);
+    if (span_mv == 0.0f) {
+      logger_.error("span is 0; check gain, rated output and excitation");
+      return r;
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      // NOTE: the offset comes from REF, not the bridge, so it is removed
+      // before dividing by a span that may have been scaled by measured
+      // excitation.
+      float load =
+          ((r.amplifier_mv - amp_offset_mv_ - tare_mv_) / span_mv) * capacity_ * span_correction_;
+
+      if (!filter_primed_) {
+        filtered_load_ = load;
+        filter_primed_ = true;
+      } else {
+        filtered_load_ += filter_alpha_ * (load - filtered_load_);
+      }
+      r.load = filtered_load_;
+      r.overloaded = std::abs(filtered_load_) > overload_fraction_ * capacity_;
+      last_reading_ = r;
+    }
+
+    logger_.debug("amp: {:.3f} mV, bridge: {:.4f} mV ({:.4f} mV/V), load: {:.3f}", r.amplifier_mv,
+                  r.bridge_mv, r.mv_per_v, r.load);
+    if (r.overloaded) {
+      logger_.warn("overload: {:.1f} exceeds {:.0f}% of the {:.1f} rating", r.load,
+                   overload_fraction_ * 100.0f, capacity_);
+    }
+    return r;
+  }
+
   /// @brief Get the load, in the configured units.
   /// @details Takes a reading, applies tare, span correction and the IIR
   ///          filter. Positive is tension, negative is compression (assuming
   ///          SIG+ / SIG- are wired the conventional way).
   /// @return Load in the units given in Config.
-  float get_load() {
-    float amp_mv = get_amplifier_mv();
-    float exc = excitation_mv();
-    if (exc <= 0.0f) {
-      logger_.error("excitation is 0");
-      return 0.0f;
-    }
-    // mV at the amplifier output corresponding to full capacity
-    float span_mv = span_mv_for_excitation(exc);
-    if (span_mv == 0.0f) {
-      logger_.error("span is 0; check gain, rated output and excitation");
-      return 0.0f;
-    }
+  float get_load() { return read().load; }
 
+  /// @brief The most recent Reading, without touching the ADC.
+  /// @details Useful for logging or telemetry alongside a control loop that
+  ///          already called read(), so the voltage printed is the one the
+  ///          loop actually acted on.
+  /// @return A copy of the last Reading, zeroed if read() has not been called.
+  Reading last_reading() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    // NOTE: the offset comes from REF, not the bridge, so it is removed before
-    // dividing by a span that may have been scaled by measured excitation.
-    float load = ((amp_mv - amp_offset_mv_ - tare_mv_) / span_mv) * capacity_ * span_correction_;
-
-    if (!filter_primed_) {
-      filtered_load_ = load;
-      filter_primed_ = true;
-    } else {
-      filtered_load_ += filter_alpha_ * (load - filtered_load_);
-    }
-
-    logger_.debug("amp: {:.3f} mV, raw: {:.3f}, filtered: {:.3f}", amp_mv, load, filtered_load_);
-
-    if (std::abs(filtered_load_) > overload_fraction_ * capacity_) {
-      logger_.warn("overload: {:.1f} exceeds {:.0f}% of the {:.1f} rating", filtered_load_,
-                   overload_fraction_ * 100.0f, capacity_);
-    }
-    return filtered_load_;
+    return last_reading_;
   }
 
   /// @brief Get the load in pounds-force.
@@ -402,8 +445,8 @@ public:
 protected:
   /// @brief Numerator of the INA118 gain equation, in ohms.
   static constexpr float INA118_RG_NUMERATOR = 50000.0f;
-  static constexpr float LBF_TO_N = 4.4482216152605f;  ///< Pounds-force to newtons
-  static constexpr float LBF_TO_KGF = 0.45359237f;     ///< Pounds-force to kilograms-force
+  static constexpr float LBF_TO_N = 4.4482216152605f; ///< Pounds-force to newtons
+  static constexpr float LBF_TO_KGF = 0.45359237f;    ///< Pounds-force to kilograms-force
   static constexpr float KGF_TO_LBF = 1.0f / LBF_TO_KGF;
   static constexpr float N_TO_LBF = 1.0f / LBF_TO_N;
 
@@ -439,23 +482,24 @@ protected:
     }
   }
 
-  float capacity_;              ///< Rated capacity in `units_`
-  float rated_output_mv_per_v_; ///< Full-scale bridge output, mV/V
-  float excitation_mv_;         ///< Nominal excitation, mV
-  float gain_;                  ///< In-amp gain
-  float amp_offset_mv_;         ///< Amplifier output at zero load (REF), mV
-  read_mv_fn read_mv_{nullptr}; ///< Reads amplifier output, mV
+  float capacity_;                         ///< Rated capacity in `units_`
+  float rated_output_mv_per_v_;            ///< Full-scale bridge output, mV/V
+  float excitation_mv_;                    ///< Nominal excitation, mV
+  float gain_;                             ///< In-amp gain
+  float amp_offset_mv_;                    ///< Amplifier output at zero load (REF), mV
+  read_mv_fn read_mv_{nullptr};            ///< Reads amplifier output, mV
   read_mv_fn read_excitation_mv_{nullptr}; ///< Optional, reads excitation, mV
   size_t num_samples_;                     ///< Samples averaged per read
   float filter_alpha_;                     ///< IIR coefficient
   Units units_;                            ///< Units for capacity and get_load()
   float overload_fraction_;                ///< Overload threshold as a fraction of capacity
 
-  mutable std::mutex mutex_;   ///< Guards the mutable state below
-  float tare_mv_{0.0f};        ///< Zero offset relative to REF, mV
-  float span_correction_{1.0f};///< Multiplicative span correction
-  float filtered_load_{0.0f};  ///< Last filtered load
-  bool filter_primed_{false};  ///< Whether filtered_load_ holds a real value
+  mutable std::mutex mutex_;    ///< Guards the mutable state below
+  float tare_mv_{0.0f};         ///< Zero offset relative to REF, mV
+  float span_correction_{1.0f}; ///< Multiplicative span correction
+  float filtered_load_{0.0f};   ///< Last filtered load
+  bool filter_primed_{false};   ///< Whether filtered_load_ holds a real value
+  Reading last_reading_{};      ///< Snapshot of the most recent read()
 };
 
 } // namespace espp
