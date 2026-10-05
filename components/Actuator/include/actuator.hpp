@@ -41,9 +41,13 @@ namespace mib {
 /// RTPS callback. The current position is not held as state: read_position() asks the
 /// encoder, and current_position() returns whatever the last read produced, with its age.
 ///
-/// Two actuators can share one Mcp266 (its M1 and M2 channels). The controller has a
-/// single SDO channel, so both must be given the same mutex, which every call here holds
-/// for the duration of its exchange.
+/// Two actuators can share one Mcp266 (its M1 and M2 channels), and must then be given
+/// the same mutex. What it protects: espp::CanopenClient already serialises single SDO
+/// transactions internally, but espp::Mcp266 and Ds402Drive do not serialise their
+/// multi-step sequences (a move is ~10 SDOs, the clamp setup is a read-modify-write), so
+/// two sequences on one controller could interleave. Every call here holds the mutex for
+/// one sequence and releases it between calls. espp's own Mcp266Service does the same.
+/// The mutex can go once espp::Mcp266 serialises its sequences itself.
 ///
 /// A controller that stops answering is marked offline: further calls fail at once,
 /// without touching the bus, until the retry interval has passed. A controller that
@@ -90,8 +94,10 @@ public:
   };
 
   /// @param mcp The controller this axis lives on. Must outlive the actuator.
-  /// @param client The controller's CANopen client, for the few manufacturer objects
-  ///        Mcp266 does not wrap (set encoder, clamp readback).
+  /// @param client The controller's CANopen client. Used only for two manufacturer
+  ///        objects espp::Mcp266 does not wrap as of 1.3.6: the set-encoder command and
+  ///        the clamp read-back (see set_encoder() and verify_limits()). Drop this
+  ///        parameter once Mcp266 offers them.
   /// @param mcp_mutex Shared by every actuator on the same controller.
   Actuator(espp::Mcp266 &mcp, espp::CanopenClient &client, std::mutex &mcp_mutex,
            const Config &config);
