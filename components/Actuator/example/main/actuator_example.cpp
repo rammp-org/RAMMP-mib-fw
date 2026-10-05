@@ -53,7 +53,7 @@ constexpr int kTxGpio = 17;
 constexpr int kRxGpio = 16;
 constexpr uint32_t kBitrate = 1'000'000;
 // Which controller and channel the actuator is on.
-constexpr uint8_t kNodeId = 10;
+constexpr uint8_t kNodeId = 1;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = false;
@@ -61,7 +61,7 @@ constexpr bool kHomingRequired = false;
 constexpr mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
     .axis = kAxis,
-    .range = {0, 4095},             // calibrated travel; a range saved to NVS overrides it
+    .range = {37000, 45000},             // calibrated travel; a range saved to NVS overrides it
     .profile = {500, 500, 500},     // counts/s, counts/s^2, counts/s^2
     .jog_step = 50,                 // counts per inc / dec
     .tolerance = 10,                // counts within which a position counts as at target
