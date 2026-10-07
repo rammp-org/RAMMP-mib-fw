@@ -17,8 +17,10 @@ bool IMU::init(void) {
   i2c_master_conf.glitch_ignore_cnt = 7;
   i2c_master_conf.i2c_port = I2C_NUM_0;
   i2c_master_conf.intr_priority = 0;
-  i2c_master_conf.scl_io_num = static_cast<gpio_num_t>(CONFIG_BNO055_SCL_PIN);
-  i2c_master_conf.sda_io_num = static_cast<gpio_num_t>(CONFIG_BNO055_SDA_PIN);
+  // i2c_master_conf.scl_io_num = static_cast<gpio_num_t>(CONFIG_BNO055_SCL_PIN);
+  // i2c_master_conf.sda_io_num = static_cast<gpio_num_t>(CONFIG_BNO055_SDA_PIN);
+  i2c_master_conf.scl_io_num = GPIO_NUM_16;
+  i2c_master_conf.sda_io_num = GPIO_NUM_17;
   i2c_master_conf.trans_queue_depth = 0;
 
   i2c_master_bus_handle_t i2c_master_bus = NULL;
