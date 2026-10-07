@@ -8,7 +8,6 @@
 
 #include "actuator_store.hpp"
 #include "base_component.hpp"
-#include "canopen_client.hpp"
 #include "mcp266.hpp"
 
 namespace mib {
@@ -93,14 +92,10 @@ public:
     espp::Logger::Verbosity log_level{espp::Logger::Verbosity::INFO};
   };
 
-  /// @param mcp The controller this axis lives on. Must outlive the actuator.
-  /// @param client The controller's CANopen client. Used only for two manufacturer
-  ///        objects espp::Mcp266 does not wrap as of 1.3.6: the set-encoder command and
-  ///        the clamp read-back (see set_encoder() and verify_limits()). Drop this
-  ///        parameter once Mcp266 offers them.
+  /// @param mcp The controller this axis lives on. Must outlive the actuator. Needs the
+  ///        set_encoder() / read_position_limits() API (esp-cpp/espp#842).
   /// @param mcp_mutex Shared by every actuator on the same controller.
-  Actuator(espp::Mcp266 &mcp, espp::CanopenClient &client, std::mutex &mcp_mutex,
-           const Config &config);
+  Actuator(espp::Mcp266 &mcp, std::mutex &mcp_mutex, const Config &config);
 
   /// @name Lifecycle
   /// @{
@@ -161,6 +156,11 @@ public:
 
   /// Clamp a count to the range (identity in calibration mode).
   int32_t clamp(int32_t counts) const;
+
+  /// Read the MinPos/MaxPos clamp the controller currently holds (two SDOs). Normally
+  /// equal to range(), or the lifted clamp in calibration mode; differs when the
+  /// controller has reset or someone wrote it behind our back.
+  bool read_controller_limits(int32_t &min_counts, int32_t &max_counts);
   /// @}
 
   /// @name Homing: incremental encoders, every boot.
@@ -201,11 +201,8 @@ private:
   Range installed_limits() const;
 
   espp::Mcp266 &mcp_;
-  espp::CanopenClient &client_;
   std::mutex &mcp_mutex_;
   Config config_;
-  const uint16_t position_pid_get_; ///< Manufacturer object for the clamp readback.
-  const uint16_t set_encoder_object_;
 
   mutable std::mutex state_mutex_; ///< Guards everything below.
   Range range_;

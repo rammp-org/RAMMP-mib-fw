@@ -4,6 +4,6 @@ dependencies:
     version: '>=6.0'
   espp/twai: '>=1.3.5'
   espp/canopen: '>=1.3.5'
-  espp/mcp266: '>=1.3.5'
+  espp/mcp266: '>=1.3.7'
   espp/nvs: '>=1.3.5'
   espp/cli: '>=1.3.5'

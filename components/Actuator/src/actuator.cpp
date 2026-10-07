@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <thread>
 
-#include "detail/mcp266_core.hpp"
-
 namespace mib {
 
 using namespace std::chrono_literals;
@@ -12,26 +10,16 @@ using namespace std::chrono_literals;
 namespace {
 /// The widest clamp the controller accepts; used while calibrating or homing.
 constexpr Actuator::Range kUnlimited{-2'000'000'000, 2'000'000'000};
-/// Basicmicro packet-serial commands mirrored into the CANopen manufacturer region.
-constexpr uint8_t kSetEncoderM1 = 22;
-constexpr uint8_t kSetEncoderM2 = 23;
 /// Homing: the motor is given this long to start moving before a stall counts.
 constexpr auto kHomingGrace = 2s;
 constexpr auto kHomingPoll = 100ms;
 } // namespace
 
-Actuator::Actuator(espp::Mcp266 &mcp, espp::CanopenClient &client, std::mutex &mcp_mutex,
-                   const Config &config)
+Actuator::Actuator(espp::Mcp266 &mcp, std::mutex &mcp_mutex, const Config &config)
     : BaseComponent(config.name ? config.name : "Actuator", config.log_level)
     , mcp_(mcp)
-    , client_(client)
     , mcp_mutex_(mcp_mutex)
     , config_(config)
-    , position_pid_get_(config.axis == Axis::M1
-                            ? espp::detail::mcp266::axis_m1().position_pid_get
-                            : espp::detail::mcp266::axis_m2().position_pid_get)
-    , set_encoder_object_(espp::detail::mcp266::command_object(
-          config.axis == Axis::M1 ? kSetEncoderM1 : kSetEncoderM2))
     , range_(config.range) {}
 
 // ------------------------------------------------------------------ online marking
@@ -129,22 +117,26 @@ Actuator::Range Actuator::installed_limits() const {
   return calibration_mode_ ? kUnlimited : range_;
 }
 
-bool Actuator::verify_limits() {
-  // Reads MinPos/MaxPos of the position PID record straight from the client because
-  // espp::Mcp266 (1.3.6) exposes no read-back of the clamp it writes.
-  const Range expected = installed_limits();
+bool Actuator::read_controller_limits(int32_t &min_counts, int32_t &max_counts) {
+  if (!check_online()) {
+    return false;
+  }
+  // Two SDOs: just the MinPos/MaxPos clamp of the position PID record.
   std::error_code ec;
-  int32_t min = 0;
-  int32_t max = 0;
+  bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    min = client_.read_i32(position_pid_get_, 6, ec);
-    if (!ec) {
-      max = client_.read_i32(position_pid_get_, 7, ec);
-    }
+    ok = mcp_.read_position_limits(config_.axis, min_counts, max_counts, ec);
   }
-  if (ec) {
-    note_result(false, ec, "verify_limits");
+  note_result(ok, ec, "read_controller_limits");
+  return ok;
+}
+
+bool Actuator::verify_limits() {
+  const Range expected = installed_limits();
+  int32_t min = 0;
+  int32_t max = 0;
+  if (!read_controller_limits(min, max)) {
     return false;
   }
   if (min == expected.min && max == expected.max) {
@@ -412,8 +404,6 @@ Actuator::Range Actuator::range() const {
 // ------------------------------------------------------------------ homing
 
 bool Actuator::set_encoder(int32_t counts) {
-  // Basicmicro command 22/23 mirrored at 0x2016/0x2017; espp::Mcp266 (1.3.6) has no
-  // wrapper for it, hence the direct client write.
   if (!check_online()) {
     return false;
   }
@@ -421,7 +411,7 @@ bool Actuator::set_encoder(int32_t counts) {
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    ok = client_.write_i32(set_encoder_object_, 0, counts, ec);
+    ok = mcp_.set_encoder(config_.axis, counts, ec);
   }
   note_result(ok, ec, "set_encoder");
   if (!ok) {
