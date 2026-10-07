@@ -86,8 +86,8 @@ the direction, `selftest` the position loop. Build it from that directory with
 - Only profile position mode moves the motor over CANopen on the firmware
   espp tested; velocity and duty commands are accepted but inert. Jogging is
   therefore a small closed-loop position move, not an open-loop nudge.
-- The set-encoder write used by homing (Basicmicro command 22/23 mirrored at
-  0x2016/0x2017) has not yet been verified over CAN. `home()` reads the count
+- Homing writes the encoder count through `Mcp266::set_encoder` (espp 1.3.7,
+  Basicmicro command 22/23 mirrored at 0x2016/0x2017). `home()` reads the count
   back and fails loudly if it did not take.
 - Position loop gains are tuned on the controller (Motion Studio, or the
   debugger's MCP266 / CAN page on the `feature/21-mib-debugger` branch), not

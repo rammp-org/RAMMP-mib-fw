@@ -137,7 +137,7 @@ bool MIB::init_actuators() {
 			config.range = saved;
 		}
 		auto &slot = actuators_[static_cast<size_t>(row.leg)];
-		slot = std::make_unique<Actuator>(*controller.mcp, *controller.client, controller.mutex,
+		slot = std::make_unique<Actuator>(*controller.mcp, controller.mutex,
 																			config);
 	}
 
