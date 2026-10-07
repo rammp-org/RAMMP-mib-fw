@@ -12,6 +12,7 @@
 ///   stop                  quick stop
 ///
 ///   Calibration (absolute encoder, once per installation):
+///   limits                read the clamp the controller currently holds
 ///   cal on|off            lift or restore the range clamp
 ///   range <min> <max>     install a calibrated range and save it to NVS
 ///   forget                erase the saved range; the compiled default applies
@@ -53,7 +54,7 @@ constexpr int kTxGpio = 17;
 constexpr int kRxGpio = 16;
 constexpr uint32_t kBitrate = 1'000'000;
 // Which controller and channel the actuator is on.
-constexpr uint8_t kNodeId = 1;
+constexpr uint8_t kNodeId = 10;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = false;
@@ -141,7 +142,7 @@ bool bring_up() {
     config.range = saved;
   }
 
-  actuator = std::make_unique<mib::Actuator>(*mcp, *client, mcp_mutex, config);
+  actuator = std::make_unique<mib::Actuator>(*mcp, mcp_mutex, config);
   actuator->initialize();
   logger.info("actuator {}", actuator->ready() ? "ready" : "NOT ready (see log)");
   //! [actuator example bring-up]
@@ -243,6 +244,20 @@ std::unique_ptr<cli::Menu> build_menu() {
                "Quick stop");
 
   // Calibration: absolute encoders, once per installation.
+  menu->Insert(
+      "limits",
+      [](std::ostream &out) {
+        int32_t min = 0, max = 0;
+        if (actuator->read_controller_limits(min, max)) {
+          const auto r = actuator->range();
+          out << fmt::format("controller clamp [{}, {}]; actuator range [{}, {}]{}\n", min, max,
+                             r.min, r.max,
+                             actuator->calibration_mode() ? " (calibrating: clamp lifted)" : "");
+        } else {
+          out << "read failed (see log)\n";
+        }
+      },
+      "Read the MinPos/MaxPos clamp the controller currently holds");
   menu->Insert(
       "cal",
       [](std::ostream &out, std::string mode) {
