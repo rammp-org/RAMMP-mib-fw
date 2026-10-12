@@ -145,6 +145,8 @@ public:
   bool is_target_reached(bool &reached);
   bool get_drive_state(DriveState &state);
   bool read_statusword(uint16_t &statusword); ///< Raw CiA 402 statusword; bit 11 = limit active.
+  /// Whether the controller reports a limit switch active (statusword bit 11).
+  bool limit_active(bool &active);
 
   /// Clear whatever the controller has latched: the CiA 402 fault, and the Basicmicro
   /// latched conditions (E-stop, and on some pin configurations a tripped switch) through
