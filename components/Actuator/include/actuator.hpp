@@ -58,7 +58,10 @@ public:
   using DriveState = espp::Ds402Drive::State;
   using Range = ActuatorStore::Range;
 
-  /// Motion profile for a move, in the controller's units.
+  /// Motion profile for a move, in the controller's units. Sent with every move as the
+  /// CiA 402 profile objects. The MCP266 firmware tested stores them but does not apply
+  /// them (see DESIGN.md): moves run at the velocity loop's QPPS with no ramp, so today
+  /// the speed cap is QPPS on the controller and these values are documentation.
   struct Profile {
     uint32_t velocity;     ///< Cruise speed, counts per second.
     uint32_t acceleration; ///< Counts per second squared.
