@@ -10,6 +10,7 @@
 ///   inc / dec             move one jog step
 ///   wait                  block until the drive reports target reached
 ///   stop                  quick stop
+///   clear                 clear a latched fault / limit / E-stop on the controller
 ///
 ///   Calibration (absolute encoder, once per installation):
 ///   limits                read the clamp the controller currently holds
@@ -57,17 +58,21 @@ constexpr uint32_t kBitrate = 1'000'000;
 constexpr uint8_t kNodeId = 10;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
-constexpr bool kHomingRequired = false;
+constexpr bool kHomingRequired = true;
+// Which way the home switch lies: -1 if `dec` drives toward it, +1 if `inc` does. The
+// carriage homes at the front switch, which becomes count 0; travel runs to kTravel.
+constexpr int kHomeDirection = -1;
+constexpr int32_t kTravel = 12600;
 // How the actuator behaves. Positions are the joint encoder's counts.
 constexpr mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
     .axis = kAxis,
-    .range = {37000, 45000},             // calibrated travel; a range saved to NVS overrides it
+    .range = {0, kTravel},          // calibrated travel; a range saved to NVS overrides it
     .profile = {500, 500, 500},     // counts/s, counts/s^2, counts/s^2
-    .jog_step = 50,                 // counts per inc / dec
+    .jog_step = 500,                // counts per inc / dec
     .tolerance = 10,                // counts within which a position counts as at target
-    .hardware_limits = kHomingRequired, // limit switches wired to this channel
-    .homing = {.required = kHomingRequired, .direction = -1, .home_count = 0},
+    .hardware_limits = true,        // limit switches at both ends, configured on the controller
+    .homing = {.required = kHomingRequired, .direction = kHomeDirection, .home_count = 0},
     .store = nullptr,               // filled in at bring-up
 };
 // -----------------------------------------------------------------------------
@@ -212,8 +217,10 @@ std::unique_ptr<cli::Menu> build_menu() {
       [](std::ostream &out) {
         mib::Actuator::DriveState state{};
         bool reached = false;
+        uint16_t sw = 0;
         const bool have_state = actuator->get_drive_state(state);
         const bool have_reached = have_state && actuator->is_target_reached(reached);
+        const bool have_sw = actuator->read_statusword(sw);
         const auto r = actuator->range();
         out << fmt::format("{}: {}, {}, drive {}, target {}, range [{}, {}], jog {}{}{}\n",
                            actuator->name(), actuator->online() ? "online" : "OFFLINE",
@@ -223,6 +230,11 @@ std::unique_ptr<cli::Menu> build_menu() {
                            r.max, actuator->config().jog_step,
                            actuator->calibration_mode() ? ", CALIBRATING (clamp lifted)" : "",
                            kHomingRequired ? (actuator->homed() ? ", homed" : ", NOT homed") : "");
+        if (have_sw) {
+          out << fmt::format("statusword 0x{:04X}{}{}{}\n", sw,
+                             (sw & (1 << 11)) ? " [internal limit active]" : "",
+                             (sw & (1 << 3)) ? " [FAULT]" : "", (sw & (1 << 7)) ? " [warning]" : "");
+        }
         print_position(out);
       },
       "Position, drive state, target reached, online, range");
@@ -242,6 +254,8 @@ std::unique_ptr<cli::Menu> build_menu() {
                "Block until the drive reports target reached");
   menu->Insert("stop", [](std::ostream &out) { report(out, actuator->stop(), "stop"); },
                "Quick stop");
+  menu->Insert("clear", [](std::ostream &out) { report(out, actuator->clear_faults(), "clear"); },
+               "Clear a latched fault, limit or E-stop on the controller");
 
   // Calibration: absolute encoders, once per installation.
   menu->Insert(
