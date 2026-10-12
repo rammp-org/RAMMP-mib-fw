@@ -7,6 +7,7 @@
 ///   init                  re-run initialize() (faults, clamp, saved position)
 ///   status                position, state, range
 ///   pos                   read the position from the encoder
+///   profile [v a d]       show or set the motion profile used by moves (counts/s, /s^2)
 ///   abs <counts>          move to an absolute count
 ///   rel <delta>           move by a signed number of counts
 ///   inc / dec             move one jog step
@@ -94,6 +95,8 @@ std::unique_ptr<espp::Mcp266> mcp;
 std::mutex mcp_mutex;
 mib::ActuatorStore store;
 std::unique_ptr<mib::Actuator> actuator;
+// The profile moves use; `profile` changes it at the prompt to try ramps without reflashing.
+mib::Actuator::Profile profile = kActuatorConfig.profile;
 
 bool bring_up() {
   //! [actuator example bring-up]
@@ -296,10 +299,32 @@ std::unique_ptr<cli::Menu> build_menu() {
                "Re-run initialize(): clear faults, install the clamp, restore a saved position");
   menu->Insert("pos", [](std::ostream &out) { print_position(out); }, "Read the position");
   menu->Insert(
-      "abs", [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts), "move"); },
+      "profile",
+      [](std::ostream &out) {
+        out << fmt::format("profile: velocity {} counts/s, accel {} counts/s^2, decel {} counts/s^2\n",
+                           profile.velocity, profile.acceleration, profile.deceleration);
+      },
+      "Show the motion profile used by abs / rel");
+  menu->Insert(
+      "profile",
+      [](std::ostream &out, int velocity, int accel, int decel) {
+        if (velocity <= 0 || accel <= 0 || decel <= 0) {
+          out << "all three must be positive\n";
+          return;
+        }
+        profile = {static_cast<uint32_t>(velocity), static_cast<uint32_t>(accel),
+                   static_cast<uint32_t>(decel)};
+        out << fmt::format("profile set: ramp up {:.1f} s, ramp down {:.1f} s at full speed\n",
+                           static_cast<float>(velocity) / accel, static_cast<float>(velocity) / decel);
+      },
+      "Set the motion profile: profile <velocity> <accel> <decel>");
+  menu->Insert(
+      "abs",
+      [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts, profile), "move"); },
       "Move to an absolute count: abs <counts>");
   menu->Insert(
-      "rel", [](std::ostream &out, int delta) { report(out, actuator->move_relative(delta), "move"); },
+      "rel",
+      [](std::ostream &out, int delta) { report(out, actuator->move_relative(delta, profile), "move"); },
       "Move by a signed count: rel <delta>");
   menu->Insert("inc", [](std::ostream &out) { report(out, actuator->increment(), "increment"); },
                "Move one jog step up");
