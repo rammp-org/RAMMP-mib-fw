@@ -208,6 +208,13 @@ private:
   /// sequence cannot exit: first try to re-enable in place (holds position), else disable
   /// voltage (coasts) so the enable sequence can start from "switch on disabled".
   bool release_quick_stop();
+  /// Send a controlword and poll until the drive reports `wanted` (1 s). Caller holds
+  /// mcp_mutex_.
+  bool command_state(uint16_t controlword, DriveState wanted, std::error_code &ec);
+  /// Take the drive out of any state in which its position loop is active (operation
+  /// enabled, quick stop active) so the encoder count can be rewritten without the loop
+  /// chasing the old target. Caller holds mcp_mutex_.
+  bool disable_loop(std::error_code &ec);
   bool read_position_locked(int32_t &counts, std::error_code &ec);
   Range installed_limits() const;
 

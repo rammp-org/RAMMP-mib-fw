@@ -310,39 +310,55 @@ bool Actuator::release_quick_stop() {
   if (drive->get_state(ec) != DriveState::QuickStopActive || ec) {
     return !ec;
   }
-  // Send a controlword and poll for the state it should produce.
-  const auto reach = [&](uint16_t controlword, DriveState wanted) {
-    if (!drive->set_controlword(controlword, ec)) {
-      return false;
-    }
-    const auto deadline = std::chrono::steady_clock::now() + 1s;
-    while (std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(25ms);
-      const auto state = drive->get_state(ec);
-      if (ec) {
-        return false;
-      }
-      if (state == wanted) {
-        return true;
-      }
-    }
-    return false;
-  };
   // CiA 402 transition 16: quick stop active -> operation enabled, allowed when the
   // drive's quick-stop option holds position. Keeps the axis held if it works.
-  if (reach(espp::detail::ds402::CW_ENABLE_OPERATION, DriveState::OperationEnabled)) {
+  if (command_state(espp::detail::ds402::CW_ENABLE_OPERATION, DriveState::OperationEnabled, ec)) {
     logger_.info("{}: quick stop released, axis re-enabled", config_.name);
     return true;
   }
   // Transition 12: disable voltage -> switch on disabled. The axis coasts until the next
   // move re-enables it.
   ec.clear();
-  if (reach(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled)) {
+  if (command_state(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled, ec)) {
     logger_.info("{}: quick stop released, axis disabled until the next move", config_.name);
     return true;
   }
   logger_.error("{}: could not leave quick stop: {}", config_.name, ec.message());
   return false;
+}
+
+bool Actuator::command_state(uint16_t controlword, DriveState wanted, std::error_code &ec) {
+  auto *drive = mcp_.drive(config_.axis);
+  if (drive == nullptr || !drive->set_controlword(controlword, ec)) {
+    return false;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(25ms);
+    const auto state = drive->get_state(ec);
+    if (ec) {
+      return false;
+    }
+    if (state == wanted) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Actuator::disable_loop(std::error_code &ec) {
+  auto *drive = mcp_.drive(config_.axis);
+  if (drive == nullptr) {
+    return false;
+  }
+  const auto state = drive->get_state(ec);
+  if (ec) {
+    return false;
+  }
+  if (state != DriveState::OperationEnabled && state != DriveState::QuickStopActive) {
+    return true; // no loop running
+  }
+  return command_state(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled, ec);
 }
 
 // ------------------------------------------------------------------ moves
@@ -506,7 +522,16 @@ bool Actuator::set_encoder(int32_t counts) {
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    ok = mcp_.set_encoder(config_.axis, counts, ec);
+    // A running position loop would chase its old target the moment the count changes
+    // under it (seen on the bench: set to 0 at 20000, the motor drove back to 20000).
+    // Take the loop down first; the next move re-enables with a fresh target.
+    ok = disable_loop(ec);
+    if (!ok) {
+      logger_.error("{}: cannot disable the loop before setting the encoder: {}", config_.name,
+                    ec.message());
+    } else {
+      ok = mcp_.set_encoder(config_.axis, counts, ec);
+    }
   }
   note_result(ok, ec, "set_encoder");
   if (!ok) {
