@@ -295,8 +295,54 @@ bool Actuator::clear_faults() {
   note_result(faults_ok, ec, "clear_faults");
   if (faults_ok) {
     logger_.info("{}: faults cleared{}", config_.name, estop_ok ? " (E-stop reset accepted)" : "");
+    release_quick_stop();
   }
   return faults_ok;
+}
+
+bool Actuator::release_quick_stop() {
+  std::error_code ec;
+  std::lock_guard<std::mutex> lock(mcp_mutex_);
+  auto *drive = mcp_.drive(config_.axis);
+  if (drive == nullptr) {
+    return false;
+  }
+  if (drive->get_state(ec) != DriveState::QuickStopActive || ec) {
+    return !ec;
+  }
+  // Send a controlword and poll for the state it should produce.
+  const auto reach = [&](uint16_t controlword, DriveState wanted) {
+    if (!drive->set_controlword(controlword, ec)) {
+      return false;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(25ms);
+      const auto state = drive->get_state(ec);
+      if (ec) {
+        return false;
+      }
+      if (state == wanted) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // CiA 402 transition 16: quick stop active -> operation enabled, allowed when the
+  // drive's quick-stop option holds position. Keeps the axis held if it works.
+  if (reach(espp::detail::ds402::CW_ENABLE_OPERATION, DriveState::OperationEnabled)) {
+    logger_.info("{}: quick stop released, axis re-enabled", config_.name);
+    return true;
+  }
+  // Transition 12: disable voltage -> switch on disabled. The axis coasts until the next
+  // move re-enables it.
+  ec.clear();
+  if (reach(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled)) {
+    logger_.info("{}: quick stop released, axis disabled until the next move", config_.name);
+    return true;
+  }
+  logger_.error("{}: could not leave quick stop: {}", config_.name, ec.message());
+  return false;
 }
 
 // ------------------------------------------------------------------ moves
@@ -326,6 +372,9 @@ bool Actuator::do_move(int32_t counts, const Profile &profile) {
   const int32_t clamped = clamp(counts);
   if (clamped != counts) {
     logger_.warn("{}: target {} clamped to {}", config_.name, counts, clamped);
+  }
+  if (!release_quick_stop()) {
+    return false;
   }
   std::error_code ec;
   bool ok;

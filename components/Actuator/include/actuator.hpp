@@ -204,6 +204,10 @@ private:
   /// controller has lost it (a reset), in which case initialize() is re-run.
   bool verify_limits();
   bool do_move(int32_t counts, const Profile &profile);
+  /// Leave "quick stop active" (where stop() parks the drive), which the standard enable
+  /// sequence cannot exit: first try to re-enable in place (holds position), else disable
+  /// voltage (coasts) so the enable sequence can start from "switch on disabled".
+  bool release_quick_stop();
   bool read_position_locked(int32_t &counts, std::error_code &ec);
   Range installed_limits() const;
 
