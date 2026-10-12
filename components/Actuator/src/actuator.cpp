@@ -408,7 +408,22 @@ bool Actuator::do_move(int32_t counts, const Profile &profile) {
   {
     bool on_limit = false;
     if (limit_active(on_limit) && on_limit) {
-      logger_.warn("{}: limit switch active; restarting the drive before the move",
+      // The statusword says a switch is active but not which one. The move that was
+      // stopped was heading toward it, so a new move in that same direction would only
+      // push into the switch again: refuse it. A move the other way is allowed after the
+      // restart.
+      int32_t here = 0;
+      const auto stopped_target = last_target();
+      if (read_position(here) && stopped_target) {
+        const bool stopped_forward = *stopped_target > here;
+        const bool new_forward = clamped > here;
+        if (clamped != here && stopped_forward == new_forward) {
+          logger_.warn("{}: move to {} refused, a limit switch is active in that direction",
+                       config_.name, clamped);
+          return false;
+        }
+      }
+      logger_.warn("{}: limit switch active; restarting the drive before moving away",
                    config_.name);
       std::error_code reset_ec;
       std::lock_guard<std::mutex> lock(mcp_mutex_);
