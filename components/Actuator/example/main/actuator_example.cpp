@@ -13,6 +13,7 @@
 ///   wait                  block until the drive reports target reached
 ///   stop                  quick stop
 ///   clear                 clear a latched fault / limit / E-stop on the controller
+///   flags                 the controller's own status flags (Basicmicro command 90)
 ///
 ///   Calibration (absolute encoder, once per installation):
 ///   limits                read the clamp the controller currently holds
@@ -310,6 +311,54 @@ std::unique_ptr<cli::Menu> build_menu() {
                "Quick stop");
   menu->Insert("clear", [](std::ostream &out) { report(out, actuator->clear_faults(), "clear"); },
                "Clear a latched fault, limit or E-stop on the controller");
+  menu->Insert(
+      "flags",
+      [](std::ostream &out) {
+        // Basicmicro "read status" (command 90) mirrored at 0x205A. espp::Mcp266 does not
+        // wrap it yet, so this reads it through the client directly. The bit map is the
+        // RoboClaw/MCP 32-bit status word from the Basicmicro manual; unverified on this
+        // firmware, which is what this command is for.
+        static constexpr struct { uint32_t bit; const char *name; } kBits[] = {
+            {0x00000001, "E-stop"}, {0x00000002, "temperature error"},
+            {0x00000004, "temperature 2 error"}, {0x00000008, "main voltage high error"},
+            {0x00000010, "logic voltage high error"}, {0x00000020, "logic voltage low error"},
+            {0x00000040, "M1 driver fault"}, {0x00000080, "M2 driver fault"},
+            {0x00000100, "M1 speed error"}, {0x00000200, "M2 speed error"},
+            {0x00000400, "M1 position error"}, {0x00000800, "M2 position error"},
+            {0x00001000, "M1 current error"}, {0x00002000, "M2 current error"},
+            {0x00010000, "M1 over-current warning"}, {0x00020000, "M2 over-current warning"},
+            {0x00040000, "main voltage high warning"}, {0x00080000, "main voltage low warning"},
+            {0x00100000, "temperature warning"}, {0x00200000, "temperature 2 warning"},
+            {0x00400000, "S4 signal triggered"}, {0x00800000, "S5 signal triggered"},
+            {0x01000000, "speed error limit warning"}, {0x02000000, "position error limit warning"},
+        };
+        std::error_code ec;
+        uint32_t flags = client->read_u32(0x205A, 0, ec);
+        int width = 32;
+        if (ec) {
+          ec.clear();
+          flags = client->read_u16(0x205A, 0, ec);
+          width = 16;
+        }
+        if (ec) {
+          out << fmt::format("status flags read failed: {}\n", ec.message());
+          return;
+        }
+        out << fmt::format("status flags 0x{:08X} ({}-bit):", flags, width);
+        bool any = false;
+        for (const auto &b : kBits) {
+          if (flags & b.bit) {
+            out << " [" << b.name << "]";
+            any = true;
+          }
+        }
+        out << (any ? "\n" : " normal\n");
+        uint16_t sw = 0;
+        if (actuator->read_statusword(sw)) {
+          out << fmt::format("statusword 0x{:04X}\n", sw);
+        }
+      },
+      "Read the controller's own status flags (command 90) and decode them");
 
   // Calibration: absolute encoders, once per installation.
   menu->Insert(
