@@ -372,7 +372,7 @@ bool Actuator::disable_loop(std::error_code &ec) {
 
 // ------------------------------------------------------------------ moves
 
-bool Actuator::do_move(int32_t counts, const Profile &profile) {
+bool Actuator::do_move(int32_t counts, const Profile &profile, bool jog) {
   if (!initialized()) {
     logger_.error("{}: move refused, actuator is not initialised (see the initialize() log)",
                   config_.name);
@@ -384,6 +384,13 @@ bool Actuator::do_move(int32_t counts, const Profile &profile) {
   if (!ready() && !calibration_mode()) {
     logger_.error("{}: move refused, needs homing (or calibration mode for a jog)",
                   config_.name);
+    return false;
+  }
+  // With the clamp lifted, a long move has nothing to stop it; only jogs are allowed.
+  if (calibration_mode() && !jog) {
+    logger_.error("{}: move to {} refused, only increment/decrement are allowed in calibration "
+                  "mode (install a range and leave it for longer moves)",
+                  config_.name, counts);
     return false;
   }
   if (!check_online()) {
@@ -467,9 +474,15 @@ bool Actuator::move_relative(int32_t delta, const Profile &profile) {
                  profile);
 }
 
-bool Actuator::increment() { return move_relative(config_.jog_step); }
+bool Actuator::increment() {
+  int32_t current = 0;
+  return read_position(current) && do_move(current + config_.jog_step, config_.profile, true);
+}
 
-bool Actuator::decrement() { return move_relative(-config_.jog_step); }
+bool Actuator::decrement() {
+  int32_t current = 0;
+  return read_position(current) && do_move(current - config_.jog_step, config_.profile, true);
+}
 
 bool Actuator::stop() {
   if (!check_online()) {

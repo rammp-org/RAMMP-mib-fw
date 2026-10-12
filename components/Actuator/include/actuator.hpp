@@ -167,8 +167,11 @@ public:
   /// @{
 
   /// Lift or restore the range clamp on the controller so the axis can be driven to its
-  /// mechanical ends while a calibration script records the readings. Also lets an
-  /// unhomed incremental-encoder axis be jogged.
+  /// mechanical ends while a calibration script records the readings, and let an unhomed
+  /// incremental-encoder axis be jogged. With the clamp lifted nothing limits travel but
+  /// the current limit and any switches, so only jogs (increment / decrement) are
+  /// accepted in this mode; absolute and relative moves are refused. Off at every boot;
+  /// nothing enters it but an explicit call.
   bool set_calibration_mode(bool enabled);
   bool calibration_mode() const;
 
@@ -218,7 +221,7 @@ private:
   /// Read the controller's clamp back and compare with what we installed; false if the
   /// controller has lost it (a reset), in which case initialize() is re-run.
   bool verify_limits();
-  bool do_move(int32_t counts, const Profile &profile);
+  bool do_move(int32_t counts, const Profile &profile, bool jog = false);
   /// Leave "quick stop active" (where stop() parks the drive), which the standard enable
   /// sequence cannot exit: first try to re-enable in place (holds position), else disable
   /// voltage (coasts) so the enable sequence can start from "switch on disabled".
