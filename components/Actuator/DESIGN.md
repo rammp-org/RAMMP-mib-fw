@@ -311,10 +311,14 @@ Recorded here because each one cost time and none is visible in the code.
   Supported modes (0x6502) read 0x700: cyclic-synchronous velocity and torque
   only. **The ramp that works is the controller's own:** Motion Studio's
   Position Settings page has stored Speed, Accel and Decel per channel, and
-  CANopen position moves use them (confirmed on the bench). So the speed cap
-  and the trapezoid are controller settings, saved to EEPROM and to the
-  settings file with the gains; the Actuator's `Profile` is sent but inert.
-  No MIB-side trajectory generation is needed.
+  CANopen position moves use them (confirmed on the bench). Correction after
+  more testing: the profile *velocity* (0x6081) IS honoured when it is below
+  the stored Speed (100 counts/s made homing visibly slow and cogging; 500 was
+  smooth), so the Actuator's `Profile.velocity` is a per-move cap under the
+  stored ceiling, while accel/decel come only from the stored settings. The
+  trapezoid is therefore a controller setting, saved to EEPROM and to the
+  settings file with the gains; no MIB-side trajectory generation is needed.
+  Keep per-move speeds well above the velocity loop's cogging floor.
 - **Quick stop parks the drive.** `stop()` leaves the drive in quick-stop-active,
   which the standard enable sequence cannot leave; the Actuator now releases it
   before every move (re-enable in place, else disable voltage). Rewriting the

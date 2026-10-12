@@ -59,11 +59,12 @@ public:
   using DriveState = espp::Ds402Drive::State;
   using Range = ActuatorStore::Range;
 
-  /// Motion profile for a move, in the controller's units. Sent with every move as the
-  /// CiA 402 profile objects. The MCP266 firmware tested stores them but does not apply
-  /// them: it uses the per-channel Speed, Accel and Decel from Motion Studio's Position
-  /// Settings page instead (see DESIGN.md). Those are the real speed cap and ramp; these
-  /// values are documentation until a firmware honours the objects.
+  /// Motion profile for a move, in the controller's units, sent with every move as the
+  /// CiA 402 profile objects. On the MCP266 firmware tested (see DESIGN.md): `velocity`
+  /// is honoured as a per-move speed, capped by the channel's stored Speed from Motion
+  /// Studio's Position Settings page; `acceleration` and `deceleration` are stored but
+  /// not applied, the ramp always comes from the stored Accel and Decel. Too low a
+  /// velocity makes the velocity loop cog (seen at 100 counts/s with QPPS 2750).
   struct Profile {
     uint32_t velocity;     ///< Cruise speed, counts per second.
     uint32_t acceleration; ///< Counts per second squared.
