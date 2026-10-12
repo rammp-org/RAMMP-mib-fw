@@ -84,7 +84,12 @@ const mib::Actuator::Config kActuatorConfig{
     .jog_step = 500,                // counts per inc / dec
     .tolerance = 10,                // counts within which a position counts as at target
     .hardware_limits = true,        // limit switches at both ends, configured on the controller
-    .homing = {.required = kHomingRequired, .direction = kHomeDirection, .home_count = kTravel},
+    .homing = {.required = kHomingRequired,
+               .direction = kHomeDirection,
+               .home_count = kTravel,
+               // Same speed as normal moves. A crawl (the old 100 counts/s default) makes
+               // the velocity loop cog; the switch ends the approach, not the speed.
+               .profile = {500, 500, 500}},
     .store = nullptr,               // filled in at bring-up
 };
 // -----------------------------------------------------------------------------
