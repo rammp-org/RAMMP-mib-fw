@@ -302,3 +302,23 @@ Recorded here because each one cost time and none is visible in the code.
   over CAN to its target on a tuned motor; `home()` against a real switch;
   position memory across a power cycle; the controller-reset detection. The
   robot's limit switches make the first two safe to try there.
+- **No motion ramp over CANopen on this controller.** The CiA 402 profile
+  objects (0x6081 velocity, 0x6083/0x6084 accel/decel) are accepted and read
+  back unchanged but not used; the motion profile type (0x6086) is already 0;
+  the native position command mirror (command 65 at 0x2041, five subindices,
+  buffer flag last) accepts every write and moves nothing, like the speed and
+  duty mirrors espp found; the default-accel mirror (0x2044) is read-only.
+  Supported modes (0x6502) read 0x700: cyclic-synchronous velocity and torque
+  only. Profile position mode works regardless, as a bare position loop that
+  runs at the velocity loop's ceiling. Consequences: the speed cap is QPPS on
+  the controller; the Actuator's `Profile` is sent but inert today; a true
+  trapezoid would have to be generated on the MIB in cyclic-synchronous
+  velocity mode (PDO + SYNC each cycle, position closed on the MIB), which is
+  deferred until the real load shows it is needed. A free motor on the bench
+  is the worst case; a self-locking lead screw with a leg on it is not.
+- **Quick stop parks the drive.** `stop()` leaves the drive in quick-stop-active,
+  which the standard enable sequence cannot leave; the Actuator now releases it
+  before every move (re-enable in place, else disable voltage). Rewriting the
+  encoder count while a loop is active makes the loop chase its old target
+  (set to 0 at 20000: the motor drove back to 20000); `set_encoder()` now
+  disables the loop first.
