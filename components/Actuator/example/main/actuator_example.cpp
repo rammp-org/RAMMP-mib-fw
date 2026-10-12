@@ -3,6 +3,7 @@
 /// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
 /// console over the serial monitor to exercise its API:
 ///
+///   init                  re-run initialize() (faults, clamp, saved position)
 ///   status                position, state, range
 ///   pos                   read the position from the encoder
 ///   abs <counts>          move to an absolute count
@@ -55,7 +56,7 @@ constexpr int kTxGpio = 17;
 constexpr int kRxGpio = 16;
 constexpr uint32_t kBitrate = 1'000'000;
 // Which controller and channel the actuator is on.
-constexpr uint8_t kNodeId = 10;
+constexpr uint8_t kNodeId = 3;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = true;
@@ -239,6 +240,8 @@ std::unique_ptr<cli::Menu> build_menu() {
       },
       "Position, drive state, target reached, online, range");
 
+  menu->Insert("init", [](std::ostream &out) { report(out, actuator->initialize(), "initialize"); },
+               "Re-run initialize(): clear faults, install the clamp, restore a saved position");
   menu->Insert("pos", [](std::ostream &out) { print_position(out); }, "Read the position");
   menu->Insert(
       "abs", [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts), "move"); },

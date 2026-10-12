@@ -152,7 +152,8 @@ public:
   /// @{
 
   /// Lift or restore the range clamp on the controller so the axis can be driven to its
-  /// mechanical ends while a calibration script records the readings.
+  /// mechanical ends while a calibration script records the readings. Also lets an
+  /// unhomed incremental-encoder axis be jogged.
   bool set_calibration_mode(bool enabled);
   bool calibration_mode() const;
 

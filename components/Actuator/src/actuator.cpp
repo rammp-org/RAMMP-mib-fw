@@ -301,9 +301,17 @@ bool Actuator::clear_faults() {
 // ------------------------------------------------------------------ moves
 
 bool Actuator::do_move(int32_t counts, const Profile &profile) {
-  if (!ready()) {
-    logger_.error("{}: move refused, actuator is not ready ({})", config_.name,
-                  initialized() ? "needs homing" : "not initialised");
+  if (!initialized()) {
+    logger_.error("{}: move refused, actuator is not initialised (see the initialize() log)",
+                  config_.name);
+    return false;
+  }
+  // An unhomed incremental encoder has no meaningful count, so moves are refused, except
+  // in calibration mode: that is the mode for jogging without a valid range or count, and
+  // the clamp is lifted for it.
+  if (!ready() && !calibration_mode()) {
+    logger_.error("{}: move refused, needs homing (or calibration mode for a jog)",
+                  config_.name);
     return false;
   }
   if (!check_online()) {
