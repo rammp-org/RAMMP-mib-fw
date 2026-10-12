@@ -276,6 +276,15 @@ bool Actuator::read_statusword(uint16_t &statusword) {
   return ok;
 }
 
+bool Actuator::limit_active(bool &active) {
+  uint16_t statusword = 0;
+  if (!read_statusword(statusword)) {
+    return false;
+  }
+  active = (statusword & (1u << 11)) != 0;
+  return true;
+}
+
 bool Actuator::clear_faults() {
   if (!check_online()) {
     return false;
@@ -391,6 +400,23 @@ bool Actuator::do_move(int32_t counts, const Profile &profile) {
   }
   if (!release_quick_stop()) {
     return false;
+  }
+  // A limit switch that stopped the previous move leaves the controller's position loop
+  // wound up against an unreachable target; the next move, which releases the limit,
+  // then runs away (seen on the bench). Restart the drive from "switch on disabled" so
+  // the loop starts clean.
+  {
+    bool on_limit = false;
+    if (limit_active(on_limit) && on_limit) {
+      logger_.warn("{}: limit switch active; restarting the drive before the move",
+                   config_.name);
+      std::error_code reset_ec;
+      std::lock_guard<std::mutex> lock(mcp_mutex_);
+      if (!disable_loop(reset_ec)) {
+        logger_.error("{}: could not restart the drive: {}", config_.name, reset_ec.message());
+        return false;
+      }
+    }
   }
   std::error_code ec;
   bool ok;
