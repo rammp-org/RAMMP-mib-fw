@@ -10,6 +10,19 @@ bool IMU::init(void) {
 
   bno055_t bno055{};
 
+  // gpio_config_t rst_conf = {
+  //     .pin_bit_mask = (1ULL << GPIO_NUM_20),
+  //     .mode = GPIO_MODE_OUTPUT,
+  //     .pull_up_en = GPIO_PULLUP_DISABLE,
+  //     .pull_down_en = GPIO_PULLDOWN_DISABLE,
+  //     .intr_type = GPIO_INTR_DISABLE,
+  //     .hys_ctrl_mode = GPIO_HYS_SOFT_DISABLE,
+  // };
+  //   gpio_config(&rst_conf);
+  //   gpio_set_level(GPIO_NUM_20, 1); // ensure high before reset
+  //   bno055_reset_chip(&bno055);
+  //   vTaskDelay(pdMS_TO_TICKS(700));
+
   i2c_master_bus_config_t i2c_master_conf{};
 
   i2c_master_conf.clk_source = I2C_CLK_SRC_DEFAULT;
