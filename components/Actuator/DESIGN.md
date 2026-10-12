@@ -260,3 +260,45 @@ machine talks units.
    promote into `MIBconfig.hpp` defaults.
 6. Bench checks: the set-encoder mirror (homing depends on it); whether
    MinPos/MaxPos and 0x607D are one mechanism or two.
+
+## Bench findings (October 2026, one MCP266, Dumore motor with AB encoder)
+
+Recorded here because each one cost time and none is visible in the code.
+
+- **Motion Studio and firmware.** The public Motion Studio build may "update" a
+  controller *down* to the firmware it bundles, wiping the settings. Back the
+  settings up first (the debugger's CAN page, or a settings file from Motion
+  Studio) and keep the installer that matches the firmware in use. Updating
+  through Motion Studio itself to its latest firmware worked.
+- **After a firmware reset, check these before anything else:** CAN mode
+  CANopen, 1 Mbit/s, node id (a reset left it at 1); encoder pin *enabled* and
+  set to quadrature or absolute (disabled looks like a dead encoder and makes
+  autotune report "encoder timeout"); main battery minimum and maximum; the
+  per-motor current limit; limit-pin functions and polarity.
+- **Battery limits are the usual cause of a move that faults at once.** With
+  the minimum at 29 V and a 30 V supply, the sag at motor start tripped "main
+  battery low", the drive dropped into CiA 402 FAULT, the error cleared itself
+  when the rail recovered, and `flags` read normal afterwards. For a 24 V
+  system: minimum about 21 V, maximum 30 V or above (regeneration lifts the
+  rail), and Motion Studio silently sets a tight maximum when the minimum is
+  changed.
+- **Bench supplies and regeneration.** A brushed motor returns energy to the
+  rail when it brakes; a bench supply cannot sink it and crackles or trips. A
+  4700 to 10000 µF capacitor across the controller's main terminals, or the
+  real battery, fixes it.
+- **The MCP266 does not report limit switches over CAN**: not in the CiA 402
+  statusword (bit 11 never set, pressed or not, idle), nor in the command-90
+  status flags (always 0). Limit switches are therefore detected only by their
+  effect, the count ceasing to change while a move is commanded, which is what
+  `home()` already does. A pin configured as a *home* input latches an "M1
+  home error"; configured as a *limit* input it blocks that direction without
+  latching. MIB-owned homing wants the limit function.
+- **Tuning.** Velocity autotune first (QPPS 2750 on the bench motor), then
+  position; the gains survive `initialize()` unchanged, so espp's PID
+  field-order remap is correct on this firmware. Autotune on the bench needs
+  the limit pins disabled and the current limit raised; a motor on the table
+  has nothing to protect.
+- **Unverified, because the bench ended before it:** a complete position move
+  over CAN to its target on a tuned motor; `home()` against a real switch;
+  position memory across a power cycle; the controller-reset detection. The
+  robot's limit switches make the first two safe to try there.
