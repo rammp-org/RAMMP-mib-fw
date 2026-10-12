@@ -75,7 +75,8 @@ public:
     bool required{false};            ///< True for an incremental (AB) encoder.
     int direction{-1};               ///< +1 or -1: which way the home switch lies.
     int32_t home_count{0};           ///< Count installed once the switch has stopped the motor.
-    Profile profile{100, 200, 200};  ///< Slow approach.
+    Profile profile{500, 500, 500};  ///< Approach profile. Too slow a speed makes the
+                                     ///< velocity loop cog; use a normal move speed.
     int32_t stall_counts{2};         ///< Movement below this over stall_time means stopped.
     std::chrono::milliseconds stall_time{500};
     std::chrono::seconds timeout{60};
