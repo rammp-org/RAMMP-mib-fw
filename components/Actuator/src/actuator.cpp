@@ -261,6 +261,43 @@ bool Actuator::get_drive_state(DriveState &state) {
   return ok;
 }
 
+bool Actuator::read_statusword(uint16_t &statusword) {
+  if (!check_online()) {
+    return false;
+  }
+  std::error_code ec;
+  bool ok;
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    ok = mcp_.read_statusword(config_.axis, statusword, ec);
+  }
+  note_result(ok, ec, "read_statusword");
+  return ok;
+}
+
+bool Actuator::clear_faults() {
+  if (!check_online()) {
+    return false;
+  }
+  std::error_code ec;
+  bool faults_ok;
+  bool estop_ok;
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    faults_ok = mcp_.reset_faults(ec);
+    std::error_code estop_ec;
+    estop_ok = mcp_.reset_estop(estop_ec); // device-wide; rejected when nothing is latched
+    if (!estop_ok) {
+      logger_.debug("{}: E-stop reset not accepted: {}", config_.name, estop_ec.message());
+    }
+  }
+  note_result(faults_ok, ec, "clear_faults");
+  if (faults_ok) {
+    logger_.info("{}: faults cleared{}", config_.name, estop_ok ? " (E-stop reset accepted)" : "");
+  }
+  return faults_ok;
+}
+
 // ------------------------------------------------------------------ moves
 
 bool Actuator::do_move(int32_t counts, const Profile &profile) {
@@ -507,13 +544,22 @@ bool Actuator::home() {
   int32_t start = 0;
   bool ok = read_position(start);
   const int32_t far = h.direction < 0 ? -1'900'000'000 : 1'900'000'000;
-  {
+  if (ok) {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    ok = ok && mcp_.move_to_position(config_.axis, far, h.profile.velocity,
-                                     h.profile.acceleration, h.profile.deceleration, ec);
+    ok = mcp_.move_to_position(config_.axis, far, h.profile.velocity, h.profile.acceleration,
+                               h.profile.deceleration, ec);
+    if (!ok && ec == std::errc::timed_out) {
+      // The set-point was taken but the acknowledge handshake did not finish in time,
+      // which this controller does on a long move. The motor is moving: watch for the
+      // stall as usual rather than abandoning a running approach.
+      logger_.warn("{}: approach handshake timed out; assuming the move is running",
+                   config_.name);
+      ok = true;
+    }
   }
   if (!ok) {
     note_result(false, ec, "home: approach");
+    stop(); // never leave an approach running after a failure
   } else {
     // Wait for the limit switch to stop the motor: the count stops changing.
     const auto begun = std::chrono::steady_clock::now();
@@ -549,6 +595,9 @@ bool Actuator::home() {
   }
 
   if (ok) {
+    // Driving into the switch may have latched a fault or a limit condition on the
+    // controller; clear it before writing the count and before the next move.
+    clear_faults();
     ok = set_encoder(h.home_count);
   }
 

@@ -140,6 +140,12 @@ public:
   bool stop();                          ///< CiA 402 quick stop; the next move re-enables.
   bool is_target_reached(bool &reached);
   bool get_drive_state(DriveState &state);
+  bool read_statusword(uint16_t &statusword); ///< Raw CiA 402 statusword; bit 11 = limit active.
+
+  /// Clear whatever the controller has latched: the CiA 402 fault, and the Basicmicro
+  /// latched conditions (E-stop, and on some pin configurations a tripped switch) through
+  /// the E-stop reset command. Harmless when nothing is latched.
+  bool clear_faults();
   /// @}
 
   /// @name Calibration: absolute encoders, once per installation.
