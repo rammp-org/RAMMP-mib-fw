@@ -15,6 +15,8 @@
 ///   stop                  quick stop
 ///   clear                 clear a latched fault / limit / E-stop on the controller
 ///   flags                 the controller's own status flags (Basicmicro command 90)
+///   sdor <index> <sub> <bytes>          raw SDO read (index in decimal or 0x hex)
+///   sdow <index> <sub> <bytes> <value>  raw SDO write (signed value)
 ///
 ///   Calibration (absolute encoder, once per installation):
 ///   limits                read the clamp the controller currently holds
@@ -336,6 +338,47 @@ std::unique_ptr<cli::Menu> build_menu() {
                "Quick stop");
   menu->Insert("clear", [](std::ostream &out) { report(out, actuator->clear_faults(), "clear"); },
                "Clear a latched fault, limit or E-stop on the controller");
+  // Raw object access for experiments the Actuator API does not cover (profile type,
+  // manufacturer mirrors). Index may be given as 0x6086 or decimal.
+  const auto parse_index = [](const std::string &text) -> int {
+    return static_cast<int>(std::strtol(text.c_str(), nullptr, 0));
+  };
+  menu->Insert(
+      "sdor",
+      [parse_index](std::ostream &out, std::string index_text, int sub, int bytes) {
+        const int index = parse_index(index_text);
+        std::error_code ec;
+        int64_t value = 0;
+        switch (bytes) {
+        case 1: value = client->read_i8(index, sub, ec); break;
+        case 2: value = client->read_i16(index, sub, ec); break;
+        case 4: value = client->read_i32(index, sub, ec); break;
+        default: out << "bytes must be 1, 2 or 4\n"; return;
+        }
+        if (ec) {
+          out << fmt::format("read 0x{:04X}:{} failed: {}\n", index, sub, ec.message());
+        } else {
+          out << fmt::format("0x{:04X}:{} = {} (0x{:X})\n", index, sub, value,
+                             static_cast<uint32_t>(value));
+        }
+      },
+      "Raw SDO read: sdor <index> <sub> <bytes>");
+  menu->Insert(
+      "sdow",
+      [parse_index](std::ostream &out, std::string index_text, int sub, int bytes, int value) {
+        const int index = parse_index(index_text);
+        std::error_code ec;
+        bool ok = false;
+        switch (bytes) {
+        case 1: ok = client->write_i8(index, sub, static_cast<int8_t>(value), ec); break;
+        case 2: ok = client->write_i16(index, sub, static_cast<int16_t>(value), ec); break;
+        case 4: ok = client->write_i32(index, sub, value, ec); break;
+        default: out << "bytes must be 1, 2 or 4\n"; return;
+        }
+        out << fmt::format("write 0x{:04X}:{} = {} {}\n", index, sub, value,
+                           ok ? "accepted" : "FAILED: " + ec.message());
+      },
+      "Raw SDO write: sdow <index> <sub> <bytes> <value>");
   menu->Insert(
       "flags",
       [](std::ostream &out) {
