@@ -60,8 +60,9 @@ public:
 
   /// Motion profile for a move, in the controller's units. Sent with every move as the
   /// CiA 402 profile objects. The MCP266 firmware tested stores them but does not apply
-  /// them (see DESIGN.md): moves run at the velocity loop's QPPS with no ramp, so today
-  /// the speed cap is QPPS on the controller and these values are documentation.
+  /// them: it uses the per-channel Speed, Accel and Decel from Motion Studio's Position
+  /// Settings page instead (see DESIGN.md). Those are the real speed cap and ramp; these
+  /// values are documentation until a firmware honours the objects.
   struct Profile {
     uint32_t velocity;     ///< Cruise speed, counts per second.
     uint32_t acceleration; ///< Counts per second squared.
