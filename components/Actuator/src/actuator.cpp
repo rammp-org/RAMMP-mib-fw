@@ -665,22 +665,29 @@ bool Actuator::home() {
     homed_ = true; // so do_move accepts the approach; cleared below on failure
   }
 
-  int32_t start = 0;
-  bool ok = read_position(start);
-  const int32_t far = h.direction < 0 ? kUnlimited.min + 1 : kUnlimited.max - 1;
-  if (ok) {
+  // One approach segment from `from`, in the homing direction. Returns false only when
+  // the command was refused; an acknowledge timeout on a long move is treated as running.
+  const auto command_segment = [&](int32_t from) {
+    const int64_t wanted = static_cast<int64_t>(from) + static_cast<int64_t>(h.direction) * h.segment;
+    const int32_t target = static_cast<int32_t>(
+        std::clamp<int64_t>(wanted, kUnlimited.min + 1, kUnlimited.max - 1));
+    std::error_code seg_ec;
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    ok = mcp_.move_to_position(config_.axis, far, h.profile.velocity, h.profile.acceleration,
-                               h.profile.deceleration, ec);
-    if (!ok && ec == std::errc::timed_out) {
-      // The set-point was taken but the acknowledge handshake did not finish in time,
-      // which this controller does on a long move. The motor is moving: watch for the
-      // stall as usual rather than abandoning a running approach.
+    const bool sent = mcp_.move_to_position(config_.axis, target, h.profile.velocity,
+                                            h.profile.acceleration, h.profile.deceleration, seg_ec);
+    if (!sent && seg_ec == std::errc::timed_out) {
       logger_.warn("{}: approach handshake timed out; assuming the move is running",
                    config_.name);
-      ok = true;
+      return true;
     }
-  }
+    if (!sent) {
+      ec = seg_ec;
+    }
+    return sent;
+  };
+
+  int32_t start = 0;
+  bool ok = read_position(start) && command_segment(start);
   if (!ok) {
     note_result(false, ec, "home: approach");
     stop(); // never leave an approach running after a failure
@@ -708,7 +715,19 @@ bool Actuator::home() {
         moved = true;
       } else if ((moved || std::chrono::steady_clock::now() - begun > kHomingGrace) &&
                  std::chrono::steady_clock::now() - last_change >= h.stall_time) {
-        ok = true; // stopped on the switch
+        // Stopped. On the switch, or merely at the end of a segment: the controller
+        // tells the two apart with its target-reached flag.
+        bool reached = false;
+        if (is_target_reached(reached) && reached) {
+          logger_.info("{}: segment finished at {} without a stall; continuing", config_.name,
+                       now_counts);
+          if (!command_segment(now_counts)) {
+            break;
+          }
+          last_change = std::chrono::steady_clock::now();
+          continue;
+        }
+        ok = true; // stopped short of the target: the switch
         break;
       }
     }

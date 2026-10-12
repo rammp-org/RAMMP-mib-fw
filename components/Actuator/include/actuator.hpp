@@ -79,6 +79,10 @@ public:
     int32_t stall_counts{2};         ///< Movement below this over stall_time means stopped.
     std::chrono::milliseconds stall_time{500};
     std::chrono::seconds timeout{60};
+    /// Length of each approach segment. A target a billion counts away makes the
+    /// controller's trajectory maths overflow and the motion stutter, so the approach is
+    /// commanded in segments of this many counts, re-issued until the switch stops it.
+    int32_t segment{50000};
     /// Polled during the approach; returning true aborts homing with a quick stop.
     std::function<bool()> cancel{};
   };
