@@ -309,13 +309,12 @@ Recorded here because each one cost time and none is visible in the code.
   buffer flag last) accepts every write and moves nothing, like the speed and
   duty mirrors espp found; the default-accel mirror (0x2044) is read-only.
   Supported modes (0x6502) read 0x700: cyclic-synchronous velocity and torque
-  only. Profile position mode works regardless, as a bare position loop that
-  runs at the velocity loop's ceiling. Consequences: the speed cap is QPPS on
-  the controller; the Actuator's `Profile` is sent but inert today; a true
-  trapezoid would have to be generated on the MIB in cyclic-synchronous
-  velocity mode (PDO + SYNC each cycle, position closed on the MIB), which is
-  deferred until the real load shows it is needed. A free motor on the bench
-  is the worst case; a self-locking lead screw with a leg on it is not.
+  only. **The ramp that works is the controller's own:** Motion Studio's
+  Position Settings page has stored Speed, Accel and Decel per channel, and
+  CANopen position moves use them (confirmed on the bench). So the speed cap
+  and the trapezoid are controller settings, saved to EEPROM and to the
+  settings file with the gains; the Actuator's `Profile` is sent but inert.
+  No MIB-side trajectory generation is needed.
 - **Quick stop parks the drive.** `stop()` leaves the drive in quick-stop-active,
   which the standard enable sequence cannot leave; the Actuator now releases it
   before every move (re-enable in place, else disable voltage). Rewriting the
