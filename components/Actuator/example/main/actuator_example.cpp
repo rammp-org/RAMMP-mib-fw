@@ -37,6 +37,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <fcntl.h>
+#include <unistd.h>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -530,6 +532,17 @@ extern "C" void app_main(void) {
   cli.ExitAction([](auto &out) { out << "bye\n"; });
   espp::Cli input(cli);
   input.SetInputHistorySize(20);
+  // Whatever the reset or the monitor left in the receive buffer would otherwise become
+  // the first keystroke ("wrong command: <garbage>"). Drain it before the prompt opens.
+  std::this_thread::sleep_for(200ms);
+  {
+    const int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    char discard[16];
+    while (read(STDIN_FILENO, discard, sizeof(discard)) > 0) {
+    }
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+  }
   fmt::print("Type 'help' for the commands.\n");
   input.Start();
 
