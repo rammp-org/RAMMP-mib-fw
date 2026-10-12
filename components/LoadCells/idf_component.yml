@@ -1,10 +1,6 @@
-## IDF Component Manager Manifest File
+# components/LoadCells/idf_component.yml
+
 dependencies:
-  idf:
-    version: '>=6.0'
-  espp/esp32-p4-eth: '>=1.3'
-  espp/rtps: '>=1.3'
-  espp/cdr: '>=1.3'
-  espp/logger: '>=1.3'
-  espp/task: '>=1.3'
-  espp/adc: "^1.0.36"
+  idf: ">=5.3"
+  espp/base_component: "^1.0"
+ 

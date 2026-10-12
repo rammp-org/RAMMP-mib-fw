@@ -1,10 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <mutex>
+#include <optional>
+#include <string_view>
 
 #include "base_component.hpp"
 
@@ -64,9 +67,15 @@ namespace espp {
 ///     {.unit = ADC_UNIT_1, .channel = ADC_CHANNEL_6, .attenuation = ADC_ATTEN_DB_12}};
 /// espp::OneshotAdc adc({.unit = ADC_UNIT_1, .channels = channels});
 ///
-/// auto read_mv = [&adc, &channels]() -> float {
+/// // NOTE: channels is captured by value. A reference would dangle as soon as
+/// // the enclosing scope exits, since this callback is stored in the LoadCell
+/// // and called later from whatever task reads it.
+/// auto read_mv = [channels]() -> std::optional<float> {
 ///   auto maybe_mv = adc.read_mv(channels[0]);
-///   return maybe_mv.has_value() ? static_cast<float>(maybe_mv.value()) : 0.0f;
+///   if (!maybe_mv.has_value()) {
+///     return std::nullopt; // propagate the fault, do not report 0 mV
+///   }
+///   return static_cast<float>(maybe_mv.value());
 /// };
 ///
 /// espp::LoadCell load_cell({
@@ -82,14 +91,22 @@ namespace espp {
 /// });
 ///
 /// load_cell.tare();                         // unloaded fixture
-/// float lbf = load_cell.get_load();
-/// float newtons = load_cell.get_newtons();
+/// if (auto r = load_cell.read()) {
+///   printf("%.1f mV -> %+.2f lbf\n", r->amplifier_mv, r->load);
+/// } else {
+///   printf("load cell read failed\n");
+/// }
 /// @endcode
 class LoadCell : public BaseComponent {
 public:
   /// @brief Function type for reading a voltage.
-  /// @return Voltage in millivolts.
-  typedef std::function<float(void)> read_mv_fn;
+  /// @return Voltage in millivolts, or std::nullopt if the read failed.
+  /// @details A failed read must NOT be reported as 0 mV. With a nonzero REF
+  ///          offset, 0 mV is a large negative load: at offset 1650 mV and
+  ///          span 1202 mV it is about -1370 lbf, which would be averaged into
+  ///          the oversampled result and flagged as an overload with no error
+  ///          surfaced anywhere. Return std::nullopt and let the caller see it.
+  typedef std::function<std::optional<float>(void)> read_mv_fn;
 
   /// @brief Units that `capacity` is expressed in, and therefore the units
   ///        returned by get_load() / get_capacity().
@@ -115,30 +132,32 @@ public:
 
   /// @brief Configuration struct for LoadCell.
   struct Config {
-    float capacity{1000.0f};           ///< Rated capacity, in `units`, e.g. 1000 for an LCHD-1K
-    float rated_output_mv_per_v{3.0f}; ///< Full-scale output (mV/V). Prefer the value on the
-                                       ///< calibration sheet over the nominal 3.0
-    float excitation_mv{10000.0f};     ///< Nominal bridge excitation in mV, e.g. 10000
-    float amplifier_gain{40.0f};       ///< In-amp gain; for an INA118, 1 + 50000/Rg
-    float amp_offset_mv{0.0f};         ///< Amplifier output at zero load, i.e. the INA118
-                                       ///< REF pin voltage in mV
-    read_mv_fn read_mv{nullptr};       ///< Reads the amplifier output, in mV
+    std::string_view name{"LoadCell"}; ///< Log tag. Give each cell a distinct name when several
+                                       ///< are in use, or their log lines are indistinguishable
+    float capacity{1000.0f}; ///< Rated capacity, in `units`, e.g. 1000 for an LCHD-1K
+    float rated_output_mv_per_v{3.0f};    ///< Full-scale output (mV/V). Prefer the value on the
+                                          ///< calibration sheet over the nominal 3.0
+    float excitation_mv{10000.0f};        ///< Nominal bridge excitation in mV, e.g. 10000
+    float amplifier_gain{40.0f};          ///< In-amp gain; for an INA118, 1 + 50000/Rg
+    float amp_offset_mv{0.0f};            ///< Amplifier output at zero load, i.e. the INA118
+                                          ///< REF pin voltage in mV
+    read_mv_fn read_mv{nullptr};          ///< Reads the amplifier output, in mV
     read_mv_fn read_excitation_mv{nullptr}; ///< Optional. Reads actual excitation (mV, already
                                             ///< scaled back up through any divider) for a
                                             ///< ratiometric measurement
-    size_t num_samples{1};                  ///< Samples averaged per read (oversampling)
-    float filter_alpha{1.0f};               ///< One-pole IIR coefficient in (0, 1]; 1.0 disables
-                                            ///< filtering, smaller is smoother and slower
-    Units units{Units::LBF};                ///< Units of `capacity` and of get_load()
-    float overload_fraction{1.5f};          ///< Fraction of capacity treated as overload. The LCHD
-                                            ///< safe overload is 150%, ultimate 300%
+    size_t num_samples{1};                ///< Samples averaged per read (oversampling)
+    float filter_alpha{1.0f};             ///< One-pole IIR coefficient in (0, 1]; 1.0 disables
+                                          ///< filtering, smaller is smoother and slower
+    Units units{Units::LBF};              ///< Units of `capacity` and of get_load()
+    float overload_fraction{1.5f};        ///< Fraction of capacity treated as overload. The LCHD
+                                          ///< safe overload is 150%, ultimate 300%
     Logger::Verbosity log_level = Logger::Verbosity::WARN; ///< Log level for this class
   };
 
   /// @brief Constructor.
   /// @param config Configuration struct.
   explicit LoadCell(const Config &config)
-      : BaseComponent("LoadCell", config.log_level)
+      : BaseComponent(config.name, config.log_level)
       , capacity_(config.capacity)
       , rated_output_mv_per_v_(config.rated_output_mv_per_v)
       , excitation_mv_(config.excitation_mv)
@@ -185,38 +204,51 @@ public:
   }
 
   /// @brief Read the amplifier output voltage.
-  /// @details Averages `num_samples` readings. Unfiltered and untared.
-  /// @return Amplifier output in mV.
-  float get_amplifier_mv() {
+  /// @details Averages `num_samples` readings. Unfiltered and untared. A
+  ///          single failed sample discards the whole reading rather than
+  ///          averaging a fault into good data.
+  /// @return Amplifier output in mV, or std::nullopt if any sample failed.
+  std::optional<float> get_amplifier_mv() {
     if (read_mv_ == nullptr) {
-      logger_.error("read_mv_ is null");
-      return 0.0f;
+      logger_.error("read_mv is null");
+      return std::nullopt;
     }
+    const size_t n = std::max<size_t>(1, num_samples_.load(std::memory_order_relaxed));
     float sum = 0.0f;
-    for (size_t i = 0; i < num_samples_; i++) {
-      sum += read_mv_();
+    for (size_t i = 0; i < n; i++) {
+      auto mv = read_mv_();
+      if (!mv.has_value()) {
+        logger_.error("ADC read failed on sample {} of {}; discarding the reading", i + 1, n);
+        return std::nullopt;
+      }
+      sum += mv.value();
     }
-    float mv = sum / static_cast<float>(num_samples_);
-    logger_.debug("amplifier output: {:.3f} mV ({} samples)", mv, num_samples_);
+    float mv = sum / static_cast<float>(n);
+    logger_.debug("amplifier output: {:.3f} mV ({} samples)", mv, n);
     return mv;
   }
 
   /// @brief Read the differential bridge output, referred back through the gain.
   /// @details Subtracts the amplifier offset (REF) but not the tare.
-  /// @return Bridge differential output in mV.
-  float get_bridge_mv() { return (get_amplifier_mv() - amp_offset_mv_) / gain_; }
+  /// @return Bridge differential output in mV, or std::nullopt on read failure.
+  std::optional<float> get_bridge_mv() {
+    auto amp_mv = get_amplifier_mv();
+    if (!amp_mv.has_value()) {
+      return std::nullopt;
+    }
+    return (amp_mv.value() - amp_offset_mv_) / gain_;
+  }
 
   /// @brief Read the bridge output normalized by excitation.
   /// @details Compare against the FSO on the calibration sheet: this should
   ///          read +/-`rated_output_mv_per_v` at +/-capacity.
-  /// @return Bridge output in mV/V.
-  float get_mv_per_v() {
-    float exc = excitation_mv();
-    if (exc <= 0.0f) {
-      logger_.error("excitation is 0");
-      return 0.0f;
+  /// @return Bridge output in mV/V, or std::nullopt on read failure.
+  std::optional<float> get_mv_per_v() {
+    auto r = read();
+    if (!r.has_value()) {
+      return std::nullopt;
     }
-    return get_bridge_mv() / (exc / 1000.0f);
+    return r->mv_per_v;
   }
 
   /// @brief Take one reading and report every stage of the signal chain.
@@ -224,15 +256,23 @@ public:
   ///          consistent with each other. This is what to print while bringing
   ///          the hardware up: it lets you see the amplifier output and the
   ///          implied mV/V next to the force.
-  /// @return A populated Reading.
-  Reading read() {
-    Reading r;
-    r.amplifier_mv = get_amplifier_mv();
-    r.excitation_mv = excitation_mv();
-    if (r.excitation_mv <= 0.0f) {
-      logger_.error("excitation is 0");
-      return r;
+  /// @return A populated Reading, or std::nullopt if the ADC read failed, the
+  ///         excitation is unusable, or the span works out to zero. On failure
+  ///         the filter state is left untouched, so a fault cannot drag the
+  ///         filtered load toward a bogus value.
+  std::optional<Reading> read() {
+    auto amp_mv = get_amplifier_mv();
+    if (!amp_mv.has_value()) {
+      return std::nullopt;
     }
+    auto exc = excitation_mv();
+    if (!exc.has_value()) {
+      return std::nullopt; // excitation_mv() has already logged why
+    }
+
+    Reading r;
+    r.amplifier_mv = amp_mv.value();
+    r.excitation_mv = exc.value();
     r.bridge_mv = (r.amplifier_mv - amp_offset_mv_) / gain_;
     r.mv_per_v = r.bridge_mv / (r.excitation_mv / 1000.0f);
 
@@ -240,7 +280,7 @@ public:
     float span_mv = span_mv_for_excitation(r.excitation_mv);
     if (span_mv == 0.0f) {
       logger_.error("span is 0; check gain, rated output and excitation");
-      return r;
+      return std::nullopt;
     }
 
     {
@@ -275,30 +315,45 @@ public:
   /// @details Takes a reading, applies tare, span correction and the IIR
   ///          filter. Positive is tension, negative is compression (assuming
   ///          SIG+ / SIG- are wired the conventional way).
-  /// @return Load in the units given in Config.
-  float get_load() { return read().load; }
+  /// @return Load in the units given in Config, or std::nullopt on failure.
+  std::optional<float> get_load() {
+    auto r = read();
+    if (!r.has_value()) {
+      return std::nullopt;
+    }
+    return r->load;
+  }
 
   /// @brief The most recent Reading, without touching the ADC.
   /// @details Useful for logging or telemetry alongside a control loop that
   ///          already called read(), so the voltage printed is the one the
   ///          loop actually acted on.
-  /// @return A copy of the last Reading, zeroed if read() has not been called.
-  Reading last_reading() const {
+  /// @return The last Reading, or std::nullopt if no read has yet succeeded.
+  std::optional<Reading> last_reading() const {
     std::lock_guard<std::mutex> lk(mutex_);
     return last_reading_;
   }
 
   /// @brief Get the load in pounds-force.
-  /// @return Load in lbf.
-  float get_lbf() { return to_lbf(get_load()); }
+  /// @return Load in lbf, or std::nullopt on failure.
+  std::optional<float> get_lbf() {
+    auto load = get_load();
+    return load.has_value() ? std::optional<float>(to_lbf(load.value())) : std::nullopt;
+  }
 
   /// @brief Get the load in kilograms-force.
-  /// @return Load in kgf.
-  float get_kgf() { return to_lbf(get_load()) * LBF_TO_KGF; }
+  /// @return Load in kgf, or std::nullopt on failure.
+  std::optional<float> get_kgf() {
+    auto load = get_load();
+    return load.has_value() ? std::optional<float>(to_lbf(load.value()) * LBF_TO_KGF) : std::nullopt;
+  }
 
   /// @brief Get the load in newtons.
-  /// @return Load in N.
-  float get_newtons() { return to_lbf(get_load()) * LBF_TO_N; }
+  /// @return Load in N, or std::nullopt on failure.
+  std::optional<float> get_newtons() {
+    auto load = get_load();
+    return load.has_value() ? std::optional<float>(to_lbf(load.value()) * LBF_TO_N) : std::nullopt;
+  }
 
   /// @brief Zero the cell against the current (unloaded) reading.
   /// @details Averages `samples * num_samples` readings, ignoring the filter,
@@ -306,12 +361,19 @@ public:
   ///          assembled but unloaded. The LCHD zero balance is +/-1% FSO, so
   ///          this is expected to be nonzero.
   /// @param samples Number of averaged reads to take.
-  /// @return Tare offset in mV, relative to `amp_offset_mv`.
-  float tare(size_t samples = 32) {
+  /// @return Tare offset in mV relative to `amp_offset_mv`, or std::nullopt if
+  ///         any read failed. On failure the previous tare is left in place:
+  ///         zeroing against a fault would be worse than not zeroing at all.
+  std::optional<float> tare(size_t samples = 32) {
     samples = std::max<size_t>(1, samples);
     float sum = 0.0f;
     for (size_t i = 0; i < samples; i++) {
-      sum += get_amplifier_mv();
+      auto mv = get_amplifier_mv();
+      if (!mv.has_value()) {
+        logger_.error("tare aborted on read {} of {}; keeping the previous tare", i + 1, samples);
+        return std::nullopt;
+      }
+      sum += mv.value();
     }
     float mean_mv = sum / static_cast<float>(samples);
     std::lock_guard<std::mutex> lk(mutex_);
@@ -329,11 +391,12 @@ public:
   ///          the datasheet span. Tare first.
   /// @param known_load The applied reference load, nonzero.
   /// @param samples Number of averaged reads to take.
-  /// @return The resulting span correction factor, or 0 on failure.
-  float calibrate(float known_load, size_t samples = 32) {
+  /// @return The resulting span correction factor, or std::nullopt on failure,
+  ///         in which case the previous correction is restored.
+  std::optional<float> calibrate(float known_load, size_t samples = 32) {
     if (known_load == 0.0f) {
       logger_.error("known_load must be nonzero");
-      return 0.0f;
+      return std::nullopt;
     }
     samples = std::max<size_t>(1, samples);
     // measure with the existing correction removed
@@ -342,13 +405,19 @@ public:
     float sum = 0.0f;
     for (size_t i = 0; i < samples; i++) {
       reset_filter();
-      sum += get_load();
+      auto load = get_load();
+      if (!load.has_value()) {
+        logger_.error("calibration aborted on read {} of {}; restoring correction", i + 1, samples);
+        set_span_correction(saved);
+        return std::nullopt;
+      }
+      sum += load.value();
     }
     float measured = sum / static_cast<float>(samples);
     if (measured == 0.0f) {
       logger_.error("measured 0 under a {:.3f} load; restoring previous correction", known_load);
       set_span_correction(saved);
-      return 0.0f;
+      return std::nullopt;
     }
     float correction = known_load / measured;
     set_span_correction(correction);
@@ -408,8 +477,7 @@ public:
   /// @brief Set the number of samples averaged per read.
   /// @param num_samples Samples per read, at least 1.
   void set_num_samples(size_t num_samples) {
-    std::lock_guard<std::mutex> lk(mutex_);
-    num_samples_ = std::max<size_t>(1, num_samples);
+    num_samples_.store(std::max<size_t>(1, num_samples), std::memory_order_relaxed);
   }
 
   /// @brief Discard filter state so the next read is taken as-is.
@@ -445,8 +513,8 @@ public:
 protected:
   /// @brief Numerator of the INA118 gain equation, in ohms.
   static constexpr float INA118_RG_NUMERATOR = 50000.0f;
-  static constexpr float LBF_TO_N = 4.4482216152605f; ///< Pounds-force to newtons
-  static constexpr float LBF_TO_KGF = 0.45359237f;    ///< Pounds-force to kilograms-force
+  static constexpr float LBF_TO_N = 4.4482216152605f;  ///< Pounds-force to newtons
+  static constexpr float LBF_TO_KGF = 0.45359237f;     ///< Pounds-force to kilograms-force
   static constexpr float KGF_TO_LBF = 1.0f / LBF_TO_KGF;
   static constexpr float N_TO_LBF = 1.0f / LBF_TO_N;
 
@@ -456,15 +524,25 @@ protected:
   }
 
   /// @brief Current excitation in mV, measured if a callback was supplied.
-  float excitation_mv() {
+  /// @details Does not silently fall back to the nominal value on a failed
+  ///          measurement: a dead excitation monitor is a fault, and reporting
+  ///          loads as if excitation were nominal would hide it.
+  std::optional<float> excitation_mv() {
     if (read_excitation_mv_ == nullptr) {
+      if (excitation_mv_ <= 0.0f) {
+        logger_.error("configured excitation is {:.1f} mV", excitation_mv_);
+        return std::nullopt;
+      }
       return excitation_mv_;
     }
-    float mv = read_excitation_mv_();
-    if (mv <= 0.0f) {
-      logger_.warn("measured excitation was {:.1f} mV; falling back to nominal {:.1f} mV", mv,
-                   excitation_mv_);
-      return excitation_mv_;
+    auto mv = read_excitation_mv_();
+    if (!mv.has_value()) {
+      logger_.error("excitation read failed");
+      return std::nullopt;
+    }
+    if (mv.value() <= 0.0f) {
+      logger_.error("measured excitation is {:.1f} mV, not usable", mv.value());
+      return std::nullopt;
     }
     return mv;
   }
@@ -482,24 +560,26 @@ protected:
     }
   }
 
-  float capacity_;                         ///< Rated capacity in `units_`
-  float rated_output_mv_per_v_;            ///< Full-scale bridge output, mV/V
-  float excitation_mv_;                    ///< Nominal excitation, mV
-  float gain_;                             ///< In-amp gain
-  float amp_offset_mv_;                    ///< Amplifier output at zero load (REF), mV
-  read_mv_fn read_mv_{nullptr};            ///< Reads amplifier output, mV
+  float capacity_;              ///< Rated capacity in `units_`
+  float rated_output_mv_per_v_; ///< Full-scale bridge output, mV/V
+  float excitation_mv_;         ///< Nominal excitation, mV
+  float gain_;                  ///< In-amp gain
+  float amp_offset_mv_;         ///< Amplifier output at zero load (REF), mV
+  read_mv_fn read_mv_{nullptr}; ///< Reads amplifier output, mV
   read_mv_fn read_excitation_mv_{nullptr}; ///< Optional, reads excitation, mV
-  size_t num_samples_;                     ///< Samples averaged per read
+  std::atomic<size_t> num_samples_;        ///< Samples averaged per read. Atomic: read
+                                           ///< unlocked in get_amplifier_mv(), written by
+                                           ///< set_num_samples() from another task
   float filter_alpha_;                     ///< IIR coefficient
   Units units_;                            ///< Units for capacity and get_load()
   float overload_fraction_;                ///< Overload threshold as a fraction of capacity
 
-  mutable std::mutex mutex_;    ///< Guards the mutable state below
-  float tare_mv_{0.0f};         ///< Zero offset relative to REF, mV
-  float span_correction_{1.0f}; ///< Multiplicative span correction
-  float filtered_load_{0.0f};   ///< Last filtered load
-  bool filter_primed_{false};   ///< Whether filtered_load_ holds a real value
-  Reading last_reading_{};      ///< Snapshot of the most recent read()
+  mutable std::mutex mutex_;   ///< Guards the mutable state below
+  float tare_mv_{0.0f};        ///< Zero offset relative to REF, mV
+  float span_correction_{1.0f};///< Multiplicative span correction
+  float filtered_load_{0.0f};  ///< Last filtered load
+  bool filter_primed_{false};  ///< Whether filtered_load_ holds a real value
+  std::optional<Reading> last_reading_; ///< Most recent successful read(), empty until one
 };
 
 } // namespace espp

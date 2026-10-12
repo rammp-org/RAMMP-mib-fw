@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstdint>
 
+#include "hal/adc_types.h"
+
 namespace mib::config {
 
 /// @brief State-machine task period.
@@ -68,6 +70,36 @@ inline constexpr DriveProfileConfig drive_profile_high{
     .max_angular_velocity_radps = 3.14159f,
     .max_linear_acceleration_mps2 = 2.0f,
     .max_angular_acceleration_radps2 = 4.0f,
+};
+
+// Load Cell Configuration
+struct LoadCellConfig {
+  float capacity_lbf;
+  float fso_mv_per_v;  // from the unit's calibration sheet
+  float excitation_mv;
+  float rg_ohms;       
+  float ref_mv;        
+  adc_unit_t adc_unit;
+  adc_channel_t adc_channel;
+  adc_atten_t adc_atten;
+  size_t samples;
+  float filter_alpha;
+ 
+  constexpr float gain() const { return 1.0f + 50000.0f / rg_ohms; }
+  constexpr float span_mv() const { return excitation_mv / 1000.0f * fso_mv_per_v * gain(); }
+};
+ 
+inline constexpr LoadCellConfig LOAD_CELL{
+    .capacity_lbf = 1000.0f,
+    .fso_mv_per_v = 3.0000f,
+    .excitation_mv = 10000.0f,
+    .rg_ohms = 1280.0f,
+    .ref_mv = 1650.0f,
+    .adc_unit = ADC_UNIT_1,
+    .adc_channel = ADC_CHANNEL_4, // GPIO20
+    .adc_atten = ADC_ATTEN_DB_12, // ~0-3100 mV
+    .samples = 16,
+    .filter_alpha = 0.15f,
 };
 
 } // namespace mib::config

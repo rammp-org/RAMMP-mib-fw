@@ -1,4 +1,6 @@
-idf_component_register(SRC_DIRS "."
-                       INCLUDE_DIRS "."
-                       REQUIRES LoadCells
-                       PRIV_REQUIRES espp__logger espp__task espp__adc)
+# components/LoadCells/CMakeLists.txt
+
+idf_component_register(
+    INCLUDE_DIRS "include"
+    REQUIRES espp__base_component
+)
