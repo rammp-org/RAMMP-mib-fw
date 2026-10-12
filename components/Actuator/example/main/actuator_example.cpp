@@ -66,9 +66,11 @@ constexpr uint8_t kNodeId = 3;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = true;
-// Which way the home switch lies: -1 if `dec` drives toward it, +1 if `inc` does. The
-// carriage homes at the front switch, which becomes count 0; travel runs to kTravel.
-constexpr int kHomeDirection = -1;
+// "Forward" (positive count, `inc`) is toward the FRONT of the rack. The carriage homes at
+// the front switch, which becomes count kTravel; the back switch is the 0 end. On the
+// controller: front switch = M1FLimit, back switch = M1RLimit, encoder counting up
+// toward the front.
+constexpr int kHomeDirection = +1;
 constexpr int32_t kTravel = 12600;
 // How the actuator behaves. Positions are the joint encoder's counts.
 constexpr mib::Actuator::Config kActuatorConfig{
@@ -79,7 +81,7 @@ constexpr mib::Actuator::Config kActuatorConfig{
     .jog_step = 500,                // counts per inc / dec
     .tolerance = 10,                // counts within which a position counts as at target
     .hardware_limits = true,        // limit switches at both ends, configured on the controller
-    .homing = {.required = kHomingRequired, .direction = kHomeDirection, .home_count = 0},
+    .homing = {.required = kHomingRequired, .direction = kHomeDirection, .home_count = kTravel},
     .store = nullptr,               // filled in at bring-up
 };
 // -----------------------------------------------------------------------------
