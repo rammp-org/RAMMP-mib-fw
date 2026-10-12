@@ -3,6 +3,7 @@
 /// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
 /// console over the serial monitor to exercise its API:
 ///
+///   scan                  find which node ids answer an SDO on the bus (1..127)
 ///   init                  re-run initialize() (faults, clamp, saved position)
 ///   status                position, state, range
 ///   pos                   read the position from the encoder
@@ -30,6 +31,7 @@
 /// The settings below would come from a configuration file in the real
 /// firmware; they are written out here so the example stands on its own.
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -85,6 +87,8 @@ espp::Logger logger({.tag = "Actuator Example", .level = espp::Logger::Verbosity
 // actuator on M2 of the same controller would share `mcp` and `mcp_mutex`.
 std::unique_ptr<espp::Twai> twai;
 std::unique_ptr<espp::CanopenClient> client;
+// Received frames go to this client; `scan` points it at a temporary one per node id.
+std::atomic<espp::CanopenClient *> rx_client{nullptr};
 std::unique_ptr<espp::Mcp266> mcp;
 std::mutex mcp_mutex;
 mib::ActuatorStore store;
@@ -116,7 +120,11 @@ bool bring_up() {
       .tx_retry_count = 3,
       .on_receive =
           [](const espp::Twai::Message &message) {
-            client->process_frame({.id = message.id,
+            auto *target = rx_client.load();
+            if (!target) {
+              return;
+            }
+            target->process_frame({.id = message.id,
                                    .extended = message.extended,
                                    .rtr = message.rtr,
                                    .dlc = message.dlc,
@@ -124,6 +132,7 @@ bool bring_up() {
           },
       .log_level = espp::Logger::Verbosity::WARN,
   });
+  rx_client.store(client.get());
   std::error_code ec;
   if (!twai->initialize(ec)) {
     logger.error("TWAI init failed on tx={} rx={}: {}", kTxGpio, kRxGpio, ec.message());
@@ -240,6 +249,48 @@ std::unique_ptr<cli::Menu> build_menu() {
       },
       "Position, drive state, target reached, online, range");
 
+  menu->Insert(
+      "scan",
+      [](std::ostream &out) {
+        // Ask every node id for its device type (0x1000). A node in CANopen mode answers;
+        // a node in raw-CAN mode ACKs the frame but stays silent, so a bus that ACKs with
+        // no answers points at the controller's CAN mode rather than its wiring.
+        out << "scanning node ids 1..127 (about 10 s)\n";
+        int found = 0;
+        for (uint8_t id = 1; id <= 127; ++id) {
+          espp::CanopenClient probe({
+              .node_id = id,
+              .send =
+                  [](const espp::CanopenClient::CanFrame &frame) {
+                    espp::Twai::Message m{.id = frame.id,
+                                          .extended = frame.extended,
+                                          .rtr = frame.rtr,
+                                          .dlc = frame.dlc,
+                                          .data = frame.data};
+                    std::error_code tx_ec;
+                    return twai && twai->transmit(m, tx_ec);
+                  },
+              .sdo_timeout = 60ms,
+              .log_level = espp::Logger::Verbosity::NONE,
+          });
+          rx_client.store(&probe);
+          std::error_code ec;
+          const uint32_t device_type = probe.read_u32(0x1000, 0, ec);
+          rx_client.store(client.get());
+          if (!ec) {
+            ++found;
+            std::string name;
+            std::error_code name_ec;
+            rx_client.store(&probe);
+            name = probe.read_string(0x1008, 0, name_ec);
+            rx_client.store(client.get());
+            out << fmt::format("  node {:3}: device type 0x{:08X} \"{}\"\n", id, device_type,
+                               name_ec ? "?" : name);
+          }
+        }
+        out << fmt::format("{} node(s) answered; this example talks to node {}\n", found, kNodeId);
+      },
+      "Find which node ids answer an SDO on the bus");
   menu->Insert("init", [](std::ostream &out) { report(out, actuator->initialize(), "initialize"); },
                "Re-run initialize(): clear faults, install the clamp, restore a saved position");
   menu->Insert("pos", [](std::ostream &out) { print_position(out); }, "Read the position");
