@@ -8,8 +8,9 @@ namespace mib {
 using namespace std::chrono_literals;
 
 namespace {
-/// The widest clamp the controller accepts; used while calibrating or homing.
-constexpr Actuator::Range kUnlimited{-2'000'000'000, 2'000'000'000};
+/// The clamp installed while calibrating or homing: wide enough for any travel, narrow
+/// enough that max - min still fits a 32-bit integer if the controller computes the span.
+constexpr Actuator::Range kUnlimited{-1'000'000'000, 1'000'000'000};
 /// Homing: the motor is given this long to start moving before a stall counts.
 constexpr auto kHomingGrace = 2s;
 constexpr auto kHomingPoll = 100ms;
@@ -551,7 +552,7 @@ bool Actuator::home() {
 
   int32_t start = 0;
   bool ok = read_position(start);
-  const int32_t far = h.direction < 0 ? -1'900'000'000 : 1'900'000'000;
+  const int32_t far = h.direction < 0 ? kUnlimited.min + 1 : kUnlimited.max - 1;
   if (ok) {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
     ok = mcp_.move_to_position(config_.axis, far, h.profile.velocity, h.profile.acceleration,
