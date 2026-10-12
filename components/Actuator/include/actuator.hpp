@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <system_error>
@@ -78,6 +79,8 @@ public:
     int32_t stall_counts{2};         ///< Movement below this over stall_time means stopped.
     std::chrono::milliseconds stall_time{500};
     std::chrono::seconds timeout{60};
+    /// Polled during the approach; returning true aborts homing with a quick stop.
+    std::function<bool()> cancel{};
   };
 
   struct Config {

@@ -691,8 +691,13 @@ bool Actuator::home() {
     int32_t last = start;
     bool moved = false;
     ok = false;
+    bool cancelled = false;
     while (std::chrono::steady_clock::now() - begun < h.timeout) {
       std::this_thread::sleep_for(kHomingPoll);
+      if (h.cancel && h.cancel()) {
+        cancelled = true;
+        break;
+      }
       int32_t now_counts = 0;
       if (!read_position(now_counts)) {
         break;
@@ -707,7 +712,9 @@ bool Actuator::home() {
         break;
       }
     }
-    if (!ok) {
+    if (cancelled) {
+      logger_.warn("{}: homing cancelled", config_.name);
+    } else if (!ok) {
       logger_.error("{}: homing did not stall within {} s", config_.name, h.timeout.count());
     }
     stop();

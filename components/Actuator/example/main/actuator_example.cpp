@@ -11,7 +11,7 @@
 ///   abs <counts>          move to an absolute count
 ///   rel <delta>           move by a signed number of counts
 ///   inc / dec             move one jog step
-///   wait                  block until the drive reports target reached
+///   wait                  block until the drive reports target reached (any key cancels)
 ///   stop                  quick stop
 ///   clear                 clear a latched fault / limit / E-stop on the controller
 ///   flags                 the controller's own status flags (Basicmicro command 90)
@@ -25,7 +25,8 @@
 ///   forget                erase the saved range; the compiled default applies
 ///
 ///   Homing (incremental encoder, every boot; only with kHomingRequired):
-///   home                  drive into the limit switch and install the home count
+///   home                  drive into the limit switch and install the home count (any key
+///                         cancels with a quick stop)
 ///   restore               install the position saved on a previous run
 ///   save                  save the current position now
 ///   setenc <counts>       write the controller's encoder count directly
@@ -75,7 +76,7 @@ constexpr bool kHomingRequired = true;
 constexpr int kHomeDirection = +1;
 constexpr int32_t kTravel = 12600;
 // How the actuator behaves. Positions are the joint encoder's counts.
-constexpr mib::Actuator::Config kActuatorConfig{
+const mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
     .axis = kAxis,
     .range = {0, kTravel},          // calibrated travel; a range saved to NVS overrides it
@@ -89,6 +90,17 @@ constexpr mib::Actuator::Config kActuatorConfig{
 // -----------------------------------------------------------------------------
 
 espp::Logger logger({.tag = "Actuator Example", .level = espp::Logger::Verbosity::INFO});
+
+/// True if any byte is waiting on the console, consuming it. Used to cancel blocking
+/// commands (wait, home) from the keyboard.
+bool key_pressed() {
+  const int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+  fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+  char discard[16];
+  const bool pressed = read(STDIN_FILENO, discard, sizeof(discard)) > 0;
+  fcntl(STDIN_FILENO, F_SETFL, flags);
+  return pressed;
+}
 
 // The transport and controller objects the actuator is layered on. The client
 // filters frames by node id and the controller has one SDO channel, so an
@@ -162,6 +174,7 @@ bool bring_up() {
   store.init();
   auto config = kActuatorConfig;
   config.store = &store;
+  config.homing.cancel = key_pressed; // any key on the console aborts a homing approach
   if (mib::Actuator::Range saved{}; store.load_range(config.name, saved)) {
     logger.info("using calibrated range [{}, {}] from NVS", saved.min, saved.max);
     config.range = saved;
@@ -204,6 +217,10 @@ bool wait_for_target(std::ostream &out, std::chrono::seconds timeout = 30s) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   auto next_print = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() < deadline) {
+    if (key_pressed()) {
+      out << "wait cancelled (the move continues; `stop` to halt it)\n";
+      return false;
+    }
     bool reached = false;
     if (!actuator->is_target_reached(reached)) {
       out << "status read failed (see log)\n";
