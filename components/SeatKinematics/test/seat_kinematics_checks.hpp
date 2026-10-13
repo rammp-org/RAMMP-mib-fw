@@ -207,6 +207,16 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
                              .elevation_mm = 100.0f,
                              .translation_mm = std::nanf("")}),
         "NaN translation is rejected");
+  check(!kinematics.inverse({.pitch_deg = 0.0f,
+                             .roll_deg = 0.0f,
+                             .elevation_mm = std::nanf(""),
+                             .translation_mm = 0.0f}),
+        "NaN elevation is rejected");
+  check(!kinematics.inverse({.pitch_deg = 0.0f,
+                             .roll_deg = std::nanf(""),
+                             .elevation_mm = 100.0f,
+                             .translation_mm = 0.0f}),
+        "NaN roll is rejected");
   check(!kinematics.from_actuators({.main_left_deg = std::nanf("")}),
         "from_actuators rejects a NaN reading");
 
