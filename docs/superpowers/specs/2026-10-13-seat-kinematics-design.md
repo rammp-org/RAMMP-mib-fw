@@ -100,7 +100,7 @@ silently; the caller decides what to do.
 
 ## Frames and conventions
 
-- **Chassis frame** = URDF `mebot` link: x forward (toward front caster), y left, z up. Millimetres.
+- **Chassis frame** = `rammp` base frame (the URDF root link): x forward (toward front caster), y left, z up. Millimetres.
 - **Swing arms** rotate about −y as in the URDF. q = 0 is the CAD pose. Rotating a point (x, z) in
   the arm frame by q:
   `x' = x·cos q − z·sin q`, `z' = x·sin q + z·cos q`.
