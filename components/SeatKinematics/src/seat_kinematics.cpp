@@ -85,8 +85,11 @@ std::optional<float> arm_deg_on_ground(const SwingArmLeg &leg, float carriage_mm
 } // namespace
 
 std::optional<JointConfig> SeatKinematics::inverse(const SeatPose &pose) const {
-  if (pose.translation_mm < geometry_.min_carriage_mm ||
-      pose.translation_mm > geometry_.max_carriage_mm) {
+  // Written as "in range" rather than "out of range" so that NaN, which fails both
+  // comparisons, is rejected too.
+  const bool translation_in_range = pose.translation_mm >= geometry_.min_carriage_mm &&
+                                    pose.translation_mm <= geometry_.max_carriage_mm;
+  if (!translation_in_range) {
     return std::nullopt;
   }
   const PointMm up = world_up(pose.pitch_deg, pose.roll_deg);
