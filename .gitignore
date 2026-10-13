@@ -36,3 +36,7 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 .vscode/
+
+# Claude planning docs and scratch
+docs/superpowers/
+.superpowers/
