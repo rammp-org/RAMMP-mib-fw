@@ -58,12 +58,12 @@ inline int run_actuator_stage_checks(void (*report)(const char *line)) {
       .arm_pin_z_mm = 126.68f,
       .plate_pin_x_mm = 298.85f,
       .plate_pin_z_mm = 109.69f,
-      .retracted_length_mm = 287.59f,
+      .retracted_length_mm = 287.58f,
   };
 
   // Expected lengths computed independently from the URDF in Python.
   check(near(linkage.length_mm(0.0f), 402.93f, 0.05f), "linkage: length at 0 deg = 402.93 mm");
-  check(near(linkage.length_mm(-45.0f), 287.59f, 0.05f), "linkage: length at -45 deg = 287.59 mm");
+  check(near(linkage.length_mm(-45.0f), 287.58f, 0.05f), "linkage: length at -45 deg = 287.58 mm");
   check(near(linkage.length_mm(45.0f), 471.13f, 0.05f), "linkage: length at +45 deg = 471.13 mm");
   check(near(linkage.stroke_mm(-45.0f), 0.0f, 0.05f), "linkage: stroke at -45 deg = 0 mm");
 
@@ -76,6 +76,12 @@ inline int run_actuator_stage_checks(void (*report)(const char *line)) {
       }
     }
     check(all_round_trip, "linkage: arm -> stroke -> arm, -45..45 deg");
+  }
+
+  {
+    // A stroke a hair past the -45 deg stop (float rounding) is snapped onto the stop.
+    auto snapped = linkage.arm_deg(linkage.stroke_mm(-45.0f) - 1e-4f, -45.0f, 45.0f);
+    check(snapped && *snapped == -45.0f, "linkage: stroke 1e-4 mm past -45 deg stop snaps to -45");
   }
 
   check(!linkage.arm_deg(400.0f, -45.0f, 45.0f), "linkage: 400 mm stroke is rejected");

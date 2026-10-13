@@ -114,14 +114,15 @@ inline constexpr SeatGeometry seat_geometry{
     // Arm pin: motor_elevator_l origin. Plate pin: motor_elevator_pivot_l origin.
     // TODO(bench): confirm the plate pin from CAD. motor_elevator_rod_link_l is the other
     // candidate (50.8 mm higher) and changes stroke by up to ~13 mm at the ends of travel.
-    // TODO(bench): retracted length. Placeholder = pin-to-pin length at arm angle −45°.
+    // TODO(bench): retracted length. Placeholder = pin-to-pin length at arm angle −45°,
+    // to 0.01 mm (287.5836).
     .main_left_linkage =
         {
             .arm_pin_x_mm = -103.72f,
             .arm_pin_z_mm = 126.68f,
             .plate_pin_x_mm = 298.85f,
             .plate_pin_z_mm = 109.69f,
-            .retracted_length_mm = 287.59f,
+            .retracted_length_mm = 287.58f,
         },
     .main_right_linkage =
         {
@@ -129,7 +130,7 @@ inline constexpr SeatGeometry seat_geometry{
             .arm_pin_z_mm = 126.68f,
             .plate_pin_x_mm = 298.85f,
             .plate_pin_z_mm = 109.69f,
-            .retracted_length_mm = 287.59f,
+            .retracted_length_mm = 287.58f,
         },
 
     // dw_main_plate_l / dw_main_plate_r limits.

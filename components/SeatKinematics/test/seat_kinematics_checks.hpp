@@ -112,7 +112,7 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
   {
     // The edges of the reachable range (level seat, found by sweeping on the host).
     bool all_round_trip = true;
-    for (float elevation_mm : {-64.0f, 231.0f}) {
+    for (float elevation_mm : {-64.9f, 231.3f}) {
       const SeatPose requested{.pitch_deg = 0.0f,
                                .roll_deg = 0.0f,
                                .elevation_mm = elevation_mm,
@@ -123,7 +123,7 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
         all_round_trip = false;
       }
     }
-    check(all_round_trip, "elevation -64 and 231 mm (edges of reach): pose -> joints -> pose");
+    check(all_round_trip, "elevation -64.9 and 231.3 mm (edges of reach): pose -> joints -> pose");
   }
 
   {
@@ -135,6 +135,75 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
                                     .right_carriage_mm = 60.0f});
     check(pose && near(pose->translation_mm, 50.0f, length_tolerance_mm),
           "carriages at 40 and 60 mm: translation reported as 50 mm");
+  }
+
+  // --- Hard stops with realistic transmissions ---------------------------------------------
+  // Non-trivial transmissions (inverted, offsets) make the round trip through actuator degrees
+  // inexact, which is what a real joint resting on its stop looks like.
+  {
+    SeatGeometry geometry = kinematics.geometry();
+    geometry.main_left_transmission = Transmission::linear(5.0f, 30.0f);
+    geometry.main_right_transmission = Transmission::linear(5.0f, 30.0f, true, 12.5f);
+    geometry.rear_caster_transmission = Transmission::rotary(1.0f, true, 17.3f);
+    geometry.left_carriage_transmission = Transmission::linear(8.0f, 47.0f);
+    geometry.right_carriage_transmission = Transmission::linear(8.0f, 47.0f, true, -3.0f);
+    const SeatKinematics real(geometry);
+
+    bool all_round_trip = true;
+    for (float limit_deg : {-45.0f, 45.0f}) {
+      for (float carriage_mm : {-400.0f, 400.0f}) {
+        const JointConfig joints{.main_left_arm_deg = limit_deg,
+                                 .main_right_arm_deg = limit_deg,
+                                 .rear_caster_arm_deg = limit_deg,
+                                 .left_carriage_mm = carriage_mm,
+                                 .right_carriage_mm = carriage_mm};
+        auto actuators = real.to_actuators(joints);
+        auto back = actuators ? real.from_actuators(*actuators) : std::nullopt;
+        // Within the rounding tolerance of the stop (values past it are snapped onto it).
+        if (!back || !near(back->main_left_arm_deg, limit_deg, limit_tolerance_deg) ||
+            !near(back->main_right_arm_deg, limit_deg, limit_tolerance_deg) ||
+            !near(back->rear_caster_arm_deg, limit_deg, limit_tolerance_deg) ||
+            !near(back->left_carriage_mm, carriage_mm, limit_tolerance_mm) ||
+            !near(back->right_carriage_mm, carriage_mm, limit_tolerance_mm)) {
+          all_round_trip = false;
+        }
+      }
+    }
+    check(all_round_trip, "hard stops, realistic transmissions: joints -> actuators -> joints");
+
+    // 0.01 mm / 0.01 deg past a limit is beyond the rounding tolerance: still rejected.
+    const JointConfig stop{.main_left_arm_deg = 45.0f,
+                           .main_right_arm_deg = 45.0f,
+                           .rear_caster_arm_deg = 45.0f,
+                           .left_carriage_mm = 400.0f,
+                           .right_carriage_mm = 400.0f};
+    JointConfig past_arm = stop;
+    past_arm.rear_caster_arm_deg = 45.01f;
+    JointConfig past_carriage = stop;
+    past_carriage.left_carriage_mm = 400.01f;
+    check(real.to_actuators(stop) && !real.to_actuators(past_arm),
+          "0.01 deg past the rear arm limit is rejected");
+    check(!real.to_actuators(past_carriage), "0.01 mm past the carriage limit is rejected");
+
+    auto actuators = real.to_actuators(stop);
+    ActuatorPositions past_reading = actuators.value_or(ActuatorPositions{});
+    past_reading.left_carriage_deg =
+        real.geometry().left_carriage_transmission.to_actuator_deg(400.01f);
+    check(actuators && !real.from_actuators(past_reading),
+          "reading 0.01 mm past the carriage limit is rejected");
+    past_reading = actuators.value_or(ActuatorPositions{});
+    past_reading.rear_caster_deg = real.geometry().rear_caster_transmission.to_actuator_deg(45.01f);
+    check(actuators && !real.from_actuators(past_reading),
+          "reading 0.01 deg past the rear arm limit is rejected");
+
+    // Out-of-range requests and readings.
+    check(!real.to_actuators({.left_carriage_mm = 450.0f}),
+          "to_actuators rejects a 450 mm carriage");
+    check(!real.to_actuators({.rear_caster_arm_deg = 50.0f}),
+          "to_actuators rejects a 50 deg rear arm");
+    check(!real.from_actuators(
+              {.main_left_deg = real.geometry().main_left_transmission.to_actuator_deg(400.0f)}),
+          "from_actuators rejects a 400 mm main stroke");
   }
 
   // --- Known behaviour ---------------------------------------------------------------------
@@ -196,6 +265,8 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
         "pitch 40 deg is rejected");
   check(!kinematics.to_actuators({.main_left_arm_deg = 60.0f}),
         "to_actuators rejects a 60 deg main arm");
+
+  check(!kinematics.forward({.main_left_arm_deg = std::nanf("")}), "forward rejects a NaN joint");
 
   check(!kinematics.inverse({.pitch_deg = std::nanf(""),
                              .roll_deg = 0.0f,
