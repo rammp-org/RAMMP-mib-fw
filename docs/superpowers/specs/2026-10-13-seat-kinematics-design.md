@@ -53,7 +53,7 @@ New component `components/SeatKinematics/`, no ESP-IDF dependencies in the math:
 | `example/` | ESP-IDF example project, `DifferentialDrive` style, exercising round trips |
 
 Geometry constants live in `components/MIBConfig/include/MIBconfig.hpp` as one
-`mib::config::SeatGeometryConfig` grouped per leg. `SeatKinematics` is added to the root
+`mib::config::seat_geometry` (type `mib::SeatGeometry`, defined in `seat_geometry.hpp`) grouped per leg; `MIBConfig` therefore `REQUIRES SeatKinematics`. `SeatKinematics` is added to the root
 `CMakeLists.txt` `COMPONENTS` list so CI compiles it.
 
 ### Data types
