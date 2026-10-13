@@ -85,15 +85,13 @@ std::optional<float> arm_deg_on_ground(const SwingArmLeg &leg, float carriage_mm
 } // namespace
 
 std::optional<JointConfig> SeatKinematics::inverse(const SeatPose &pose) const {
-  // Written as "in range" rather than "out of range" so that NaN, which fails both
-  // comparisons, is rejected too.
-  const bool translation_in_range = pose.translation_mm >= geometry_.min_carriage_mm &&
-                                    pose.translation_mm <= geometry_.max_carriage_mm;
-  if (!translation_in_range) {
+  const auto translation_mm = within_limits(pose.translation_mm, geometry_.min_carriage_mm,
+                                            geometry_.max_carriage_mm, limit_tolerance_mm);
+  if (!translation_mm) {
     return std::nullopt;
   }
   const PointMm up = world_up(pose.pitch_deg, pose.roll_deg);
-  const float carriage_mm = pose.translation_mm;
+  const float carriage_mm = *translation_mm;
 
   auto main_left = arm_deg_on_ground(geometry_.main_left, carriage_mm, up, pose.elevation_mm);
   auto main_right = arm_deg_on_ground(geometry_.main_right, carriage_mm, up, pose.elevation_mm);
@@ -170,31 +168,41 @@ std::optional<SeatPose> SeatKinematics::forward(const JointConfig &joints) const
   }
 
   // Undo world_up():  up = (sin p, sin r·cos p, cos r·cos p).
-  return SeatPose{
+  const SeatPose pose{
       .pitch_deg = std::asin(up.x_mm) * rad_to_deg,
       .roll_deg = std::atan2(up.y_mm, up.z_mm) * rad_to_deg,
       .elevation_mm = left_radius - dot(up, left),
       .translation_mm = (joints.left_carriage_mm + joints.right_carriage_mm) / 2.0f,
   };
+  // A NaN or infinite joint gives a NaN pose; report nothing rather than garbage.
+  if (!std::isfinite(up.x_mm) || !std::isfinite(up.y_mm) || !std::isfinite(up.z_mm) ||
+      !std::isfinite(pose.pitch_deg) || !std::isfinite(pose.roll_deg) ||
+      !std::isfinite(pose.elevation_mm) || !std::isfinite(pose.translation_mm)) {
+    return std::nullopt;
+  }
+  return pose;
 }
 
 std::optional<ActuatorPositions> SeatKinematics::to_actuators(const JointConfig &joints) const {
-  if (!joints_within_limits(joints)) {
+  const auto checked = joints_within_limits(joints);
+  if (!checked) {
     return std::nullopt;
   }
-  const float main_left_stroke_mm = geometry_.main_left_linkage.stroke_mm(joints.main_left_arm_deg);
+  const JointConfig &snapped = *checked; // joints with limit-rounding snapped
+  const float main_left_stroke_mm =
+      geometry_.main_left_linkage.stroke_mm(snapped.main_left_arm_deg);
   const float main_right_stroke_mm =
-      geometry_.main_right_linkage.stroke_mm(joints.main_right_arm_deg);
+      geometry_.main_right_linkage.stroke_mm(snapped.main_right_arm_deg);
 
   return ActuatorPositions{
       .main_left_deg = geometry_.main_left_transmission.to_actuator_deg(main_left_stroke_mm),
       .main_right_deg = geometry_.main_right_transmission.to_actuator_deg(main_right_stroke_mm),
       .rear_caster_deg =
-          geometry_.rear_caster_transmission.to_actuator_deg(joints.rear_caster_arm_deg),
+          geometry_.rear_caster_transmission.to_actuator_deg(snapped.rear_caster_arm_deg),
       .left_carriage_deg =
-          geometry_.left_carriage_transmission.to_actuator_deg(joints.left_carriage_mm),
+          geometry_.left_carriage_transmission.to_actuator_deg(snapped.left_carriage_mm),
       .right_carriage_deg =
-          geometry_.right_carriage_transmission.to_actuator_deg(joints.right_carriage_mm),
+          geometry_.right_carriage_transmission.to_actuator_deg(snapped.right_carriage_mm),
   };
 }
 
@@ -223,23 +231,34 @@ SeatKinematics::from_actuators(const ActuatorPositions &actuators) const {
       .right_carriage_mm =
           geometry_.right_carriage_transmission.from_actuator_deg(actuators.right_carriage_deg),
   };
-  if (!joints_within_limits(joints)) {
-    return std::nullopt;
-  }
-  return joints;
+  return joints_within_limits(joints);
 }
 
-bool SeatKinematics::joints_within_limits(const JointConfig &joints) const {
-  auto arm_ok = [](const SwingArmLeg &leg, float arm_deg) {
-    return arm_deg >= leg.min_arm_deg && arm_deg <= leg.max_arm_deg;
+/// Check every joint against its limits. Returns the joints with any value that is just past a
+/// limit (float rounding) snapped onto it, or empty if any joint is out of range.
+std::optional<JointConfig> SeatKinematics::joints_within_limits(const JointConfig &joints) const {
+  auto arm = [](const SwingArmLeg &leg, float arm_deg) {
+    return within_limits(arm_deg, leg.min_arm_deg, leg.max_arm_deg, limit_tolerance_deg);
   };
-  auto carriage_ok = [this](float carriage_mm) {
-    return carriage_mm >= geometry_.min_carriage_mm && carriage_mm <= geometry_.max_carriage_mm;
+  auto carriage = [this](float carriage_mm) {
+    return within_limits(carriage_mm, geometry_.min_carriage_mm, geometry_.max_carriage_mm,
+                         limit_tolerance_mm);
   };
-  return arm_ok(geometry_.main_left, joints.main_left_arm_deg) &&
-         arm_ok(geometry_.main_right, joints.main_right_arm_deg) &&
-         arm_ok(geometry_.rear_caster, joints.rear_caster_arm_deg) &&
-         carriage_ok(joints.left_carriage_mm) && carriage_ok(joints.right_carriage_mm);
+  const auto main_left = arm(geometry_.main_left, joints.main_left_arm_deg);
+  const auto main_right = arm(geometry_.main_right, joints.main_right_arm_deg);
+  const auto rear_caster = arm(geometry_.rear_caster, joints.rear_caster_arm_deg);
+  const auto left_carriage = carriage(joints.left_carriage_mm);
+  const auto right_carriage = carriage(joints.right_carriage_mm);
+  if (!main_left || !main_right || !rear_caster || !left_carriage || !right_carriage) {
+    return std::nullopt;
+  }
+  return JointConfig{
+      .main_left_arm_deg = *main_left,
+      .main_right_arm_deg = *main_right,
+      .rear_caster_arm_deg = *rear_caster,
+      .left_carriage_mm = *left_carriage,
+      .right_carriage_mm = *right_carriage,
+  };
 }
 
 } // namespace mib

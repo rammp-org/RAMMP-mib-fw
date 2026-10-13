@@ -6,6 +6,32 @@
 
 namespace mib {
 
+/// Rounding tolerance at a hard stop, see within_limits(). Far smaller than any real resolution.
+inline constexpr float limit_tolerance_deg = 1e-3f;
+inline constexpr float limit_tolerance_mm = 1e-3f;
+
+/// @brief Check a value against [min, max], absorbing float rounding at the limits.
+///
+/// A joint resting on its hard stop converts through actuator degrees and back with a little float
+/// rounding, so it can come back a hair past the limit. A value within `tolerance` outside the
+/// range is snapped onto the limit. This is not clamping: anything further out is rejected.
+///
+/// @return The value (snapped onto the limit if it was just outside), or empty if it is out of
+///         range or NaN.
+inline std::optional<float> within_limits(float value, float min, float max, float tolerance) {
+  // Written as "in range" rather than "out of range" so that NaN is rejected too.
+  if (value >= min && value <= max) {
+    return value;
+  }
+  if (value >= min - tolerance && value < min) {
+    return min;
+  }
+  if (value > max && value <= max + tolerance) {
+    return max;
+  }
+  return std::nullopt;
+}
+
 /// @brief Solve  a·cos(q) + b·sin(q) = c  for q, and keep the root inside [min_rad, max_rad].
 ///
 /// Both the leg IK and the actuator linkage reduce to this one equation. Rewriting the left side
@@ -29,19 +55,14 @@ inline std::optional<float> solve_cos_sin_equation(float a, float b, float c, fl
   const float root_plus = wrap(phase + spread);
   const float root_minus = wrap(phase - spread);
 
-  auto in_range = [&](float q) { return q >= min_rad && q <= max_rad; };
-  const bool plus_ok = in_range(root_plus);
-  const bool minus_ok = in_range(root_minus);
-  if (plus_ok && minus_ok) {
-    return std::fabs(root_plus) <= std::fabs(root_minus) ? root_plus : root_minus;
+  // A root just past a limit is snapped onto it (float rounding), see within_limits().
+  constexpr float tolerance_rad = limit_tolerance_deg * std::numbers::pi_v<float> / 180.0f;
+  const auto plus = within_limits(root_plus, min_rad, max_rad, tolerance_rad);
+  const auto minus = within_limits(root_minus, min_rad, max_rad, tolerance_rad);
+  if (plus && minus) {
+    return std::fabs(*plus) <= std::fabs(*minus) ? plus : minus;
   }
-  if (plus_ok) {
-    return root_plus;
-  }
-  if (minus_ok) {
-    return root_minus;
-  }
-  return std::nullopt;
+  return plus ? plus : minus;
 }
 
 } // namespace mib

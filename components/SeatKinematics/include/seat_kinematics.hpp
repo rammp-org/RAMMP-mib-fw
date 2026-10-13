@@ -42,11 +42,15 @@ struct ActuatorPositions {
 ///
 /// Pure math: no hardware, no state besides the geometry, safe to call from any task.
 /// Nothing is clamped. An empty result means the request is unreachable or outside a limit, and
-/// the caller decides what to do.
+/// the caller decides what to do. The one exception to "outside a limit" is float rounding: a value
+/// within 1e-3 deg / 1e-3 mm of a limit is snapped onto it (see within_limits()).
 class SeatKinematics {
 public:
   explicit SeatKinematics(const SeatGeometry &geometry)
       : geometry_(geometry) {}
+
+  /// @brief The geometry this instance was built with.
+  const SeatGeometry &geometry() const { return geometry_; }
 
   /// @brief Seat pose -> joint positions.
   /// @return Empty if any leg cannot reach the ground within its arm limits, or the translation
@@ -54,7 +58,8 @@ public:
   std::optional<JointConfig> inverse(const SeatPose &pose) const;
 
   /// @brief Joint positions -> seat pose (for reporting seat state from feedback).
-  /// @return Empty if no ground plane touches all three wheels (degenerate geometry).
+  /// @return Empty if no ground plane touches all three wheels (degenerate geometry), or a joint
+  ///         is not finite.
   std::optional<SeatPose> forward(const JointConfig &joints) const;
 
   /// @brief Joint positions -> actuator degrees.
@@ -67,7 +72,7 @@ public:
   std::optional<JointConfig> from_actuators(const ActuatorPositions &actuators) const;
 
 private:
-  bool joints_within_limits(const JointConfig &joints) const;
+  std::optional<JointConfig> joints_within_limits(const JointConfig &joints) const;
 
   SeatGeometry geometry_;
 };
