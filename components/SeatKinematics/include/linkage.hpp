@@ -17,7 +17,7 @@ namespace mib {
 ///       actuator, length L
 ///                   /
 ///        A  pin on the swing arm (rotates with the arm about O)
-///         \
+///         \  swing arm, A to O
 ///          O ─────────────────── wheel
 ///
 /// As the arm turns by q, A moves to rotate(A, q) and the actuator length becomes
