@@ -96,7 +96,9 @@ std::optional<JointConfig>       from_actuators(const ActuatorPositions &actuato
 ```
 
 An empty `optional` means the request is unreachable or outside a limit. The module never clamps
-silently; the caller decides what to do.
+silently; the caller decides what to do. The one allowance is float rounding at hard stops: a value
+within 1e-3 deg (angles) or 1e-3 mm (lengths) of a limit is snapped onto the limit, and anything
+further out is rejected.
 
 ## Frames and conventions
 
@@ -197,7 +199,7 @@ struct Transmission {
 |---|---|---|
 | Main-left swing pivot (chassis) | (166.82, 182.00, 113.42) | `dw_main_plate_l` + `motor_swing_arm_l` |
 | Main-right swing pivot (chassis) | (166.82, −187.12, 113.42) | `dw_main_plate_r` + `motor_swing_arm_r` |
-| Main pivot → wheel centre (arm frame) | (318.77, ±119.54, −13.80) | `drive_motor_*` + `drive_wheel_*` |
+| Main pivot → wheel centre (arm frame) | (318.77, +119.54 (left) / −119.55 (right), −13.80) | `drive_motor_*` + `drive_wheel_*` |
 | Main wheel radius | 184.06 | `drive_wheel_l` collision cylinder |
 | Rear caster swing pivot (chassis) | (−31.75, 0.11, 8.89) | `rear_caster_arm_mount` + `rear_caster_swing_arm` |
 | Rear pivot → wheel centre (arm frame) | (−209.55, 0, 12.70) | `rear_casteer_wheel_l` / `rear_caster_wheel_r`, y averaged |
@@ -213,9 +215,9 @@ Example project `components/SeatKinematics/example/` logs PASS/FAIL for:
 
 - **Round trips:** pose → joints → pose, and joints → actuators → joints, within 0.01° / 0.01 mm,
   over a grid of reachable poses.
-- **Known behaviour:** pure positive pitch lowers the rear contact relative to the main contacts
-  (front up); pure positive roll extends the left main leg relative to the right; elevation change
-  alone moves all three arms in the "lift" direction.
+- **Known behaviour:** positive pitch (front up) drops the main wheels and raises the rear
+  wheel relative to the chassis; pure positive roll extends the left main leg relative to the
+  right; elevation change alone moves all three arms in the "lift" direction.
 - **Rejection:** poses beyond the arm or carriage limits return empty.
 
 Because the math has no ESP-IDF dependency, the same checks are also compiled and run on the host
