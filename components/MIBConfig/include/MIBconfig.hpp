@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "hal/adc_types.h"
+#include "load_cell_lchd.hpp"
 
 namespace mib::config {
 
@@ -85,8 +86,6 @@ struct LoadCellConfig {
   size_t samples;
   float filter_alpha;
  
-  constexpr float gain() const { return 1.0f + 50000.0f / rg_ohms; }
-  constexpr float span_mv() const { return excitation_mv / 1000.0f * fso_mv_per_v * gain(); }
 };
  
 inline constexpr LoadCellConfig LOAD_CELL{

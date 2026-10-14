@@ -11,7 +11,7 @@
 
 #include "base_component.hpp"
 
-namespace espp {
+namespace mib {
 
 /// @brief Strain-gauge load cell amplified by an instrumentation amplifier.
 ///

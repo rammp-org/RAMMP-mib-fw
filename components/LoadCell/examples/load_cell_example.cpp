@@ -1,19 +1,12 @@
 // Minimal ESP-IDF example: Omega LCHD-1K -> INA118PB -> ESP32 ADC.
 //
-// idf_component.yml:
-//   dependencies:
-//     espp/base_component: "^1.0"
-//     espp/adc: "^1.0"
-//     espp/task: "^1.0"
-//
 // Wiring assumed:
 //   LCHD-1K bridge  -> INA118 IN+ / IN- (confirm EXC/SIG pinout against the
 //                      unit's calibration sheet, not from memory)
 //   INA118 Rg       -> 1.28k between pins 1 and 8  => G = 40.06
 //   INA118 REF      -> buffered 1.65 V (mid-ADC), so zero load reads ~1.65 V
 //   INA118 Vout     -> 1k series + Schottky clamps -> ADC1_CH4, which is
-//                      GPIO20 on the ESP32-P4 (ADC1_CH0..CH7 = GPIO16..GPIO23)
-//                      and GPIO34 on the original ESP32
+//                      GPIO20 on the ESP32-P4 
 //   Excitation      -> 10.0 Vdc from its own regula
 
 #include <chrono>
@@ -41,9 +34,7 @@ espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosit
 } 
 //====================================================================================================
 extern "C" void app_main(void) {
-  // FIX 1 and 2: capture the AdcConfig BY VALUE, and propagate a failed read
-  // as std::nullopt instead of 0 mV. read_mv() resolves the channel by unit
-  // and channel number, so a copy is equivalent to the vector's element.
+
   auto ch = channels[0];
   auto read_mv = [ch]() -> std::optional<float> {
     auto maybe_mv = adc.read_mv(ch);

@@ -1,4 +1,4 @@
-# components/LoadCells/idf_component.yml
+# components/LoadCell/idf_component.yml
 
 dependencies:
   idf: ">=5.3"

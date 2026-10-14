@@ -1,4 +1,4 @@
-# components/LoadCells/CMakeLists.txt
+# components/LoadCell/CMakeLists.txt
 
 idf_component_register(
     INCLUDE_DIRS "include"

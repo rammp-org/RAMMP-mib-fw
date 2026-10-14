@@ -36,8 +36,6 @@ public:
     board_ = &espp::Esp32P4Eth::get();
     board_->set_log_level(espp::Logger::Verbosity::INFO);
 
-    init_LoadCell();
-
     return init_ethernet();
   }
 
@@ -73,104 +71,23 @@ public:
   /// @return Reference to the RTPS participant owned by the MIB BSP.
   espp::RtpsParticipant &rtps_participant() { return *rtps_participant_; }
 
-  //=======================================================================================================
-  // Load Cell Functions
-  bool init_LoadCell() {
- 
-    constexpr auto cfg = config::LOAD_CELL;
- 
-    // Set up oneshot adc
-    static std::vector<espp::AdcConfig> channels{
-        {.unit = cfg.adc_unit, .channel = cfg.adc_channel, .attenuation = cfg.adc_atten},
-    };
-    static espp::OneshotAdc adc({.unit = cfg.adc_unit, .channels = channels});
- 
-    load_cell.emplace(espp::LoadCell::Config{
-      .capacity = cfg.capacity_lbf,
-      .rated_output_mv_per_v = cfg.fso_mv_per_v,
-      .excitation_mv = cfg.excitation_mv,
-      .amplifier_gain = cfg.gain(),
-      .amp_offset_mv = cfg.ref_mv,
-      .read_mv =
-          []() -> std::optional<float> {
-            auto maybe_mv = adc.read_mv(channels[0]);
-            if (!maybe_mv.has_value()) {
-              return std::nullopt;
-            }
-            return static_cast<float>(maybe_mv.value());
-          },
-      .num_samples = cfg.samples,
-      .filter_alpha = cfg.filter_alpha,
-      .log_level = espp::Logger::Verbosity::INFO,
-    });
- 
-    // ---- init checks ---------------------------------------------------------
-    const int gpio = 16 + static_cast<int>(cfg.adc_channel); // P4: GPIO = 16 + ADC1 channel
- 
-    auto maybe_mv = load_cell->get_amplifier_mv();
-    if (!maybe_mv.has_value()) {
-      logger.error("GPIO{}: read failed, channel not configured or ADC error", gpio);
-      load_cell.reset();
-      return false;
-    }
-    const float mv = maybe_mv.value();
-    const float off = mv - cfg.ref_mv;
- 
-    if (mv < 100.0f || mv > 3000.0f) {
-      logger.error("GPIO{}: {:.1f} mV is railed, in-amp clipping or bridge open", gpio, mv);
-      load_cell.reset();
-      return false;
-    }
-    if (std::abs(off) > 0.1f * cfg.span_mv()) {
-      logger.warn("GPIO{}: {:.1f} mV sits {:+.1f} mV off REF, over 10% of span", gpio, mv, off);
-    }
- 
-    logger.info("load cell on GPIO{}: {:.1f} mV ({:+.1f} from REF), initialized", gpio, mv, off);
-    return true;
-  }
- 
-  /// @brief Gives load cell reading in lbf, or nullopt if the read failed.
-  std::optional<float> get_load_cell_lbf() {
-    if (!load_cell) {
-      logger.debug("get_load_cell_lbf before init");
-      return std::nullopt;
-    }
-    return load_cell->get_lbf();
-  }
- 
-  /// @brief Gives load cell data to terminal
-  bool load_cell_log() {
-    if (!load_cell) {
-      return false;
-    }
 
-    auto r = load_cell->read();
-    if (!r.has_value()) {
-      logger.error("load cell read failed");
-      return false;
-    }
-    logger.info("{:.1f} mV -> {:+.2f} lbf", r->amplifier_mv, r->load);
-    return true;
-  }
+  /// @brief Initialize Load Cell 
+  /// @return True if load cell is successfully initialized
+  bool init_load_cell()
+
+  /// @brief Gives load cell reading in lbf, or nullopt if the read failed.
+  /// @return Returns reading in lbf
+  std::optional<float> get_load_cell_lbf()
  
   /// @brief Re-zero load cell
-  bool zero_load_cell() {
-    if (!load_cell) {
-      return false;
-    }
-
-    if (!load_cell->tare(64).has_value()) {
-      logger.error("tare failed, previous zero kept");
-      return false;
-    }
-    return true;
-  }
-  //=======================================================================================================
+  /// @return True tare is successful
+  bool zero_load_cell()
 
 private:
-  std::optional<espp::LoadCell> load_cell;
-
-  espp::Logger logger{{.tag = "MIB", .level = espp::Logger::Verbosity::INFO}};
+  std::optional<espp::LoadCell> load_cell_;
+  std::vector<espp::AdcConfig> channels_;
+  std::optional<espp::OneshotAdc> adc_;
 
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};

@@ -366,6 +366,14 @@ void MibSystem::run_state_step() {
       return;
     }
 
+    //Initialize load cell
+    logger_.info("initializing load cell");
+    if (!mib_.init_load_cell()) {
+      logger_.error("Failed to initialize load cell");
+      state_.store(SystemState::ERROR);
+      return;
+    }
+
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");
     while (!mib_.ethernet_connected()) {
