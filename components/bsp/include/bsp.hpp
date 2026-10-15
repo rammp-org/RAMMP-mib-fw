@@ -74,18 +74,18 @@ public:
 
   /// @brief Initialize Load Cell 
   /// @return True if load cell is successfully initialized
-  bool init_load_cell()
+  bool init_load_cell();
 
   /// @brief Gives load cell reading in lbf, or nullopt if the read failed.
   /// @return Returns reading in lbf
-  std::optional<float> get_load_cell_lbf()
+  std::optional<float> get_load_cell_lbf();
  
   /// @brief Re-zero load cell
   /// @return True tare is successful
-  bool zero_load_cell()
+  bool zero_load_cell();
 
 private:
-  std::optional<espp::LoadCell> load_cell_;
+  std::optional<mib::LoadCell> load_cell_;
   std::vector<espp::AdcConfig> channels_;
   std::optional<espp::OneshotAdc> adc_;
 

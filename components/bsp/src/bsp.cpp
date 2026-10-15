@@ -29,68 +29,68 @@ bool MIB::init_rtps() {
 
 bool MIB::init_load_cell() {
  
-	constexpr auto cfg = config::LOAD_CELL;
+	constexpr auto cfg = config::load_cell;
 
-  	// derived values, evaluated at compile time
-  	constexpr float gain = espp::LoadCell::gain_from_rg(cfg.rg_ohms);
-  	constexpr float span_mv = cfg.excitation_mv / 1000.0f * cfg.fso_mv_per_v * gain;
-
-  	static_assert(span_mv < 1500.0f, "gain too high, the in-amp will clip around REF");
+  // derived values
+  constexpr float gain = mib::LoadCell::gain_from_rg(cfg.rg_ohms);
  
     // Set up oneshot adc
 	channels_.clear();
-    channels_.push_back(
-        {.unit = cfg.adc_unit, .channel = cfg.adc_channel, .attenuation = cfg.adc_atten});
+  channels_.push_back(
+      {.unit = cfg.adc_unit, .channel = cfg.adc_channel, .attenuation = cfg.adc_atten});
  
-    adc_.emplace(espp::OneshotAdc::Config{
-        .unit = cfg.adc_unit,
-        .channels = channels_,
-    });
+  adc_.emplace(espp::OneshotAdc::Config{
+      .unit = cfg.adc_unit,
+      .channels = channels_,
+  });
  
-    load_cell_.emplace(espp::LoadCell::Config{
-      .capacity = cfg.capacity_lbf,
-      .rated_output_mv_per_v = cfg.fso_mv_per_v,
-      .excitation_mv = cfg.excitation_mv,
-      .amplifier_gain = gain,
-      .amp_offset_mv = cfg.ref_mv,
-      .read_mv =
-          [this]() -> std::optional<float> {
-            if (!adc_) {
-              return std::nullopt;
-            }
-            auto maybe_mv = adc_->read_mv(channels_[0]);
-            if (!maybe_mv.has_value()) {
-              return std::nullopt;
-            }
-            return static_cast<float>(maybe_mv.value());
-          },
-      .num_samples = cfg.samples,
-      .filter_alpha = cfg.filter_alpha,
-      .log_level = espp::Logger::Verbosity::INFO,
-    });
+  load_cell_.emplace(mib::LoadCell::Config{
+    .capacity = cfg.capacity_lbf,
+    .rated_output_mv_per_v = cfg.fso_mv_per_v,
+    .excitation_mv = cfg.excitation_mv,
+    .amplifier_gain = gain,
+    .amp_offset_mv = cfg.ref_mv,
+    .read_mv =
+        [this]() -> std::optional<float> {
+          if (!adc_) {
+            return std::nullopt;
+          }
+          auto maybe_mv = adc_->read_mv(channels_[0]);
+          if (!maybe_mv.has_value()) {
+            return std::nullopt;
+          }
+          return static_cast<float>(maybe_mv.value());
+        },
+    .num_samples = cfg.samples,
+    .filter_alpha = cfg.filter_alpha,
+    .log_level = espp::Logger::Verbosity::INFO,
+  });
+
+  zero_load_cell();
  
-    // ---- init checks 
-    const int gpio = 16 + static_cast<int>(cfg.adc_channel); // P4: GPIO = 16 + ADC1 channel
+  // ---- init checks 
+  int gpio;
+  adc_oneshot_channel_to_io(cfg.adc_unit, cfg.adc_channel, &gpio);
  
-    auto maybe_mv = load_cell_->get_amplifier_mv();
-    if (!maybe_mv.has_value()) {
-      logger_.error("GPIO{}: read failed, channel not configured or ADC error", gpio);
-      load_cell_.reset();
-      return false;
-    }
-    const float mv = maybe_mv.value();
-    const float off = mv - cfg.ref_mv;
+  auto maybe_mv = load_cell_->get_amplifier_mv();
+  if (!maybe_mv.has_value()) {
+    logger_.error("GPIO{}: read failed, channel not configured or ADC error", gpio);
+    load_cell_.reset();
+    return false;
+  }
+  const float mv = maybe_mv.value();
+  const float off = mv - cfg.ref_mv;
  
-    if (mv < 100.0f || mv > 3000.0f) {
-      logger_.error("GPIO{}: {:.1f} mV is railed, in-amp clipping or bridge open", gpio, mv);
-      load_cell_.reset();
-      return false;
-    }
-    if (std::abs(off) > 0.1f * span_mv) {
-      logger_.warn("GPIO{}: {:.1f} mV sits {:+.1f} mV off REF, over 10% of span", gpio, mv, off);
-    }
+  if (mv < 100.0f || mv > 3000.0f) {
+    logger_.error("GPIO{}: {:.1f} mV is railed, in-amp clipping or bridge open", gpio, mv);
+    load_cell_.reset();
+    return false;
+  }
+  if (std::abs(off) > 0.1f * load_cell_->nominal_span_mv()) {
+    logger_.warn("GPIO{}: {:.1f} mV sits {:+.1f} mV off REF, over 10% of span", gpio, mv, off);
+  }
  
-    logger_.info("load cell on GPIO{}: {:.1f} mV ({:+.1f} from REF), initialized", gpio, mv, off);
+  logger_.info("load cell on GPIO{}: {:.1f} mV ({:+.1f} from REF), initialized", gpio, mv, off);
     return true;
   }
  
@@ -107,7 +107,7 @@ bool MIB::init_load_cell() {
       return false;
     }
 
-    if (!load_cell_->tare(64).has_value()) {
+    if (!load_cell_->tare().has_value()) {
       logger_.error("tare failed, previous zero kept");
       return false;
     }

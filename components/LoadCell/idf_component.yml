@@ -1,6 +1,6 @@
 # components/LoadCell/idf_component.yml
 
 dependencies:
-  idf: ">=5.3"
+  idf: ">=6.0"
   espp/base_component: "^1.0"
  

@@ -78,7 +78,7 @@ namespace mib {
 ///   return static_cast<float>(maybe_mv.value());
 /// };
 ///
-/// espp::LoadCell load_cell({
+/// mib::LoadCell load_cell({
 ///     .capacity = 1000.0f,                  // lbf
 ///     .rated_output_mv_per_v = 3.0f,        // from the calibration sheet
 ///     .excitation_mv = 10000.0f,            // 10 Vdc
@@ -97,7 +97,7 @@ namespace mib {
 ///   printf("load cell read failed\n");
 /// }
 /// @endcode
-class LoadCell : public BaseComponent {
+class LoadCell : public espp::BaseComponent {
 public:
   /// @brief Function type for reading a voltage.
   /// @return Voltage in millivolts, or std::nullopt if the read failed.
@@ -151,7 +151,7 @@ public:
     Units units{Units::LBF};              ///< Units of `capacity` and of get_load()
     float overload_fraction{1.5f};        ///< Fraction of capacity treated as overload. The LCHD
                                           ///< safe overload is 150%, ultimate 300%
-    Logger::Verbosity log_level = Logger::Verbosity::WARN; ///< Log level for this class
+    espp::Logger::Verbosity log_level = espp::Logger::Verbosity::WARN; ///< Log level for this class
   };
 
   /// @brief Constructor.
@@ -170,7 +170,7 @@ public:
       , units_(config.units)
       , overload_fraction_(config.overload_fraction) {
     if (read_mv_ == nullptr) {
-      logger_.error("read_mv is null; all readings will be 0");
+      logger_.error("read_mv is null");
     }
     if (capacity_ <= 0.0f) {
       logger_.error("capacity must be > 0, got {}", capacity_);
@@ -244,11 +244,15 @@ public:
   ///          read +/-`rated_output_mv_per_v` at +/-capacity.
   /// @return Bridge output in mV/V, or std::nullopt on read failure.
   std::optional<float> get_mv_per_v() {
-    auto r = read();
-    if (!r.has_value()) {
+    auto bridge_mv = get_bridge_mv();
+    if (!bridge_mv.has_value()) {
       return std::nullopt;
     }
-    return r->mv_per_v;
+    auto exc = excitation_mv();
+    if (!exc.has_value()) {
+      return std::nullopt; 
+    }
+    return bridge_mv.value() / (exc.value() / 1000.0f);
   }
 
   /// @brief Take one reading and report every stage of the signal chain.
@@ -364,7 +368,7 @@ public:
   /// @return Tare offset in mV relative to `amp_offset_mv`, or std::nullopt if
   ///         any read failed. On failure the previous tare is left in place:
   ///         zeroing against a fault would be worse than not zeroing at all.
-  std::optional<float> tare(size_t samples = 32) {
+  std::optional<float> tare(size_t samples = 16) {
     samples = std::max<size_t>(1, samples);
     float sum = 0.0f;
     for (size_t i = 0; i < samples; i++) {
@@ -582,4 +586,4 @@ protected:
   std::optional<Reading> last_reading_; ///< Most recent successful read(), empty until one
 };
 
-} // namespace espp
+} // namespace mib

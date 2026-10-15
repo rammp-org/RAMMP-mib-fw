@@ -371,7 +371,6 @@ void MibSystem::run_state_step() {
     if (!mib_.init_load_cell()) {
       logger_.error("Failed to initialize load cell");
       state_.store(SystemState::ERROR);
-      return;
     }
 
     // RTPS discovery multicast fails on an interface with no carrier.

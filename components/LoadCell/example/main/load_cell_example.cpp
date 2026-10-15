@@ -16,6 +16,7 @@
 #include "load_cell_lchd.hpp"
 #include "oneshot_adc.hpp"
 #include "task.hpp"
+#include "format.hpp"
 
 using namespace std::chrono_literals;
 
@@ -44,12 +45,12 @@ extern "C" void app_main(void) {
     return static_cast<float>(maybe_mv.value());
   };
  
-  static espp::LoadCell load_cell({
+  static mib::LoadCell load_cell({
       .name = "load_cell",
       .capacity = 1000.0f,
       .rated_output_mv_per_v = 3.0000f, // from this unit's calibration sheet
       .excitation_mv = 10000.0f,
-      .amplifier_gain = espp::LoadCell::gain_from_rg(1280.0f),
+      .amplifier_gain = mib::LoadCell::gain_from_rg(1280.0f),
       .amp_offset_mv = 1650.0f,
       .read_mv = read_mv,
       .num_samples = 16,
@@ -66,7 +67,7 @@ extern "C" void app_main(void) {
   logger.info("GPIO{} unloaded: {:.1f} mV, span {:.1f} mV", SIGNAL_GPIO, unloaded.value(),
               load_cell.nominal_span_mv());
  
-  if (!load_cell.tare(64).has_value()) {
+  if (!load_cell.tare().has_value()) {
     logger.error("tare failed, refusing to start the read loop");
     return;
   }

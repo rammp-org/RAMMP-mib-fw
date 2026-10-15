@@ -4,7 +4,6 @@
 #include <cstdint>
 
 #include "hal/adc_types.h"
-#include "load_cell_lchd.hpp"
 
 namespace mib::config {
 
@@ -88,7 +87,7 @@ struct LoadCellConfig {
  
 };
  
-inline constexpr LoadCellConfig LOAD_CELL{
+inline constexpr LoadCellConfig load_cell{
     .capacity_lbf = 1000.0f,
     .fso_mv_per_v = 3.0000f,
     .excitation_mv = 10000.0f,
