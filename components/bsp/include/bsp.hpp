@@ -3,11 +3,16 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <optional>
+#include <vector>
+#include <cmath>
 
 #include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
 #include "base_component.hpp"
 #include "esp32-p4-eth.hpp"
+#include "load_cell_lchd.hpp"
+#include "oneshot_adc.hpp"
 
 namespace mib::bsp {
 
@@ -66,7 +71,24 @@ public:
   /// @return Reference to the RTPS participant owned by the MIB BSP.
   espp::RtpsParticipant &rtps_participant() { return *rtps_participant_; }
 
+
+  /// @brief Initialize Load Cell 
+  /// @return True if load cell is successfully initialized
+  bool init_load_cell();
+
+  /// @brief Gives load cell reading in lbf, or nullopt if the read failed.
+  /// @return Returns reading in lbf
+  std::optional<float> get_load_cell_lbf();
+ 
+  /// @brief Re-zero load cell
+  /// @return True tare is successful
+  bool zero_load_cell();
+
 private:
+  std::optional<mib::LoadCell> load_cell_;
+  std::vector<espp::AdcConfig> channels_;
+  std::optional<espp::OneshotAdc> adc_;
+
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};
     config.mode = mib::config::ethernet_dhcp_server

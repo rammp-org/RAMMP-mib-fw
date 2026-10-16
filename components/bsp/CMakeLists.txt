@@ -11,5 +11,7 @@ idf_component_register(
     "cdr"
     "logger"
     "MIBConfig"
+    "LoadCell"
+    "adc"
   REQUIRED_IDF_TARGETS "esp32p4"
 )
