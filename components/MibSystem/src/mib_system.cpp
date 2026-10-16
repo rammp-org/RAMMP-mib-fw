@@ -369,8 +369,7 @@ void MibSystem::run_state_step() {
     //Initialize load cell
     logger_.info("initializing load cell");
     if (!mib_.init_load_cell()) {
-      logger_.error("Failed to initialize load cell");
-      state_.store(SystemState::ERROR);
+      logger_.warn("Failed to initialize load cell");
     }
 
     // RTPS discovery multicast fails on an interface with no carrier.
@@ -393,6 +392,12 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: IDLE - running idle placeholder");
     break;
   case SystemState::CALIBRATE:
+
+    logger_.info("zero load cells");
+    if (!mib.zero_load_cell()) {
+      logger_.warn("Failed to zero load cell");
+    }
+
     logger_.debug("System state: CALIBRATE - running calibration placeholder");
     break;
   case SystemState::DRIVE_ENABLED:

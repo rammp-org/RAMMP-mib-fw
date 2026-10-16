@@ -7,7 +7,7 @@
 //   INA118 REF      -> buffered 1.65 V (mid-ADC), so zero load reads ~1.65 V
 //   INA118 Vout     -> 1k series + Schottky clamps -> ADC1_CH4, which is
 //                      GPIO20 on the ESP32-P4 
-//   Excitation      -> 10.0 Vdc from its own regula
+//   Excitation      -> 10.0 Vdc from its own regulator
 
 #include <chrono>
 #include <optional>
@@ -20,21 +20,30 @@
 
 using namespace std::chrono_literals;
 
-//====================================================================================================
+
 namespace {
 
-constexpr adc_channel_t SIGNAL_CHANNEL = ADC_CHANNEL_4;
-constexpr int SIGNAL_GPIO = 16 + static_cast<int>(SIGNAL_CHANNEL); // GPIO20
-static_assert(SIGNAL_GPIO == 20, "channel and documented GPIO disagree");
- 
-std::vector<espp::AdcConfig> channels{
-    {.unit = ADC_UNIT_1, .channel = SIGNAL_CHANNEL, .attenuation = ADC_ATTEN_DB_12}};
-espp::OneshotAdc adc({.unit = ADC_UNIT_1, .channels = channels});
- 
-espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosity::INFO});
+constexpr adc_channel_t signal_channel = ADC_CHANNEL_4;
+constexpr adc_unit_t adc_unit = ADC_UNIT_1
+
 } 
-//====================================================================================================
+
 extern "C" void app_main(void) {
+
+
+  int gpio = -1;
+
+  esp_err_t err = adc_oneshot_channel_to_io(adc_unit, signal_channel, &gpio);
+  if (err != ESP_OK) {
+    logger_.error("channel to GPIO lookup failed: {}", esp_err_to_name(err));
+    return false;
+  }
+
+  std::vector<espp::AdcConfig> channels{
+    {.unit = adc_unit, .channel = signal_channel, .attenuation = ADC_ATTEN_DB_12}};
+  espp::OneshotAdc adc({.unit = adc_unit, .channels = channels});
+ 
+  espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosity::INFO});
 
   auto ch = channels[0];
   auto read_mv = [ch]() -> std::optional<float> {
@@ -95,11 +104,11 @@ extern "C" void app_main(void) {
     cv.wait_for(lk, 100ms);
     return false;
   };
-  //Run task
+
   static auto task = espp::Task({.callback = task_fn,
                                  .task_config = {.name = "load cell", .stack_size_bytes = 6 * 1024},
                                  .log_level = espp::Logger::Verbosity::WARN});
   task.start();
 }
-//====================================================================================================
+
 

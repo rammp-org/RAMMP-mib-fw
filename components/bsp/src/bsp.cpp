@@ -29,13 +29,13 @@ bool MIB::init_rtps() {
 
 bool MIB::init_load_cell() {
  
-	constexpr auto cfg = config::load_cell;
+  constexpr auto cfg = config::load_cell;
 
   // derived values
   constexpr float gain = mib::LoadCell::gain_from_rg(cfg.rg_ohms);
  
     // Set up oneshot adc
-	channels_.clear();
+  channels_.clear();
   channels_.push_back(
       {.unit = cfg.adc_unit, .channel = cfg.adc_channel, .attenuation = cfg.adc_atten});
  
@@ -65,12 +65,15 @@ bool MIB::init_load_cell() {
     .filter_alpha = cfg.filter_alpha,
     .log_level = espp::Logger::Verbosity::INFO,
   });
-
-  zero_load_cell();
  
   // ---- init checks 
-  int gpio;
-  adc_oneshot_channel_to_io(cfg.adc_unit, cfg.adc_channel, &gpio);
+  int gpio = -1;
+
+  esp_err_t err = adc_oneshot_channel_to_io(cfg.adc_unit, cfg.adc_channel, &gpio);
+  if (err != ESP_OK) {
+    logger_.error("channel to GPIO lookup failed: {}", esp_err_to_name(err));
+    return false;
+  }
  
   auto maybe_mv = load_cell_->get_amplifier_mv();
   if (!maybe_mv.has_value()) {
@@ -92,7 +95,7 @@ bool MIB::init_load_cell() {
  
   logger_.info("load cell on GPIO{}: {:.1f} mV ({:+.1f} from REF), initialized", gpio, mv, off);
     return true;
-  }
+}
  
   std::optional<float> MIB::get_load_cell_lbf() {
     if (!load_cell_) {

@@ -10,7 +10,6 @@
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
-#include "load_cell_lchd.hpp"
 
 /// @brief Top-level MIB application: owns the system state machine and RTPS endpoints.
 ///

@@ -1,7 +1,7 @@
 dependencies:
   idf:
     version: '>=6.0'
-  espp/base_component: "^1.0"
-  espp/adc: "^1.0"
-  espp/task: "^1.0"
+  espp/base_component: ">=1.0"
+  espp/adc: ">=1.0"
+  espp/task: ">=1.0"
   espp/logger: '>=1.3'
