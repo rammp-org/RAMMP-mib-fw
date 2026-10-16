@@ -24,26 +24,27 @@ using namespace std::chrono_literals;
 namespace {
 
 constexpr adc_channel_t signal_channel = ADC_CHANNEL_4;
-constexpr adc_unit_t adc_unit = ADC_UNIT_1
+constexpr adc_unit_t adc_unit = ADC_UNIT_1;
 
 } 
 
 extern "C" void app_main(void) {
+
+  static espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosity::INFO});
 
 
   int gpio = -1;
 
   esp_err_t err = adc_oneshot_channel_to_io(adc_unit, signal_channel, &gpio);
   if (err != ESP_OK) {
-    logger_.error("channel to GPIO lookup failed: {}", esp_err_to_name(err));
-    return false;
+    logger.error("channel to GPIO lookup failed: {}", esp_err_to_name(err));
+    return;
   }
 
-  std::vector<espp::AdcConfig> channels{
+  static std::vector<espp::AdcConfig> channels{
     {.unit = adc_unit, .channel = signal_channel, .attenuation = ADC_ATTEN_DB_12}};
-  espp::OneshotAdc adc({.unit = adc_unit, .channels = channels});
+  static espp::OneshotAdc adc({.unit = adc_unit, .channels = channels});
  
-  espp::Logger logger({.tag = "load cell example", .level = espp::Logger::Verbosity::INFO});
 
   auto ch = channels[0];
   auto read_mv = [ch]() -> std::optional<float> {
@@ -70,10 +71,10 @@ extern "C" void app_main(void) {
   auto unloaded = load_cell.get_amplifier_mv();
   if (!unloaded.has_value()) {
     logger.error("no reading from GPIO{}; check the channel is registered with the unit",
-                 SIGNAL_GPIO);
+                 gpio);
     return;
   }
-  logger.info("GPIO{} unloaded: {:.1f} mV, span {:.1f} mV", SIGNAL_GPIO, unloaded.value(),
+  logger.info("GPIO{} unloaded: {:.1f} mV, span {:.1f} mV", gpio, unloaded.value(),
               load_cell.nominal_span_mv());
  
   if (!load_cell.tare().has_value()) {

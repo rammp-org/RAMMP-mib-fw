@@ -394,7 +394,7 @@ void MibSystem::run_state_step() {
   case SystemState::CALIBRATE:
 
     logger_.info("zero load cells");
-    if (!mib.zero_load_cell()) {
+    if (!mib_.zero_load_cell()) {
       logger_.warn("Failed to zero load cell");
     }
 
