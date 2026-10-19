@@ -6,7 +6,7 @@
 
 #include "bno055.h"
 #include "canopen_client.hpp"
-#include "imu.hpp"
+#include "include/imu.hpp"
 #include "logger.hpp"
 #include "mcp266.hpp"
 #include "task.hpp"
