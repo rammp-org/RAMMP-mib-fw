@@ -3,13 +3,12 @@
 Mirrors DriveController::set_target (joystick shaping) feeding espp::TrajectoryPlanner
 in trapezoidal mode, which is how the MIB profiles configure it:
 
-  stick, side snap to 0 inside the deadband
   linear  = stick < 0 ? stick * reverse_scale : stick
-  angular = side * (1 - turn_reduction * |stick|)
-  target  = (linear * max_linear, angular * max_angular), scaled down together if
+  target  = (linear * max_linear, side * max_angular), scaled down together if
             |v * w| exceeds the centripetal limit
   each axis moves toward its target at the driving_profile acceleration, or the
-  stopping_profile acceleration when the target is exactly (0, 0)
+  stopping_profile acceleration when the target is exactly (0, 0) (the joystick's
+  center deadzone delivers exact zeros; the Luci recording already has them)
 
 Working in wheel rad/s means the fit does not depend on wheel geometry:
   linear wheel speed = (right_forward + left_forward) / 2
@@ -32,7 +31,6 @@ class Params:
     turn_stop_accel: float = 9.0
     delay: float = 0.15  # s of dead time from joystick topic to wheels (not reproduced in firmware)
     reverse_scale: float = 0.72  # reverse speed as a fraction of forward
-    turn_reduction: float = 0.15  # turn scales by (1 - turn_reduction * |linear stick|)
 
     def to_array(self):
         return np.array([getattr(self, f.name) for f in fields(self)])
@@ -43,11 +41,10 @@ class Params:
 
 
 def simulate(p: Params, t, linear_stick, side_stick, centripetal_limit=0.0,
-             wheel_radius=0.127, half_track=0.279, deadband=0.02):
+             wheel_radius=0.127, half_track=0.279):
     """Return (n, 2) array of [linear, turn] wheel speed, rad/s.
 
     centripetal_limit is in m/s^2; 0 disables it, matching the planner.
-    deadband should match config::joystick_deadband.
     """
     out = np.zeros((len(t), 2))
     linear = turn = 0.0
@@ -57,13 +54,10 @@ def simulate(p: Params, t, linear_stick, side_stick, centripetal_limit=0.0,
         j = np.searchsorted(t, t[i] - p.delay, side="right") - 1
         stick = linear_stick[j] if j >= 0 else 0.0
         side = side_stick[j] if j >= 0 else 0.0
-        stick = 0.0 if abs(stick) < deadband else stick
-        side = 0.0 if abs(side) < deadband else side
         shaped_linear = stick * p.reverse_scale if stick < 0 else stick
-        # Stick + right is a clockwise (negative) turn.
-        shaped_turn = -side * (1.0 - p.turn_reduction * abs(stick))
         target_linear = shaped_linear * p.forward
-        target_turn = shaped_turn * p.turn
+        # Stick + right is a clockwise (negative) turn.
+        target_turn = -side * p.turn
         if centripetal_limit > 0.0:
             lateral = abs(target_linear * wheel_radius * target_turn * turn_to_radps)
             if lateral > centripetal_limit:

@@ -9,7 +9,7 @@ DriveController::DriveController() : DriveController(default_config()) {}
 DriveController::DriveController(const Config &config)
     : BaseComponent("DriveController", espp::Logger::Verbosity::INFO),
       trajectory_planner_(config.trajectory_planner),
-      input_shaping_(config.input_shaping),
+      reverse_scale_(config.reverse_scale),
       differential_drive_(config.differential_drive) {
   if (!differential_drive_.is_valid()) {
     logger_.warn("Drive controller has invalid differential-drive geometry");
@@ -17,13 +17,7 @@ DriveController::DriveController(const Config &config)
 }
 
 void DriveController::set_target(float linear, float angular) {
-  DriveInputShaping shaping;
-  {
-    std::lock_guard<std::mutex> lock(input_shaping_mutex_);
-    shaping = input_shaping_;
-  }
-  const auto shaped = shape_drive_input(linear, angular, shaping);
-  trajectory_planner_.set_target(shaped.linear, shaped.angular);
+  trajectory_planner_.set_target(scale_reverse_input(linear, reverse_scale_.load()), angular);
 }
 
 void DriveController::stop() {
@@ -33,7 +27,7 @@ void DriveController::stop() {
 DriveController::Config DriveController::default_config() {
   return Config{
       .trajectory_planner = profile_config(MIB::DriveProfile::NORMAL),
-      .input_shaping = profile_shaping(MIB::DriveProfile::NORMAL),
+      .reverse_scale = profile_values(MIB::DriveProfile::NORMAL).reverse_scale,
       .differential_drive = {
           .wheel_diameter_m = config::differential_drive.wheel_diameter_m,
           .wheel_separation_m = config::differential_drive.wheel_separation_m,
@@ -52,10 +46,7 @@ bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
     logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
     return false;
   }
-  {
-    std::lock_guard<std::mutex> lock(input_shaping_mutex_);
-    input_shaping_ = profile_shaping(profile);
-  }
+  reverse_scale_.store(profile_values(profile).reverse_scale);
 
   active_profile_ = profile;
   logger_.info("Drive profile updated to {}", static_cast<uint8_t>(profile));
@@ -77,10 +68,6 @@ const config::DriveProfileConfig &DriveController::profile_values(MIB::DriveProf
 espp::TrajectoryPlanner::Config
 DriveController::profile_config(MIB::DriveProfile profile) {
   return planner_config(profile_values(profile));
-}
-
-DriveInputShaping DriveController::profile_shaping(MIB::DriveProfile profile) {
-  return input_shaping(profile_values(profile));
 }
 
 DifferentialDrive::WheelSpeeds DriveController::wheel_speeds() const {

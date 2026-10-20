@@ -1,7 +1,7 @@
 """Fit MIB drive profile settings to a bag of an existing chair driven by joystick.
 
-Fits the joystick shaping in DriveController and the espp::TrajectoryPlanner
-limits it feeds (see model.py), with the centripetal limit held fixed.
+Fits the espp::TrajectoryPlanner limits and DriveController's reverse scale
+(see model.py), with the centripetal limit held fixed.
 
 Usage:
   python fit_drive_response.py BAG_DIR [--out OUT_DIR] [--centripetal-limit 1.5]
@@ -32,7 +32,7 @@ def wheel_components(log, invert_left, invert_right):
 def fit(log, linear, turn, simulate_kwargs, restarts=3):
     def cost(values):
         p = Params.from_array(values)
-        if min(values) < 0 or p.turn_reduction >= 1.0 or p.reverse_scale > 1.0:
+        if min(values) < 0 or p.reverse_scale > 1.0:
             return 1e9
         out = simulate(p, log.t, log.linear_stick, log.side_stick, **simulate_kwargs)
         return np.mean((out[:, 0] - linear) ** 2 + (out[:, 1] - turn) ** 2)
@@ -44,6 +44,28 @@ def fit(log, linear, turn, simulate_kwargs, restarts=3):
         values = minimize(cost, values, method="Nelder-Mead",
                           options={"maxiter": 4000, "xatol": 1e-3, "fatol": 1e-5}).x
     return Params.from_array(values)
+
+
+def unidentified(log, linear, turn, p: Params, simulate_kwargs, tolerance=0.002):
+    """Names of parameters the recording can't pin down.
+
+    A parameter is unidentified when moving it 30% either way changes the RMS
+    error by less than `tolerance` (fractional). Its fitted value is arbitrary;
+    set it from other evidence instead.
+    """
+    def rms(q):
+        out = simulate(q, log.t, log.linear_stick, log.side_stick, **simulate_kwargs)
+        return np.sqrt(np.mean((out[:, 0] - linear) ** 2 + (out[:, 1] - turn) ** 2))
+
+    base = rms(p)
+    names = []
+    for field_name, value in asdict(p).items():
+        if field_name == "delay":
+            continue
+        worst = max(rms(Params(**{**asdict(p), field_name: value * factor})) for factor in (0.7, 1.3))
+        if worst - base < tolerance * base:
+            names.append(field_name)
+    return names
 
 
 def config_block(p: Params, name, wheel_diameter, wheel_separation, centripetal_limit):
@@ -58,7 +80,6 @@ def config_block(p: Params, name, wheel_diameter, wheel_separation, centripetal_
     .stopping_angular_acceleration_radps2 = {p.turn_stop_accel * turn_scale:.3f}f,
     .max_centripetal_acceleration_mps2 = {centripetal_limit:.3f}f,
     .reverse_scale = {p.reverse_scale:.3f}f,
-    .turn_reduction = {p.turn_reduction:.3f}f,
 }};"""
 
 
@@ -112,6 +133,10 @@ def main():
     print(f"RMS error: linear {np.sqrt(np.mean((out[:, 0] - linear) ** 2)):.3f} rad/s, "
           f"turn {np.sqrt(np.mean((out[:, 1] - turn) ** 2)):.3f} rad/s, "
           f"peak linear {np.abs(linear).max():.1f} rad/s")
+    loose = unidentified(log, linear, turn, p, simulate_kwargs)
+    if loose:
+        print(f"\nUnidentified by this recording (±30% changes RMS error <0.2%): {', '.join(loose)}."
+              "\nTheir fitted values are arbitrary; set them from other evidence.")
     print(f"\nMIBconfig.hpp block ({args.wheel_diameter} m wheels, {args.wheel_separation} m separation):")
     print(config_block(p, args.profile_name, args.wheel_diameter, args.wheel_separation,
                        args.centripetal_limit))

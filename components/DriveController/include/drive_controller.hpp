@@ -1,7 +1,7 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
-#include <mutex>
 
 #include "base_component.hpp"
 #include "differential_drive.hpp"
@@ -20,7 +20,7 @@ class DriveController : public espp::BaseComponent {
 public:
   struct Config {
     espp::TrajectoryPlanner::Config trajectory_planner{};
-    DriveInputShaping input_shaping{};
+    float reverse_scale{1.0f};
     DifferentialDrive::Config differential_drive{};
   };
 
@@ -30,8 +30,8 @@ public:
   /// @brief Set a normalized chassis velocity target.
   /// @param linear Normalized linear command in [-1, 1].
   /// @param angular Normalized angular command in [-1, 1].
-  /// @note The command is shaped by the active profile's deadband, reverse
-  ///       scale, and turn reduction before it reaches the planner.
+  /// @note Reverse commands are scaled by the active profile's reverse_scale
+  ///       before they reach the planner.
   void set_target(float linear, float angular);
 
   /// @brief Set the chassis target to zero using the planner limits.
@@ -63,12 +63,10 @@ public:
 private:
   static Config default_config();
   static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
-  static DriveInputShaping profile_shaping(MIB::DriveProfile profile);
   static const config::DriveProfileConfig &profile_values(MIB::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
-  mutable std::mutex input_shaping_mutex_;
-  DriveInputShaping input_shaping_;
+  std::atomic<float> reverse_scale_;
   DifferentialDrive differential_drive_;
   MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
 };

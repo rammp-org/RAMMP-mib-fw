@@ -1,6 +1,7 @@
 // Host-side replay of a joystick log through the firmware drive path: the
-// MIBconfig profile, DriveController's joystick shaping, and the real
-// espp::TrajectoryPlanner source, stepped at its planning period.
+// MIBconfig profile, DriveController's reverse scaling, and espp's
+// TrajectoryPlanner from the cross-platform library, stepped at its planning
+// period.
 //
 // Input CSV rows:  t_s,linear_stick,side_stick   (side_stick + = right)
 // Output CSV rows: t_s,linear_mps,angular_radps
@@ -16,10 +17,14 @@
 #include "drive_profile.hpp"
 
 namespace {
-// update() is protected; the firmware drives it from the planner's own timer.
+// The planner starts its own timer thread on construction. Stop it so the
+// replay is the only caller of update(), stepping a fixed dt deterministically.
 class ReplayPlanner : public espp::TrajectoryPlanner {
 public:
-  using espp::TrajectoryPlanner::TrajectoryPlanner;
+  explicit ReplayPlanner(const Config &config)
+      : espp::TrajectoryPlanner(config) {
+    stop_task();
+  }
   using espp::TrajectoryPlanner::update;
 };
 } // namespace
@@ -36,8 +41,9 @@ int main(int argc, char **argv) {
   } else if (std::strcmp(argv[2], "high") == 0) {
     profile = &mib::config::drive_profile_high;
   }
-  const auto planner_config = mib::planner_config(*profile);
-  const auto shaping = mib::input_shaping(*profile);
+  auto planner_config = mib::planner_config(*profile);
+  // The planner logs to stdout, which carries the CSV output.
+  planner_config.log_level = espp::Logger::Verbosity::NONE;
   ReplayPlanner planner(planner_config);
   const double delay_s = std::atof(argv[3]);
 
@@ -66,11 +72,11 @@ int main(int argc, char **argv) {
       j++;
     }
     const bool have_stick = stick_time >= t.front();
-    // MibSystem passes (y, -x) to DriveController::set_target: stick + right is
-    // a clockwise (negative) turn.
-    const auto shaped = mib::shape_drive_input(have_stick ? linear[j] : 0.0f,
-                                               have_stick ? -side[j] : 0.0f, shaping);
-    planner.set_target(shaped.linear, shaped.angular);
+    // Same as DriveController::set_target(y, -x) from MibSystem: stick + right
+    // is a clockwise (negative) turn.
+    const float stick = have_stick ? static_cast<float>(linear[j]) : 0.0f;
+    const float turn = have_stick ? static_cast<float>(-side[j]) : 0.0f;
+    planner.set_target(mib::scale_reverse_input(stick, profile->reverse_scale), turn);
     planner.update(static_cast<float>(step_s));
     const auto out = planner.output();
     std::printf("%.3f,%.5f,%.5f\n", now, out.linear_velocity, out.angular_velocity);

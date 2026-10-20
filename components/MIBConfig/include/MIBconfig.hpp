@@ -41,20 +41,14 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_right = true,
 };
 
-/// @brief Joystick magnitude treated as centered, normalized.
-///
-/// The planner only switches to its stopping profile when the target is exactly
-/// zero, so a resting stick that reads slightly off zero must be snapped to it.
-inline constexpr float joystick_deadband = 0.02f;
-
 /// @brief Trajectory limits and joystick shaping for one MIB drive response profile.
 ///
 /// The velocity, acceleration, and centripetal fields map onto
 /// espp::TrajectoryPlanner::Config. Driving acceleration applies whenever the
-/// target is non-zero; stopping acceleration applies when the stick is centered.
-/// reverse_scale and turn_reduction shape the joystick before the planner:
-/// reverse stick is scaled by reverse_scale, and turn stick by
-/// (1 - turn_reduction * |linear stick|).
+/// target is non-zero; stopping acceleration applies only when the target is
+/// exactly (0, 0), so it relies on the joystick's center deadzone snapping a
+/// resting stick to zero. reverse_scale scales reverse stick before the planner
+/// (see drive_profile.hpp).
 struct DriveProfileConfig {
   float max_linear_velocity_mps;
   float max_angular_velocity_radps;
@@ -64,7 +58,6 @@ struct DriveProfileConfig {
   float stopping_angular_acceleration_radps2;
   float max_centripetal_acceleration_mps2;
   float reverse_scale;
-  float turn_reduction;
 };
 
 /// NORMAL matches the R-Net chair, fitted with tools/drive_fit from the
@@ -74,24 +67,27 @@ struct DriveProfileConfig {
 /// has the wheel diameter and separation in differential_drive above.
 ///
 /// The centripetal limit was set, not fitted: 1.5 m/s^2 is below the 2.6 m/s^2
-/// peak the R-Net reached but fits the recording as well as no limit does.
+/// peak the R-Net reached but fits the recording as well as no limit does. It
+/// also stands in for the R-Net's reduced turn rate at speed (within 0.03 rad/s
+/// RMS), which is why max_angular_velocity sits slightly under the R-Net's
+/// in-place spin rate (2.11 vs about 2.3 rad/s).
 ///
-/// stopping_angular_acceleration is the least certain value: the recording has
-/// few stops from a turn, and fits land anywhere from 2.7 to 4.6 rad/s^2.
+/// stopping_angular_acceleration was set, not fitted: the recording never stops
+/// from a pure spin, so the fit can't see it. 4.0 rad/s^2 is the R-Net's turn
+/// deceleration measured while slowing a turn.
 ///
 /// The planner's jerk limits stay off (trapezoidal), as on the R-Net. Switching
 /// between a jerk-limited driving profile and a trapezoidal stopping profile
 /// leaves a stale acceleration in the planner; resolve that before enabling them.
 inline constexpr DriveProfileConfig drive_profile_normal{
-    .max_linear_velocity_mps = 1.841f,
-    .max_angular_velocity_radps = 2.318f,
-    .max_linear_acceleration_mps2 = 1.001f,
-    .max_angular_acceleration_radps2 = 2.968f,
-    .stopping_linear_acceleration_mps2 = 1.636f,
-    .stopping_angular_acceleration_radps2 = 4.621f,
+    .max_linear_velocity_mps = 1.845f,
+    .max_angular_velocity_radps = 2.114f,
+    .max_linear_acceleration_mps2 = 0.989f,
+    .max_angular_acceleration_radps2 = 2.926f,
+    .stopping_linear_acceleration_mps2 = 1.662f,
+    .stopping_angular_acceleration_radps2 = 4.000f,
     .max_centripetal_acceleration_mps2 = 1.500f,
-    .reverse_scale = 0.707f,
-    .turn_reduction = 0.167f,
+    .reverse_scale = 0.706f,
 };
 
 /// LOW is NORMAL at half speed with the same acceleration limits.
@@ -105,7 +101,6 @@ inline constexpr DriveProfileConfig drive_profile_low{
         drive_profile_normal.stopping_angular_acceleration_radps2,
     .max_centripetal_acceleration_mps2 = drive_profile_normal.max_centripetal_acceleration_mps2,
     .reverse_scale = drive_profile_normal.reverse_scale,
-    .turn_reduction = drive_profile_normal.turn_reduction,
 };
 
 /// TODO: HIGH equals NORMAL until we record the R-Net at its top speed setting.

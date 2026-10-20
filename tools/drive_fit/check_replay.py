@@ -1,9 +1,9 @@
 """Replay a bag's joystick through the firmware drive path and compare to its wheels.
 
-Builds replay_drive_profile.cpp with the host C++ compiler against the real
-MIBconfig.hpp, DriveController's drive_profile.hpp, and the espp
-TrajectoryPlanner source from managed_components (run idf.py build or
-reconfigure once to fetch it), so it checks the code and numbers that ship.
+Builds replay/ with CMake against the real MIBconfig.hpp, DriveController's
+drive_profile.hpp, and espp's cross-platform library (fetched by CPM at the
+version the firmware uses), so it checks the code and numbers that ship. The
+first build downloads and compiles espp, which takes a few minutes.
 
 Usage:
   python check_replay.py BAG_DIR [--profile normal] [--delay 0.163] [--out OUT_DIR]
@@ -26,28 +26,16 @@ from fit_drive_response import wheel_components
 from plotting import plt, save, title
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[1]
 
 
-def build_replay(workdir: Path) -> Path:
-    compiler = shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
-    if compiler is None:
-        raise RuntimeError("no host C++ compiler found")
-    planner = REPO / "managed_components/espp__trajectory_planner"
-    if not planner.exists():
-        raise RuntimeError(f"{planner} missing; run idf.py reconfigure to fetch it")
-    binary = workdir / "replay_drive_profile"
-    subprocess.run([
-        compiler, "-std=c++20", "-O2", "-Wall", "-Wextra",
-        "-I", str(HERE / "host_stubs"),
-        "-I", str(REPO / "components/DriveController/include"),
-        "-I", str(REPO / "components/MIBConfig/include"),
-        "-I", str(planner / "include"),
-        str(HERE / "replay_drive_profile.cpp"),
-        str(planner / "src/trajectory_planner.cpp"),
-        "-o", str(binary),
-    ], check=True)
-    return binary
+def build_replay(build_dir: Path) -> Path:
+    if shutil.which("cmake") is None:
+        raise RuntimeError("cmake not found; install CMake 3.21+")
+    subprocess.run(["cmake", "-S", str(HERE / "replay"), "-B", str(build_dir),
+                    "-DCMAKE_BUILD_TYPE=Release"], check=True)
+    subprocess.run(["cmake", "--build", str(build_dir), "--target", "replay_drive_profile",
+                    "--parallel"], check=True)
+    return build_dir / "replay_drive_profile"
 
 
 def main():
@@ -58,16 +46,17 @@ def main():
     parser.add_argument("--wheel-diameter", type=float, default=0.254, help="m")
     parser.add_argument("--wheel-separation", type=float, default=0.558, help="m")
     parser.add_argument("--out", type=Path, default=Path("drive_fit_out"))
+    parser.add_argument("--build-dir", type=Path, default=HERE / "build",
+                        help="CMake build dir for the replay; reused between runs")
     args = parser.parse_args()
 
     log = read_drive_log(args.bag)
     linear, turn = wheel_components(log, invert_left=True, invert_right=False)
 
+    binary = build_replay(args.build_dir)
     with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        stick_csv = tmp / "stick.csv"
+        stick_csv = Path(tmp) / "stick.csv"
         np.savetxt(stick_csv, np.c_[log.t, log.linear_stick, log.side_stick], delimiter=",")
-        binary = build_replay(tmp)
         result = subprocess.run([str(binary), str(stick_csv), args.profile, str(args.delay)],
                                 check=True, capture_output=True, text=True)
     replay = np.loadtxt(result.stdout.splitlines(), delimiter=",")
