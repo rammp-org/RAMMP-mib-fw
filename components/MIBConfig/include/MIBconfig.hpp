@@ -41,33 +41,55 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_right = true,
 };
 
-/// @brief Trajectory limits for one MIB drive response profile.
+/// @brief Drive response update period.
+inline constexpr auto drive_response_interval = std::chrono::milliseconds{20};
+
+/// @brief Speed and rate limits for one MIB drive response profile.
+///
+/// Speeds are chassis speeds at full stick. Accel limits apply while speeding up;
+/// decel limits apply while slowing, stopping, or reversing. Turn rate scales by
+/// (1 - turn_reduction * |linear stick|).
 struct DriveProfileConfig {
-  float max_linear_velocity_mps;
-  float max_angular_velocity_radps;
-  float max_linear_acceleration_mps2;
-  float max_angular_acceleration_radps2;
+  float max_forward_mps;
+  float max_reverse_mps;
+  float max_angular_radps;
+  float turn_reduction;
+  float linear_accel_mps2;
+  float linear_decel_mps2;
+  float angular_accel_radps2;
+  float angular_decel_radps2;
 };
 
-inline constexpr DriveProfileConfig drive_profile_low{
-    .max_linear_velocity_mps = 0.35f,
-    .max_angular_velocity_radps = 1.0f,
-    .max_linear_acceleration_mps2 = 0.5f,
-    .max_angular_acceleration_radps2 = 1.0f,
-};
-
+/// NORMAL matches the R-Net chair, fitted from the wheel_velocities rosbag
+/// (Luci joystick to wheel speed, 71 s) with tools/drive_fit. Wheel speeds there
+/// were 14.5 rad/s full forward, 10.4 rad/s full reverse, and 5.0 rad/s per wheel
+/// spinning in place.
+/// The m/s and rad/s values assume the R-Net chair has the wheel diameter and
+/// separation in differential_drive above.
 inline constexpr DriveProfileConfig drive_profile_normal{
-    .max_linear_velocity_mps = 0.75f,
-    .max_angular_velocity_radps = 2.0f,
-    .max_linear_acceleration_mps2 = 1.0f,
-    .max_angular_acceleration_radps2 = 2.0f,
+    .max_forward_mps = 1.835f,
+    .max_reverse_mps = 1.322f,
+    .max_angular_radps = 2.297f,
+    .turn_reduction = 0.140f,
+    .linear_accel_mps2 = 0.923f,
+    .linear_decel_mps2 = 1.712f,
+    .angular_accel_radps2 = 2.250f,
+    .angular_decel_radps2 = 4.100f,
 };
 
-inline constexpr DriveProfileConfig drive_profile_high{
-    .max_linear_velocity_mps = 1.0f,
-    .max_angular_velocity_radps = 3.14159f,
-    .max_linear_acceleration_mps2 = 2.0f,
-    .max_angular_acceleration_radps2 = 4.0f,
+/// LOW is NORMAL at half speed with the same rate limits.
+inline constexpr DriveProfileConfig drive_profile_low{
+    .max_forward_mps = drive_profile_normal.max_forward_mps * 0.5f,
+    .max_reverse_mps = drive_profile_normal.max_reverse_mps * 0.5f,
+    .max_angular_radps = drive_profile_normal.max_angular_radps * 0.5f,
+    .turn_reduction = drive_profile_normal.turn_reduction,
+    .linear_accel_mps2 = drive_profile_normal.linear_accel_mps2,
+    .linear_decel_mps2 = drive_profile_normal.linear_decel_mps2,
+    .angular_accel_radps2 = drive_profile_normal.angular_accel_radps2,
+    .angular_decel_radps2 = drive_profile_normal.angular_decel_radps2,
 };
+
+/// TODO: HIGH equals NORMAL until we record the R-Net at its top speed setting.
+inline constexpr DriveProfileConfig drive_profile_high = drive_profile_normal;
 
 } // namespace mib::config
