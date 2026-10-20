@@ -4,51 +4,57 @@
 
 namespace mib {
 
-DriveController::DriveController()
+DriveController::DriveController() : DriveController(default_config()) {}
+
+DriveController::DriveController(const Config &config)
     : BaseComponent("DriveController", espp::Logger::Verbosity::INFO),
-      response_(profile_config(MIB::DriveProfile::NORMAL)),
-      differential_drive_({
+      trajectory_planner_(config.trajectory_planner),
+      input_shaping_(config.input_shaping),
+      differential_drive_(config.differential_drive) {
+  if (!differential_drive_.is_valid()) {
+    logger_.warn("Drive controller has invalid differential-drive geometry");
+  }
+}
+
+void DriveController::set_target(float linear, float angular) {
+  DriveInputShaping shaping;
+  {
+    std::lock_guard<std::mutex> lock(input_shaping_mutex_);
+    shaping = input_shaping_;
+  }
+  const auto shaped = shape_drive_input(linear, angular, shaping);
+  trajectory_planner_.set_target(shaped.linear, shaped.angular);
+}
+
+void DriveController::stop() {
+  trajectory_planner_.stop();
+}
+
+DriveController::Config DriveController::default_config() {
+  return Config{
+      .trajectory_planner = profile_config(MIB::DriveProfile::NORMAL),
+      .input_shaping = profile_shaping(MIB::DriveProfile::NORMAL),
+      .differential_drive = {
           .wheel_diameter_m = config::differential_drive.wheel_diameter_m,
           .wheel_separation_m = config::differential_drive.wheel_separation_m,
           .invert_left = config::differential_drive.invert_left,
           .invert_right = config::differential_drive.invert_right,
-      }) {
-  if (!differential_drive_.is_valid()) {
-    logger_.warn("Drive controller has invalid differential-drive geometry");
-  }
-
-  update_timer_ = std::make_unique<espp::Timer>(espp::Timer::Config{
-      .name = "DriveResponse",
-      .period = config::drive_response_interval,
-      .callback = [this]() -> bool {
-        const auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lock(response_mutex_);
-        response_.update(std::chrono::duration<float>(now - last_update_time_).count());
-        last_update_time_ = now;
-        return false;
       },
-      .stack_size_bytes = 4 * 1024,
-  });
-}
-
-void DriveController::set_target(float linear, float angular) {
-  std::lock_guard<std::mutex> lock(response_mutex_);
-  response_.set_target(linear, angular);
-}
-
-void DriveController::stop() {
-  set_target(0.0f, 0.0f);
+  };
 }
 
 bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
-  bool accepted = false;
-  {
-    std::lock_guard<std::mutex> lock(response_mutex_);
-    accepted = response_.set_config(profile_config(profile));
-  }
+  // Keep the current velocity so a profile change while driving ramps instead of
+  // dropping the wheels to zero.
+  const bool accepted =
+      trajectory_planner_.set_config(profile_config(profile), /*reset_state=*/false);
   if (!accepted) {
     logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
     return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(input_shaping_mutex_);
+    input_shaping_ = profile_shaping(profile);
   }
 
   active_profile_ = profile;
@@ -56,38 +62,30 @@ bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
   return true;
 }
 
-DriveResponse::Config DriveController::profile_config(MIB::DriveProfile profile) {
-  const config::DriveProfileConfig *source = &config::drive_profile_normal;
+const config::DriveProfileConfig &DriveController::profile_values(MIB::DriveProfile profile) {
   switch (profile) {
   case MIB::DriveProfile::LOW:
-    source = &config::drive_profile_low;
-    break;
-  case MIB::DriveProfile::NORMAL:
-    source = &config::drive_profile_normal;
-    break;
+    return config::drive_profile_low;
   case MIB::DriveProfile::HIGH:
-    source = &config::drive_profile_high;
-    break;
+    return config::drive_profile_high;
+  case MIB::DriveProfile::NORMAL:
+  default:
+    return config::drive_profile_normal;
   }
-  return DriveResponse::Config{
-      .max_forward_mps = source->max_forward_mps,
-      .max_reverse_mps = source->max_reverse_mps,
-      .max_angular_radps = source->max_angular_radps,
-      .turn_reduction = source->turn_reduction,
-      .linear_accel_mps2 = source->linear_accel_mps2,
-      .linear_decel_mps2 = source->linear_decel_mps2,
-      .angular_accel_radps2 = source->angular_accel_radps2,
-      .angular_decel_radps2 = source->angular_decel_radps2,
-  };
+}
+
+espp::TrajectoryPlanner::Config
+DriveController::profile_config(MIB::DriveProfile profile) {
+  return planner_config(profile_values(profile));
+}
+
+DriveInputShaping DriveController::profile_shaping(MIB::DriveProfile profile) {
+  return input_shaping(profile_values(profile));
 }
 
 DifferentialDrive::WheelSpeeds DriveController::wheel_speeds() const {
-  DriveResponse::Output command;
-  {
-    std::lock_guard<std::mutex> lock(response_mutex_);
-    command = response_.output();
-  }
-  return differential_drive_.compute(command.linear_mps, command.angular_radps);
+  const auto command = trajectory_planner_.output();
+  return differential_drive_.compute(command.linear_velocity, command.angular_velocity);
 }
 
 void DriveController::set_seat_target(uint8_t axis, float target) {

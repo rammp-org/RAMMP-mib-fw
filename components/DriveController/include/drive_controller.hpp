@@ -1,49 +1,52 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
-#include <memory>
 #include <mutex>
 
 #include "base_component.hpp"
 #include "differential_drive.hpp"
-#include "drive_response.hpp"
+#include "drive_profile.hpp"
 #include "MIBconfig.hpp"
 #include "messages.hpp"
-#include "timer.hpp"
+#include "trajectory_planner.hpp"
 
 namespace mib {
 
-/// @brief Calculates rate-limited chassis and wheel-speed commands.
-///
-/// Joystick targets go through a DriveResponse (R-Net style shaping and
-/// accel/decel limits), updated on an internal timer, then through the
-/// differential-drive kinematics.
+/// @brief Calculates trajectory-limited chassis and wheel-speed commands.
 ///
 /// This component does not directly control motors. A motor-command layer must
 /// consume wheel_speeds() and send the resulting RPM values to the controllers.
 class DriveController : public espp::BaseComponent {
 public:
+  struct Config {
+    espp::TrajectoryPlanner::Config trajectory_planner{};
+    DriveInputShaping input_shaping{};
+    DifferentialDrive::Config differential_drive{};
+  };
+
   DriveController();
+  explicit DriveController(const Config &config);
 
   /// @brief Set a normalized chassis velocity target.
   /// @param linear Normalized linear command in [-1, 1].
   /// @param angular Normalized angular command in [-1, 1].
+  /// @note The command is shaped by the active profile's deadband, reverse
+  ///       scale, and turn reduction before it reaches the planner.
   void set_target(float linear, float angular);
 
-  /// @brief Set the chassis target to zero using the profile's decel limits.
-  /// @note This does not immediately set motor speed to zero; the response
+  /// @brief Set the chassis target to zero using the planner limits.
+  /// @note This does not immediately set motor speed to zero; the planner
   ///       decelerates toward the zero target.
   void stop();
 
-  /// @brief Apply one of the predefined drive profiles.
+  /// @brief Apply one of the predefined trajectory-planner drive profiles.
   /// @param profile The desired drive response profile.
-  /// @return True if the profile configuration was valid and applied.
-  /// @note The current velocity is kept, so switching while driving ramps
-  ///       to the new limits instead of stepping.
+  /// @return True if the planner accepted the profile configuration.
+  /// @note The planner keeps its current velocity, so switching while driving
+  ///       ramps to the new limits instead of stepping to zero.
   bool update_drive_profile(MIB::DriveProfile profile);
 
-  /// @brief Get the current rate-limited wheel speeds.
+  /// @brief Get the current trajectory-limited wheel speeds.
   /// @return Left and right wheel speeds in RPM.
   /// @note This only calculates the requested output; it does not command motors.
   DifferentialDrive::WheelSpeeds wheel_speeds() const;
@@ -58,14 +61,16 @@ public:
   void set_seat_target(uint8_t axis, float target);
 
 private:
-  static DriveResponse::Config profile_config(MIB::DriveProfile profile);
+  static Config default_config();
+  static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
+  static DriveInputShaping profile_shaping(MIB::DriveProfile profile);
+  static const config::DriveProfileConfig &profile_values(MIB::DriveProfile profile);
 
-  mutable std::mutex response_mutex_;
-  DriveResponse response_;
+  espp::TrajectoryPlanner trajectory_planner_;
+  mutable std::mutex input_shaping_mutex_;
+  DriveInputShaping input_shaping_;
   DifferentialDrive differential_drive_;
   MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
-  std::chrono::steady_clock::time_point last_update_time_{std::chrono::steady_clock::now()};
-  std::unique_ptr<espp::Timer> update_timer_;
 };
 
 } // namespace mib

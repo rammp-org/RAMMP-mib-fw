@@ -1,11 +1,12 @@
-"""Replay a bag's joystick through the firmware DriveResponse and compare to its wheels.
+"""Replay a bag's joystick through the firmware drive path and compare to its wheels.
 
-Builds replay_drive_response.cpp against the real components/DriveResponse and
-MIBconfig.hpp with the host C++ compiler, so it checks the code and the numbers
-that ship.
+Builds replay_drive_profile.cpp with the host C++ compiler against the real
+MIBconfig.hpp, DriveController's drive_profile.hpp, and the espp
+TrajectoryPlanner source from managed_components (run idf.py build or
+reconfigure once to fetch it), so it checks the code and numbers that ship.
 
 Usage:
-  python check_replay.py BAG_DIR [--profile normal] [--delay 0.199] [--out OUT_DIR]
+  python check_replay.py BAG_DIR [--profile normal] [--delay 0.163] [--out OUT_DIR]
 
 --delay is the recorded chair's dead time from joystick topic to wheels (from
 fit_drive_response.py). It lines the replay up with the recording; the firmware
@@ -32,13 +33,18 @@ def build_replay(workdir: Path) -> Path:
     compiler = shutil.which("c++") or shutil.which("clang++") or shutil.which("g++")
     if compiler is None:
         raise RuntimeError("no host C++ compiler found")
-    binary = workdir / "replay_drive_response"
+    planner = REPO / "managed_components/espp__trajectory_planner"
+    if not planner.exists():
+        raise RuntimeError(f"{planner} missing; run idf.py reconfigure to fetch it")
+    binary = workdir / "replay_drive_profile"
     subprocess.run([
         compiler, "-std=c++20", "-O2", "-Wall", "-Wextra",
-        "-I", str(REPO / "components/DriveResponse/include"),
+        "-I", str(HERE / "host_stubs"),
+        "-I", str(REPO / "components/DriveController/include"),
         "-I", str(REPO / "components/MIBConfig/include"),
-        str(HERE / "replay_drive_response.cpp"),
-        str(REPO / "components/DriveResponse/src/drive_response.cpp"),
+        "-I", str(planner / "include"),
+        str(HERE / "replay_drive_profile.cpp"),
+        str(planner / "src/trajectory_planner.cpp"),
         "-o", str(binary),
     ], check=True)
     return binary
@@ -48,7 +54,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bag", type=Path)
     parser.add_argument("--profile", choices=["low", "normal", "high"], default="normal")
-    parser.add_argument("--delay", type=float, default=0.199, help="s")
+    parser.add_argument("--delay", type=float, default=0.163, help="s")
     parser.add_argument("--wheel-diameter", type=float, default=0.254, help="m")
     parser.add_argument("--wheel-separation", type=float, default=0.558, help="m")
     parser.add_argument("--out", type=Path, default=Path("drive_fit_out"))
@@ -90,7 +96,7 @@ def main():
         a.set_xlabel("Time, s")
         a.set_ylabel(label)
         a.legend(loc="upper right")
-    title(axes[0], "Firmware replay", "Recorded wheel speeds vs DriveResponse fed the same joystick input")
+    title(axes[0], "Firmware replay", "Recorded wheel speeds vs the firmware drive path fed the same joystick input")
     save(fig, args.out / "replay.png")
     print(f"Wrote {args.out / 'replay.png'}")
 

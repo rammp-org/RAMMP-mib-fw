@@ -41,52 +41,71 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_right = true,
 };
 
-/// @brief Drive response update period.
-inline constexpr auto drive_response_interval = std::chrono::milliseconds{20};
-
-/// @brief Speed and rate limits for one MIB drive response profile.
+/// @brief Joystick magnitude treated as centered, normalized.
 ///
-/// Speeds are chassis speeds at full stick. Accel limits apply while speeding up;
-/// decel limits apply while slowing, stopping, or reversing. Turn rate scales by
+/// The planner only switches to its stopping profile when the target is exactly
+/// zero, so a resting stick that reads slightly off zero must be snapped to it.
+inline constexpr float joystick_deadband = 0.02f;
+
+/// @brief Trajectory limits and joystick shaping for one MIB drive response profile.
+///
+/// The velocity, acceleration, and centripetal fields map onto
+/// espp::TrajectoryPlanner::Config. Driving acceleration applies whenever the
+/// target is non-zero; stopping acceleration applies when the stick is centered.
+/// reverse_scale and turn_reduction shape the joystick before the planner:
+/// reverse stick is scaled by reverse_scale, and turn stick by
 /// (1 - turn_reduction * |linear stick|).
 struct DriveProfileConfig {
-  float max_forward_mps;
-  float max_reverse_mps;
-  float max_angular_radps;
+  float max_linear_velocity_mps;
+  float max_angular_velocity_radps;
+  float max_linear_acceleration_mps2;
+  float max_angular_acceleration_radps2;
+  float stopping_linear_acceleration_mps2;
+  float stopping_angular_acceleration_radps2;
+  float max_centripetal_acceleration_mps2;
+  float reverse_scale;
   float turn_reduction;
-  float linear_accel_mps2;
-  float linear_decel_mps2;
-  float angular_accel_radps2;
-  float angular_decel_radps2;
 };
 
-/// NORMAL matches the R-Net chair, fitted from the wheel_velocities rosbag
-/// (Luci joystick to wheel speed, 71 s) with tools/drive_fit. Wheel speeds there
-/// were 14.5 rad/s full forward, 10.4 rad/s full reverse, and 5.0 rad/s per wheel
-/// spinning in place.
-/// The m/s and rad/s values assume the R-Net chair has the wheel diameter and
-/// separation in differential_drive above.
+/// NORMAL matches the R-Net chair, fitted with tools/drive_fit from the
+/// wheel_velocities rosbag (Luci joystick to wheel speed, 71 s). The R-Net hit
+/// 14.5 rad/s at the wheel full forward, 10.4 rad/s full reverse, and 5.0 rad/s
+/// per wheel spinning in place. The m/s and rad/s values assume the R-Net chair
+/// has the wheel diameter and separation in differential_drive above.
+///
+/// The centripetal limit was set, not fitted: 1.5 m/s^2 is below the 2.6 m/s^2
+/// peak the R-Net reached but fits the recording as well as no limit does.
+///
+/// stopping_angular_acceleration is the least certain value: the recording has
+/// few stops from a turn, and fits land anywhere from 2.7 to 4.6 rad/s^2.
+///
+/// The planner's jerk limits stay off (trapezoidal), as on the R-Net. Switching
+/// between a jerk-limited driving profile and a trapezoidal stopping profile
+/// leaves a stale acceleration in the planner; resolve that before enabling them.
 inline constexpr DriveProfileConfig drive_profile_normal{
-    .max_forward_mps = 1.835f,
-    .max_reverse_mps = 1.322f,
-    .max_angular_radps = 2.297f,
-    .turn_reduction = 0.140f,
-    .linear_accel_mps2 = 0.923f,
-    .linear_decel_mps2 = 1.712f,
-    .angular_accel_radps2 = 2.250f,
-    .angular_decel_radps2 = 4.100f,
+    .max_linear_velocity_mps = 1.841f,
+    .max_angular_velocity_radps = 2.318f,
+    .max_linear_acceleration_mps2 = 1.001f,
+    .max_angular_acceleration_radps2 = 2.968f,
+    .stopping_linear_acceleration_mps2 = 1.636f,
+    .stopping_angular_acceleration_radps2 = 4.621f,
+    .max_centripetal_acceleration_mps2 = 1.500f,
+    .reverse_scale = 0.707f,
+    .turn_reduction = 0.167f,
 };
 
-/// LOW is NORMAL at half speed with the same rate limits.
+/// LOW is NORMAL at half speed with the same acceleration limits.
 inline constexpr DriveProfileConfig drive_profile_low{
-    .max_forward_mps = drive_profile_normal.max_forward_mps * 0.5f,
-    .max_reverse_mps = drive_profile_normal.max_reverse_mps * 0.5f,
-    .max_angular_radps = drive_profile_normal.max_angular_radps * 0.5f,
+    .max_linear_velocity_mps = drive_profile_normal.max_linear_velocity_mps * 0.5f,
+    .max_angular_velocity_radps = drive_profile_normal.max_angular_velocity_radps * 0.5f,
+    .max_linear_acceleration_mps2 = drive_profile_normal.max_linear_acceleration_mps2,
+    .max_angular_acceleration_radps2 = drive_profile_normal.max_angular_acceleration_radps2,
+    .stopping_linear_acceleration_mps2 = drive_profile_normal.stopping_linear_acceleration_mps2,
+    .stopping_angular_acceleration_radps2 =
+        drive_profile_normal.stopping_angular_acceleration_radps2,
+    .max_centripetal_acceleration_mps2 = drive_profile_normal.max_centripetal_acceleration_mps2,
+    .reverse_scale = drive_profile_normal.reverse_scale,
     .turn_reduction = drive_profile_normal.turn_reduction,
-    .linear_accel_mps2 = drive_profile_normal.linear_accel_mps2,
-    .linear_decel_mps2 = drive_profile_normal.linear_decel_mps2,
-    .angular_accel_radps2 = drive_profile_normal.angular_accel_radps2,
-    .angular_decel_radps2 = drive_profile_normal.angular_decel_radps2,
 };
 
 /// TODO: HIGH equals NORMAL until we record the R-Net at its top speed setting.

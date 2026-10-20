@@ -1,19 +1,28 @@
-// Host-side replay of a joystick log through the firmware's DriveResponse and
-// MIBconfig profiles, stepped at config::drive_response_interval.
+// Host-side replay of a joystick log through the firmware drive path: the
+// MIBconfig profile, DriveController's joystick shaping, and the real
+// espp::TrajectoryPlanner source, stepped at its planning period.
 //
 // Input CSV rows:  t_s,linear_stick,side_stick   (side_stick + = right)
 // Output CSV rows: t_s,linear_mps,angular_radps
 //
-// Usage: replay_drive_response INPUT.csv low|normal|high DELAY_S
+// Usage: replay_drive_profile INPUT.csv low|normal|high DELAY_S
 
-#include <cstdio>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-#include "MIBconfig.hpp"
-#include "drive_response.hpp"
+#include "drive_profile.hpp"
+
+namespace {
+// update() is protected; the firmware drives it from the planner's own timer.
+class ReplayPlanner : public espp::TrajectoryPlanner {
+public:
+  using espp::TrajectoryPlanner::TrajectoryPlanner;
+  using espp::TrajectoryPlanner::update;
+};
+} // namespace
 
 int main(int argc, char **argv) {
   if (argc != 4) {
@@ -27,16 +36,9 @@ int main(int argc, char **argv) {
   } else if (std::strcmp(argv[2], "high") == 0) {
     profile = &mib::config::drive_profile_high;
   }
-  mib::DriveResponse response({
-      .max_forward_mps = profile->max_forward_mps,
-      .max_reverse_mps = profile->max_reverse_mps,
-      .max_angular_radps = profile->max_angular_radps,
-      .turn_reduction = profile->turn_reduction,
-      .linear_accel_mps2 = profile->linear_accel_mps2,
-      .linear_decel_mps2 = profile->linear_decel_mps2,
-      .angular_accel_radps2 = profile->angular_accel_radps2,
-      .angular_decel_radps2 = profile->angular_decel_radps2,
-  });
+  const auto planner_config = mib::planner_config(*profile);
+  const auto shaping = mib::input_shaping(*profile);
+  ReplayPlanner planner(planner_config);
   const double delay_s = std::atof(argv[3]);
 
   std::FILE *input = std::fopen(argv[1], "r");
@@ -56,7 +58,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  const double step_s = std::chrono::duration<double>(mib::config::drive_response_interval).count();
+  const double step_s = planner_config.planning_period.count();
   size_t j = 0;
   for (double now = 0.0; now <= t.back(); now += step_s) {
     const double stick_time = now - delay_s;
@@ -64,11 +66,14 @@ int main(int argc, char **argv) {
       j++;
     }
     const bool have_stick = stick_time >= t.front();
-    // MibSystem passes (y, -x): stick + right is a clockwise (negative) turn.
-    response.set_target(have_stick ? linear[j] : 0.0f, have_stick ? -side[j] : 0.0f);
-    response.update(static_cast<float>(step_s));
-    const auto out = response.output();
-    std::printf("%.3f,%.5f,%.5f\n", now, out.linear_mps, out.angular_radps);
+    // MibSystem passes (y, -x) to DriveController::set_target: stick + right is
+    // a clockwise (negative) turn.
+    const auto shaped = mib::shape_drive_input(have_stick ? linear[j] : 0.0f,
+                                               have_stick ? -side[j] : 0.0f, shaping);
+    planner.set_target(shaped.linear, shaped.angular);
+    planner.update(static_cast<float>(step_s));
+    const auto out = planner.output();
+    std::printf("%.3f,%.5f,%.5f\n", now, out.linear_velocity, out.angular_velocity);
   }
   return 0;
 }
