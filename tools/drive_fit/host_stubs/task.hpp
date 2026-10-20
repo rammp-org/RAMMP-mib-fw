@@ -18,8 +18,14 @@ public:
     BaseConfig task_config;
   };
   static std::unique_ptr<Task> make_unique(const Config &) { return std::make_unique<Task>(); }
-  bool start() { return started_ = true; }
-  bool stop() { return !(started_ = false); }
+  bool start() {
+    started_ = true;
+    return true;
+  }
+  bool stop() {
+    started_ = false;
+    return true;
+  }
   bool is_started() const { return started_; }
 
 private:
