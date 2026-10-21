@@ -6,8 +6,19 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
+#include "sdkconfig.h"
 
 using namespace std::chrono_literals;
+
+// The endpoint pool in sdkconfig.defaults: per board a command writer and a state
+// reader, plus status, Motors, estop-core's writer and SPDP; and the joystick's four
+// inputs, estop-core's reader and SPDP. A row added to the axis table needs these raised.
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= rammp::kAxisCount + 4,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= rammp::kAxisCount + 6,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= rammp::kAxisCount + 6,
+              "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
@@ -57,6 +68,10 @@ void MibSystem::start() {
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
         publish_motor_commands();
+        if (std::chrono::steady_clock::now() - motors_published_ >=
+            mib::config::motors_report_interval) {
+          publish_motors();
+        }
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::motor_command_task_interval);
@@ -64,7 +79,7 @@ void MibSystem::start() {
       },
       .task_config = {
           .name = "MIB motor commands",
-          .stack_size_bytes = 4 * 1024,
+          .stack_size_bytes = 6 * 1024, // Motors serializes a string per board
           .priority = 2,
       },
   });
@@ -135,22 +150,42 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
-  left_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
-      mib_.rtps_participant(),
-      espp::Publisher<rammp::MotorCommand>::Config{
-          .topic = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.name,
-          .type_name = rammp::axis(rammp::AxisId::DRIVE_LEFT).command.type,
-          .reliability = Reliability::BEST_EFFORT});
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const rammp::AxisSpec &axis = rammp::kAxes[i];
+    motor_publishers_[i] = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
+        mib_.rtps_participant(),
+        espp::Publisher<rammp::MotorCommand>::Config{.topic = axis.command.name,
+                                                     .type_name = axis.command.type,
+                                                     .reliability = Reliability::BEST_EFFORT});
+    motor_state_subscribers_[i] = std::make_unique<espp::Subscriber<rammp::MotorState>>(
+        mib_.rtps_participant(),
+        espp::Subscriber<rammp::MotorState>::Config{
+            .topic = axis.state.name,
+            .type_name = axis.state.type,
+            .reliability = Reliability::BEST_EFFORT,
+            .on_message = [this, i](const rammp::MotorState &state) {
+              handle_motor_state(i, state);
+            }});
+    if (!motor_publishers_[i]->is_valid() || !motor_state_subscribers_[i]->is_valid()) {
+      logger_.error("Failed to create the {} motor endpoints", axis.label);
+      return false;
+    }
+  }
 
-  right_motor_publisher_ = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
+  motors_publisher_ = std::make_unique<espp::Publisher<rammp::Motors>>(
       mib_.rtps_participant(),
-      espp::Publisher<rammp::MotorCommand>::Config{
-          .topic = rammp::axis(rammp::AxisId::DRIVE_RIGHT).command.name,
-          .type_name = rammp::axis(rammp::AxisId::DRIVE_RIGHT).command.type,
-          .reliability = Reliability::BEST_EFFORT});
-
-  if (!left_motor_publisher_->is_valid() || !right_motor_publisher_->is_valid()) {
-    logger_.error("Failed to create drive motor command publisher");
+      espp::Publisher<rammp::Motors>::Config{.topic = rammp::kMibMotors.name,
+                                             .type_name = rammp::kMibMotors.type,
+                                             .reliability = Reliability::BEST_EFFORT});
+  motor_jog_subscriber_ = std::make_unique<espp::Subscriber<rammp::MotorJog>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::MotorJog>::Config{
+          .topic = rammp::kJoystickMotorJog.name,
+          .type_name = rammp::kJoystickMotorJog.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::MotorJog &jog) { handle_motor_jog(jog); }});
+  if (!motors_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
+    logger_.error("Failed to create the motor debug endpoints");
     return false;
   }
 
@@ -245,8 +280,20 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   }
 }
 
-void MibSystem::handle_motor_status() {
-  logger_.info("Motor status received - placeholder");
+void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  motor_states_[index] = state;
+  motor_state_times_[index] = std::chrono::steady_clock::now();
+}
+
+void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
+  if (jog.axis_id >= rammp::kAxisCount) {
+    logger_.warn("Ignoring motor jog for unknown axis {}", jog.axis_id);
+    return;
+  }
+  std::lock_guard<std::mutex> lock(jog_mutex_);
+  latest_jog_ = jog;
+  latest_jog_time_ = std::chrono::steady_clock::now();
 }
 
 void MibSystem::publish_system_state() {
@@ -325,36 +372,93 @@ void MibSystem::log_drive_status() {
 }
 
 void MibSystem::publish_motor_commands() {
-  rammp::MotorCommand command{};
-  command.seq = ++motor_command_sequence_;
+  const auto now = std::chrono::steady_clock::now();
+  const auto current_state = state_.load();
   // The e-stop puts state_ in ERROR; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ERROR for one state step.
-  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.is_active();
-  command.requested_state = drive ? rammp::RequestedState::ARMED
-                                  : rammp::RequestedState::DISARMED;
-  command.mode = rammp::ControlMode::VELOCITY;
+  const bool stopped = latch_.is_active();
+  const bool drive = current_state == SystemState::DRIVE_ENABLED && !stopped;
 
+  rammp::MotorJog jog{};
+  bool jog_fresh = false;
+  {
+    std::lock_guard<std::mutex> lock(jog_mutex_);
+    jog = latest_jog_;
+    jog_fresh = now - latest_jog_time_ < mib::config::motor_jog_timeout;
+  }
+  // A jog moves one board, only while IDLE: never while driving, never through the e-stop.
+  const bool jog_requested = jog_fresh && jog.direction != 0;
+  const bool jogging = jog_requested && current_state == SystemState::IDLE && !stopped;
+  if (jog_requested != jog_requested_) {
+    jog_requested_ = jog_requested;
+    if (jog_requested) {
+      logger_.info("Motor jog {} {}: {}", rammp::kAxes[jog.axis_id].label,
+                   jog.direction > 0 ? "+" : "-",
+                   jogging ? "moving" : "refused (not IDLE, or the e-stop is active)");
+    } else {
+      logger_.info("Motor jog stopped");
+    }
+  }
+
+  mib::DifferentialDrive::WheelSpeeds wheel_speeds{};
   if (drive) {
-    const auto wheel_speeds = drive_controller_.wheel_speeds();
-    constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
-    command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
-    if (!left_motor_publisher_->publish(command)) {
-      logger_.warn("Failed to publish left motor command");
-    }
-
-    command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
-    if (!right_motor_publisher_->publish(command)) {
-      logger_.warn("Failed to publish right motor command");
-    }
-    return;
+    wheel_speeds = drive_controller_.wheel_speeds();
   }
+  constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
 
-  command.velocity = 0.0f;
-  if (!left_motor_publisher_->publish(command)) {
-    logger_.warn("Failed to publish left motor stop command");
+  rammp::MotorCommand command{};
+  command.seq = ++motor_command_sequence_;
+  command.mode = rammp::ControlMode::VELOCITY;
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const rammp::AxisId id = rammp::kAxes[i].id;
+    command.requested_state = rammp::RequestedState::DISARMED;
+    command.velocity = 0.0f;
+    if (drive && id == rammp::AxisId::DRIVE_LEFT) {
+      command.requested_state = rammp::RequestedState::ARMED;
+      command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+    } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
+      command.requested_state = rammp::RequestedState::ARMED;
+      command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+    } else if (jogging && jog.axis_id == i) {
+      command.requested_state = rammp::RequestedState::ARMED;
+      command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
+                                           : -mib::config::motor_jog_velocity_radps;
+    }
+    if (!motor_publishers_[i]->publish(command)) {
+      logger_.warn("Failed to publish {} motor command", rammp::kAxes[i].label);
+    }
   }
-  if (!right_motor_publisher_->publish(command)) {
-    logger_.warn("Failed to publish right motor stop command");
+}
+
+void MibSystem::publish_motors() {
+  const auto now = std::chrono::steady_clock::now();
+  motors_published_ = now;
+  rammp::Motors message{};
+  message.seq = ++motors_sequence_;
+  message.motors.reserve(rammp::kAxisCount);
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      const rammp::MotorState &state = motor_states_[i];
+      const bool online = motor_state_times_[i] != std::chrono::steady_clock::time_point{} &&
+                          now - motor_state_times_[i] < mib::config::motor_state_timeout;
+      if (online != motor_online_[i]) {
+        motor_online_[i] = online;
+        logger_.info("Motor {} {}", rammp::kAxes[i].label, online ? "online" : "offline");
+      }
+      message.motors.push_back(rammp::MotorSummary{
+          .axis_id = static_cast<uint8_t>(i),
+          .online = static_cast<uint8_t>(online ? 1 : 0),
+          .state = state.state,
+          .fault_code = state.fault_code,
+          .position = state.position,
+          .velocity = state.velocity,
+          .label = rammp::kAxes[i].label,
+      });
+    }
+  }
+  if (!motors_publisher_->publish(message)) {
+    logger_.warn("Failed to publish Motors");
   }
 }
 

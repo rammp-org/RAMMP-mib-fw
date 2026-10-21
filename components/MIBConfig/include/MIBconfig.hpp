@@ -16,6 +16,18 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
 
+/// @brief Motor debug list (rammp::Motors) publication period.
+inline constexpr auto motors_report_interval = std::chrono::milliseconds{200};
+
+/// @brief A board whose last MotorState is older than this is reported offline.
+inline constexpr auto motor_state_timeout = std::chrono::milliseconds{500};
+
+/// @brief A jog stops this long after the last MotorJog (rammp::MotorJog's contract).
+inline constexpr auto motor_jog_timeout = std::chrono::milliseconds{300};
+
+/// @brief Output-shaft speed of a motor debug jog, in rad/s.
+inline constexpr float motor_jog_velocity_radps = 1.0f;
+
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;
 

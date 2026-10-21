@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -14,9 +16,11 @@
 
 /// @brief Top-level MIB application: owns the system state machine and RTPS endpoints.
 ///
-/// Brings the board up through mib::bsp::MIB, then runs two periodic tasks: a
-/// fast state task that advances the system state machine, and a slower
-/// publication task that reports system / seat state to the rest of the robot.
+/// Brings the board up through mib::bsp::MIB, then runs three periodic tasks: a
+/// fast state task that advances the system state machine, a slower
+/// publication task that reports system / seat state to the rest of the robot,
+/// and the motor command task that commands every rammp::kAxes board and
+/// reports them to the joystick as rammp::Motors.
 ///
 /// \note Construction does no hardware work; call start() to bring the system up.
 class MibSystem : public espp::BaseComponent {
@@ -65,8 +69,16 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_drive_command(const rammp::DriveCommand &command);
 
-  /// Handle a motor controller status report.
-  void handle_motor_status();
+  /// Handle one board's state report.
+  /// \param index The board's row in rammp::kAxes.
+  /// \param state The received state.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_motor_state(size_t index, const rammp::MotorState &state);
+
+  /// Handle a motor jog request from the joystick (hold-to-run, motor debug).
+  /// \param jog The requested board and direction.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_motor_jog(const rammp::MotorJog &jog);
 
   /// Publish the current system state.
   /// \note Runs on the publication task.
@@ -76,9 +88,14 @@ private:
   /// \note Runs on the publication task.
   void publish_seat_state();
 
-  /// Publish velocity commands for the two drive motor controllers.
-  /// \note Runs on the publication task and feeds only the motor command topics.
+  /// Publish a command to every rammp::kAxes board: the wheel speeds while
+  /// driving, a jog while IDLE, otherwise DISARMED.
+  /// \note Runs on the motor command task.
   void publish_motor_commands();
+
+  /// Publish the motor debug list: every board with its latest state.
+  /// \note Runs on the motor command task.
+  void publish_motors();
 
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
@@ -96,9 +113,26 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t motors_sequence_{0};                 ///< Sequence number for Motors samples.
+  std::chrono::steady_clock::time_point motors_published_{}; ///< Last Motors sample.
+  /// Latest state of each kAxes board, and when it arrived (epoch = never).
+  std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
+  std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
+  std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
+  mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
+  rammp::MotorJog latest_jog_{};               ///< Most recent jog request.
+  std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
+  mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
+  bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
+  /// One command output per kAxes row, in table order.
+  std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>
+      motor_publishers_;
+  /// One state input per kAxes row, in table order.
+  std::array<std::unique_ptr<espp::Subscriber<rammp::MotorState>>, rammp::kAxisCount>
+      motor_state_subscribers_;
+  std::unique_ptr<espp::Publisher<rammp::Motors>> motors_publisher_; ///< Motor debug list.
+  std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
