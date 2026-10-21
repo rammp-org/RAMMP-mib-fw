@@ -19,6 +19,11 @@ static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= rammp::kAxisCount + 6,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
 static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= rammp::kAxisCount + 6,
               "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
+// Per participant, SEDP's two of each come on top.
+static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >= rammp::kAxisCount + 6,
+              "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= rammp::kAxisCount + 8,
+              "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
