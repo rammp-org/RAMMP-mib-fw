@@ -6,14 +6,19 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
+#include "estop/estop.hpp"
 
 using namespace std::chrono_literals;
+
+// The robot-wide e-stop latch: watches "hmi". Clear button: normally open to GND, held 2 s.
+static estop::Latch latch({.clear_input = {.gpio_num = GPIO_NUM_3}});
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
   mib_(mib::bsp::MIB::instance()), drive_controller_() {}
 
 void MibSystem::start() {
+  latch.start(); // first: it starts latched, so nothing moves until a clear succeeds
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
@@ -327,12 +332,13 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
-  command.requested_state = state_.load() == SystemState::DRIVE_ENABLED
-                                ? rammp::RequestedState::ARMED
-                                : rammp::RequestedState::DISARMED;
+  // latch.active() is the e-stop: while it is true, the motors get zero velocity and DISARMED.
+  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch.active();
+  command.requested_state = drive ? rammp::RequestedState::ARMED
+                                  : rammp::RequestedState::DISARMED;
   command.mode = rammp::ControlMode::VELOCITY;
 
-  if (state_.load() == SystemState::DRIVE_ENABLED) {
+  if (drive) {
     const auto wheel_speeds = drive_controller_.wheel_speeds();
     constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
     command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
@@ -379,6 +385,9 @@ void MibSystem::run_state_step() {
       logger_.error("Failed to initialize RTPS");
       state_.store(SystemState::ERROR);
       return;
+    }
+    if (!latch.attach(mib_.rtps_participant())) {
+      logger_.error("Failed to attach the e-stop latch");
     }
     state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
     break;
