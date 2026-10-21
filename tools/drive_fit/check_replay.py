@@ -7,6 +7,12 @@ first build downloads and compiles espp, which takes a few minutes.
 
 Usage:
   python check_replay.py BAG_DIR [--profile normal] [--delay 0.163] [--out OUT_DIR]
+  python check_replay.py BAG_DIR --jerk-sweep
+
+--jerk-sweep replays with the driving jerk limits set to accel / ramp time for
+a range of ramp times, and reports fit error against the recording alongside
+the RMS jerk of the output. The recording's chair is trapezoidal, so jerk can't
+be fitted; this shows how much smoothing each ramp time costs in fidelity.
 
 --delay is the recorded chair's dead time from joystick topic to wheels (from
 fit_drive_response.py). It lines the replay up with the recording; the firmware
@@ -38,6 +44,19 @@ def build_replay(build_dir: Path) -> Path:
     return build_dir / "replay_drive_profile"
 
 
+def run_replay(binary, stick_csv, profile, delay, ramp_s=None):
+    cmd = [str(binary), str(stick_csv), profile, str(delay)]
+    if ramp_s is not None:
+        cmd.append(str(ramp_s))
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return np.loadtxt(result.stdout.splitlines(), delimiter=",")
+
+
+def rms_jerk(t, velocity):
+    accel = np.gradient(velocity, t)
+    return np.sqrt(np.mean(np.gradient(accel, t) ** 2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bag", type=Path)
@@ -48,21 +67,34 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("drive_fit_out"))
     parser.add_argument("--build-dir", type=Path, default=HERE / "build",
                         help="CMake build dir for the replay; reused between runs")
+    parser.add_argument("--jerk-sweep", action="store_true",
+                        help="report fit error and output jerk across driving jerk ramp times")
     args = parser.parse_args()
 
     log = read_drive_log(args.bag)
     linear, turn = wheel_components(log, invert_left=True, invert_right=False)
 
     binary = build_replay(args.build_dir)
+    radius = args.wheel_diameter / 2.0
+    half_track = args.wheel_separation / 2.0
     with tempfile.TemporaryDirectory() as tmp:
         stick_csv = Path(tmp) / "stick.csv"
         np.savetxt(stick_csv, np.c_[log.t, log.linear_stick, log.side_stick], delimiter=",")
-        result = subprocess.run([str(binary), str(stick_csv), args.profile, str(args.delay)],
-                                check=True, capture_output=True, text=True)
-    replay = np.loadtxt(result.stdout.splitlines(), delimiter=",")
+        if args.jerk_sweep:
+            print(f"{'ramp to full accel':>18} | {'RMS error linear':>16} {'turn':>6} rad/s"
+                  f" | {'RMS jerk linear':>15} m/s^3 {'angular':>8} rad/s^3")
+            for ramp_s in (0.0, 0.1, 0.2, 0.3, 0.5, 0.75):
+                r = run_replay(binary, stick_csv, args.profile, args.delay, ramp_s)
+                lin = np.interp(r[:, 0], log.t, linear)
+                trn = np.interp(r[:, 0], log.t, turn)
+                err_lin = np.sqrt(np.mean((r[:, 1] / radius - lin) ** 2))
+                err_trn = np.sqrt(np.mean((r[:, 2] * half_track / radius - trn) ** 2))
+                label = "trapezoidal" if ramp_s == 0 else f"{ramp_s:.2f} s"
+                print(f"{label:>18} | {err_lin:16.3f} {err_trn:6.3f}      "
+                      f" | {rms_jerk(r[:, 0], r[:, 1]):15.2f}       {rms_jerk(r[:, 0], r[:, 2]):8.2f}")
+            return
+        replay = run_replay(binary, stick_csv, args.profile, args.delay)
 
-    radius = args.wheel_diameter / 2.0
-    half_track = args.wheel_separation / 2.0
     replay_t = replay[:, 0]
     replay_linear = replay[:, 1] / radius
     replay_turn = replay[:, 2] * half_track / radius

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 
 #include "base_component.hpp"
@@ -20,7 +19,6 @@ class DriveController : public espp::BaseComponent {
 public:
   struct Config {
     espp::TrajectoryPlanner::Config trajectory_planner{};
-    float reverse_scale{1.0f};
     DifferentialDrive::Config differential_drive{};
   };
 
@@ -30,8 +28,6 @@ public:
   /// @brief Set a normalized chassis velocity target.
   /// @param linear Normalized linear command in [-1, 1].
   /// @param angular Normalized angular command in [-1, 1].
-  /// @note Reverse commands are scaled by the active profile's reverse_scale
-  ///       before they reach the planner.
   void set_target(float linear, float angular);
 
   /// @brief Set the chassis target to zero using the planner limits.
@@ -66,7 +62,6 @@ private:
   static const config::DriveProfileConfig &profile_values(MIB::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
-  std::atomic<float> reverse_scale_;
   DifferentialDrive differential_drive_;
   MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
 };

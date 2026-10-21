@@ -1,9 +1,10 @@
 """Python twin of the MIB drive path, in wheel units, plus an input delay.
 
-Mirrors DriveController::set_target (joystick shaping) feeding espp::TrajectoryPlanner
-in trapezoidal mode, which is how the MIB profiles configure it:
+Mirrors espp::TrajectoryPlanner in trapezoidal mode, as configured by
+DriveController's drive_profile.hpp (driving jerk is set separately; see
+check_replay.py --jerk-sweep):
 
-  linear  = stick < 0 ? stick * reverse_scale : stick
+  linear  = stick < 0 ? stick * reverse_scale : stick   (planner's reverse limit)
   target  = (linear * max_linear, side * max_angular), scaled down together if
             |v * w| exceeds the centripetal limit
   each axis moves toward its target at the driving_profile acceleration, or the
@@ -30,7 +31,7 @@ class Params:
     linear_stop_accel: float = 12.0  # stopping_profile, rad/s^2
     turn_stop_accel: float = 9.0
     delay: float = 0.15  # s of dead time from joystick topic to wheels (not reproduced in firmware)
-    reverse_scale: float = 0.72  # reverse speed as a fraction of forward
+    reverse_scale: float = 0.72  # reverse limit as a fraction of forward
 
     def to_array(self):
         return np.array([getattr(self, f.name) for f in fields(self)])

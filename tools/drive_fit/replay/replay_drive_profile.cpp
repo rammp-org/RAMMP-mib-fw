@@ -1,12 +1,14 @@
 // Host-side replay of a joystick log through the firmware drive path: the
-// MIBconfig profile, DriveController's reverse scaling, and espp's
-// TrajectoryPlanner from the cross-platform library, stepped at its planning
-// period.
+// MIBconfig profile mapped by drive_profile.hpp into espp's TrajectoryPlanner
+// from the cross-platform library, stepped at its planning period.
 //
 // Input CSV rows:  t_s,linear_stick,side_stick   (side_stick + = right)
 // Output CSV rows: t_s,linear_mps,angular_radps
 //
-// Usage: replay_drive_profile INPUT.csv low|normal|high DELAY_S
+// Usage: replay_drive_profile INPUT.csv low|normal|high DELAY_S [JERK_RAMP_S]
+//   JERK_RAMP_S overrides the profile's driving jerk limits with
+//   accel / JERK_RAMP_S on each axis, i.e. the time to ramp up to full driving
+//   acceleration (0 = trapezoidal), for sweeping without editing MIBconfig.
 
 #include <chrono>
 #include <cstdio>
@@ -30,8 +32,8 @@ public:
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: %s INPUT.csv low|normal|high DELAY_S\n", argv[0]);
+  if (argc != 4 && argc != 5) {
+    std::fprintf(stderr, "usage: %s INPUT.csv low|normal|high DELAY_S [JERK_RAMP_S]\n", argv[0]);
     return 2;
   }
 
@@ -44,6 +46,12 @@ int main(int argc, char **argv) {
   auto planner_config = mib::planner_config(*profile);
   // The planner logs to stdout, which carries the CSV output.
   planner_config.log_level = espp::Logger::Verbosity::NONE;
+  if (argc == 5) {
+    const float ramp_s = static_cast<float>(std::atof(argv[4]));
+    auto &driving = planner_config.driving_profile;
+    driving.max_linear_jerk = ramp_s > 0.0f ? driving.max_linear_acceleration / ramp_s : 0.0f;
+    driving.max_angular_jerk = ramp_s > 0.0f ? driving.max_angular_acceleration / ramp_s : 0.0f;
+  }
   ReplayPlanner planner(planner_config);
   const double delay_s = std::atof(argv[3]);
 
@@ -76,7 +84,7 @@ int main(int argc, char **argv) {
     // is a clockwise (negative) turn.
     const float stick = have_stick ? static_cast<float>(linear[j]) : 0.0f;
     const float turn = have_stick ? static_cast<float>(-side[j]) : 0.0f;
-    planner.set_target(mib::scale_reverse_input(stick, profile->reverse_scale), turn);
+    planner.set_target(stick, turn);
     planner.update(static_cast<float>(step_s));
     const auto out = planner.output();
     std::printf("%.3f,%.5f,%.5f\n", now, out.linear_velocity, out.angular_velocity);

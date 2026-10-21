@@ -47,17 +47,20 @@ inline constexpr DifferentialDriveConfig differential_drive{
 /// espp::TrajectoryPlanner::Config. Driving acceleration applies whenever the
 /// target is non-zero; stopping acceleration applies only when the target is
 /// exactly (0, 0), so it relies on the joystick's center deadzone snapping a
-/// resting stick to zero. reverse_scale scales reverse stick before the planner
-/// (see drive_profile.hpp).
+/// resting stick to zero. Jerk limits apply to driving only (S-curve starts);
+/// stopping stays trapezoidal so stops land without overshoot. A jerk of 0
+/// makes that axis trapezoidal.
 struct DriveProfileConfig {
   float max_linear_velocity_mps;
+  float max_reverse_linear_velocity_mps;
   float max_angular_velocity_radps;
   float max_linear_acceleration_mps2;
   float max_angular_acceleration_radps2;
+  float max_linear_jerk_mps3;
+  float max_angular_jerk_radps3;
   float stopping_linear_acceleration_mps2;
   float stopping_angular_acceleration_radps2;
   float max_centripetal_acceleration_mps2;
-  float reverse_scale;
 };
 
 /// NORMAL matches the R-Net chair, fitted with tools/drive_fit from the
@@ -76,31 +79,39 @@ struct DriveProfileConfig {
 /// from a pure spin, so the fit can't see it. 4.0 rad/s^2 is the R-Net's turn
 /// deceleration measured while slowing a turn.
 ///
-/// The planner's jerk limits stay off (trapezoidal), as on the R-Net. Switching
-/// between a jerk-limited driving profile and a trapezoidal stopping profile
-/// leaves a stale acceleration in the planner; resolve that before enabling them.
+/// Driving jerk is an improvement over the R-Net, which is trapezoidal: each
+/// axis ramps up to full driving acceleration over 0.1 s (jerk = accel / 0.1 s).
+/// Replaying the recording, that halves the output's RMS jerk for 0.05 rad/s
+/// more linear wheel-speed error; longer ramps start to lag the stick (see
+/// tools/drive_fit/check_replay.py --jerk-sweep). Needs espp
+/// trajectory_planner >= 1.3.9, which resumes from the applied acceleration
+/// after a trapezoidal stop (esp-cpp/espp#850).
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 1.845f,
+    .max_reverse_linear_velocity_mps = 1.303f,
     .max_angular_velocity_radps = 2.114f,
     .max_linear_acceleration_mps2 = 0.989f,
     .max_angular_acceleration_radps2 = 2.926f,
+    .max_linear_jerk_mps3 = 9.89f,
+    .max_angular_jerk_radps3 = 29.26f,
     .stopping_linear_acceleration_mps2 = 1.662f,
     .stopping_angular_acceleration_radps2 = 4.000f,
     .max_centripetal_acceleration_mps2 = 1.500f,
-    .reverse_scale = 0.706f,
 };
 
-/// LOW is NORMAL at half speed with the same acceleration limits.
+/// LOW is NORMAL at half speed with the same acceleration and jerk limits.
 inline constexpr DriveProfileConfig drive_profile_low{
     .max_linear_velocity_mps = drive_profile_normal.max_linear_velocity_mps * 0.5f,
+    .max_reverse_linear_velocity_mps = drive_profile_normal.max_reverse_linear_velocity_mps * 0.5f,
     .max_angular_velocity_radps = drive_profile_normal.max_angular_velocity_radps * 0.5f,
     .max_linear_acceleration_mps2 = drive_profile_normal.max_linear_acceleration_mps2,
     .max_angular_acceleration_radps2 = drive_profile_normal.max_angular_acceleration_radps2,
+    .max_linear_jerk_mps3 = drive_profile_normal.max_linear_jerk_mps3,
+    .max_angular_jerk_radps3 = drive_profile_normal.max_angular_jerk_radps3,
     .stopping_linear_acceleration_mps2 = drive_profile_normal.stopping_linear_acceleration_mps2,
     .stopping_angular_acceleration_radps2 =
         drive_profile_normal.stopping_angular_acceleration_radps2,
     .max_centripetal_acceleration_mps2 = drive_profile_normal.max_centripetal_acceleration_mps2,
-    .reverse_scale = drive_profile_normal.reverse_scale,
 };
 
 /// TODO: HIGH equals NORMAL until we record the R-Net at its top speed setting.

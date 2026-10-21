@@ -9,7 +9,6 @@ DriveController::DriveController() : DriveController(default_config()) {}
 DriveController::DriveController(const Config &config)
     : BaseComponent("DriveController", espp::Logger::Verbosity::INFO),
       trajectory_planner_(config.trajectory_planner),
-      reverse_scale_(config.reverse_scale),
       differential_drive_(config.differential_drive) {
   if (!differential_drive_.is_valid()) {
     logger_.warn("Drive controller has invalid differential-drive geometry");
@@ -17,7 +16,7 @@ DriveController::DriveController(const Config &config)
 }
 
 void DriveController::set_target(float linear, float angular) {
-  trajectory_planner_.set_target(scale_reverse_input(linear, reverse_scale_.load()), angular);
+  trajectory_planner_.set_target(linear, angular);
 }
 
 void DriveController::stop() {
@@ -27,7 +26,6 @@ void DriveController::stop() {
 DriveController::Config DriveController::default_config() {
   return Config{
       .trajectory_planner = profile_config(MIB::DriveProfile::NORMAL),
-      .reverse_scale = profile_values(MIB::DriveProfile::NORMAL).reverse_scale,
       .differential_drive = {
           .wheel_diameter_m = config::differential_drive.wheel_diameter_m,
           .wheel_separation_m = config::differential_drive.wheel_separation_m,
@@ -46,7 +44,6 @@ bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
     logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
     return false;
   }
-  reverse_scale_.store(profile_values(profile).reverse_scale);
 
   active_profile_ = profile;
   logger_.info("Drive profile updated to {}", static_cast<uint8_t>(profile));

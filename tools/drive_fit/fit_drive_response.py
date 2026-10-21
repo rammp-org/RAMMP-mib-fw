@@ -1,7 +1,8 @@
 """Fit MIB drive profile settings to a bag of an existing chair driven by joystick.
 
-Fits the espp::TrajectoryPlanner limits and DriveController's reverse scale
-(see model.py), with the centripetal limit held fixed.
+Fits the espp::TrajectoryPlanner limits (see model.py), with the centripetal
+limit held fixed. The model is trapezoidal, so driving jerk limits are printed
+as 0; choose them with check_replay.py --jerk-sweep.
 
 Usage:
   python fit_drive_response.py BAG_DIR [--out OUT_DIR] [--centripetal-limit 1.5]
@@ -73,13 +74,15 @@ def config_block(p: Params, name, wheel_diameter, wheel_separation, centripetal_
     turn_scale = radius / (wheel_separation / 2.0)  # turn wheel rad/s -> chassis rad/s
     return f"""inline constexpr DriveProfileConfig {name}{{
     .max_linear_velocity_mps = {p.forward * radius:.3f}f,
+    .max_reverse_linear_velocity_mps = {p.forward * p.reverse_scale * radius:.3f}f,
     .max_angular_velocity_radps = {p.turn * turn_scale:.3f}f,
     .max_linear_acceleration_mps2 = {p.linear_accel * radius:.3f}f,
     .max_angular_acceleration_radps2 = {p.turn_accel * turn_scale:.3f}f,
+    .max_linear_jerk_mps3 = 0.0f,
+    .max_angular_jerk_radps3 = 0.0f,
     .stopping_linear_acceleration_mps2 = {p.linear_stop_accel * radius:.3f}f,
     .stopping_angular_acceleration_radps2 = {p.turn_stop_accel * turn_scale:.3f}f,
     .max_centripetal_acceleration_mps2 = {centripetal_limit:.3f}f,
-    .reverse_scale = {p.reverse_scale:.3f}f,
 }};"""
 
 

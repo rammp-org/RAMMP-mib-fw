@@ -18,7 +18,7 @@ endif()
 include("${CPM_DOWNLOAD_LOCATION}")
 
 # Keep in step with espp/trajectory_planner in the firmware's dependencies.lock.
-set(ESPP_VERSION "v1.3.8" CACHE STRING "espp git tag to replay against")
+set(ESPP_VERSION "v1.3.9" CACHE STRING "espp git tag to replay against")
 CPMAddPackage(
   NAME espp
   GITHUB_REPOSITORY esp-cpp/espp
