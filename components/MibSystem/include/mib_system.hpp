@@ -121,5 +121,6 @@ private:
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
   std::unique_ptr<espp::Task> imu_task_;           ///< Reads the IMU at 100 Hz.
   std::chrono::steady_clock::time_point last_imu_log_{}; ///< Last IMU log time; IMU task only.
+  std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false};              ///< True if the latest IMU read succeeded.
 };

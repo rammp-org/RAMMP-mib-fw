@@ -342,26 +342,49 @@ void MibSystem::start_imu_task() {
     logger_.warn("IMU unavailable; continuing without it");
     return;
   }
+  imu_reading_ok_.store(true);
 
   imu_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         const bool ok = update_imu();
 
+        // Fixed-period schedule: waiting a full interval after each read would
+        // stretch the period by the read time. espp::Task copies the callback
+        // every iteration, so the deadline lives in a member, not the lambda.
+        const auto now = std::chrono::steady_clock::now();
+        imu_next_wake_ += ok ? mib::config::imu_task_interval : mib::config::imu_retry_interval;
+        if (imu_next_wake_ < now) {
+          imu_next_wake_ = now; // fell behind; skip the missed periods instead of bursting
+        }
         std::unique_lock<std::mutex> lock(mutex);
-        condition_variable.wait_for(lock, ok ? mib::config::imu_task_interval
-                                             : mib::config::imu_retry_interval);
+        condition_variable.wait_until(lock, imu_next_wake_);
         return false;
       },
       // 6 KB: the IMU log line left 508 B free of 4 KB on the bench.
       .task_config = {.name = "MIB IMU", .stack_size_bytes = 6 * 1024},
   });
+  imu_next_wake_ = std::chrono::steady_clock::now();
   imu_task_->start();
 }
 
 bool MibSystem::update_imu() {
   auto *imu = mib_.imu();
   std::error_code ec;
-  const bool ok = imu->update(ec);
+  // A BNO055 that lost power comes back in CONFIG mode and reads all zeros
+  // without a bus error, so after any failed read, run init() again first.
+  // Probe once before init(): init() polls the chip ID 20 times, and each
+  // failed poll logs an I2C error, which floods the console while it is unplugged.
+  bool ok = imu_reading_ok_.load();
+  if (!ok) {
+    if (imu->probe(ec)) {
+      ok = imu->init(ec);
+    } else {
+      ec = std::make_error_code(std::errc::no_such_device);
+    }
+  }
+  if (ok) {
+    ok = imu->update(ec);
+  }
   imu_reading_ok_.store(ok);
 
   // Logging shares the publication rate so a failing bus does not flood the console.
