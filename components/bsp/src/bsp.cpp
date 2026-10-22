@@ -4,7 +4,7 @@ namespace mib::bsp {
 
 bool MIB::init_imu() {
   auto &i2c = board_->internal_i2c();
-  auto imu = std::make_unique<mib::Bno055>(mib::Bno055::Config{
+  auto imu = std::make_unique<espp::Bno055>(espp::Bno055::Config{
       .device_address = mib::config::imu_i2c_address,
       .probe = [&i2c](uint8_t address) { return i2c.probe_device(address); },
       .write = [&i2c](uint8_t address, const uint8_t *data,

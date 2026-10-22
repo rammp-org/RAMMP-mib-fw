@@ -11,6 +11,6 @@ idf_component_register(
     "cdr"
     "logger"
     "MIBConfig"
-    "Bno055"
+    "bno055"
   REQUIRED_IDF_TARGETS "esp32p4"
 )

@@ -42,7 +42,7 @@ public:
 
   /// @brief Access the IMU.
   /// @return Pointer to the IMU, or nullptr if init_imu() has not succeeded.
-  mib::Bno055 *imu() { return imu_.get(); }
+  espp::Bno055 *imu() { return imu_.get(); }
 
   /// @brief Start RTPS after Ethernet has an active link.
   /// @return True if the RTPS participant was started.
@@ -105,7 +105,7 @@ private:
   MIB() : BaseComponent("MIB", espp::Logger::Verbosity::INFO) {}
   espp::Esp32P4Eth *board_{nullptr};
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_{nullptr};
-  std::unique_ptr<mib::Bno055> imu_{nullptr};
+  std::unique_ptr<espp::Bno055> imu_{nullptr};
   std::string ethernet_ip_address_;
 };
 
