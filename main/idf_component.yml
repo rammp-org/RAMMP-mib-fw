@@ -7,3 +7,7 @@ dependencies:
   espp/cdr: '>=1.3'
   espp/logger: '>=1.3'
   espp/task: '>=1.3'
+  # The robot-wide e-stop (estop::Latch).
+  estop_core:
+    git: https://github.com/rammp-org/rammp-estop-core.git
+    version: v0.3.0
