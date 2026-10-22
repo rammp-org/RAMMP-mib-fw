@@ -3,29 +3,28 @@
 namespace mib::bsp {
 
 bool MIB::init_imu() {
-	auto &i2c = board_->internal_i2c();
-	auto imu = std::make_unique<mib::Bno055>(mib::Bno055::Config{
-			.device_address = mib::config::imu_i2c_address,
-			.probe = [&i2c](uint8_t address) { return i2c.probe_device(address); },
-			.write = [&i2c](uint8_t address, const uint8_t *data, size_t length) {
-				return i2c.write(address, data, length);
-			},
-			.write_then_read = [&i2c](uint8_t address, const uint8_t *write_data,
-									  size_t write_length, uint8_t *read_data,
-									  size_t read_length) {
-				return i2c.write_read(address, write_data, write_length, read_data, read_length);
-			},
-			.auto_init = false,
-			.log_level = espp::Logger::Verbosity::INFO,
-	});
+  auto &i2c = board_->internal_i2c();
+  auto imu = std::make_unique<mib::Bno055>(mib::Bno055::Config{
+      .device_address = mib::config::imu_i2c_address,
+      .probe = [&i2c](uint8_t address) { return i2c.probe_device(address); },
+      .write = [&i2c](uint8_t address, const uint8_t *data,
+                      size_t length) { return i2c.write(address, data, length); },
+      .write_then_read =
+          [&i2c](uint8_t address, const uint8_t *write_data, size_t write_length,
+                 uint8_t *read_data, size_t read_length) {
+            return i2c.write_read(address, write_data, write_length, read_data, read_length);
+          },
+      .auto_init = false,
+      .log_level = espp::Logger::Verbosity::INFO,
+  });
 
-	std::error_code ec;
-	if (!imu->init(ec)) {
-		logger_.error("Failed to initialize BNO055 IMU: {}", ec.message());
-		return false;
-	}
-	imu_ = std::move(imu);
-	return true;
+  std::error_code ec;
+  if (!imu->init(ec)) {
+    logger_.error("Failed to initialize BNO055 IMU: {}", ec.message());
+    return false;
+  }
+  imu_ = std::move(imu);
+  return true;
 }
 
 bool MIB::init_rtps() {

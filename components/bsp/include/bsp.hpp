@@ -4,11 +4,11 @@
 #include <memory>
 #include <string>
 
-#include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
-#include "bno055.hpp"
 #include "base_component.hpp"
+#include "bno055.hpp"
 #include "esp32-p4-eth.hpp"
+#include "rtps_participant.hpp"
 
 namespace mib::bsp {
 

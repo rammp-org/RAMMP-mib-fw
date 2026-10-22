@@ -40,8 +40,9 @@ Bno055::Bno055(const Config &config)
                       .probe = config.probe,
                       .write = config.write,
                       .write_then_read = config.write_then_read},
-                     "Bno055", config.log_level),
-      mode_(config.mode), use_external_crystal_(config.use_external_crystal) {
+                     "Bno055", config.log_level)
+    , mode_(config.mode)
+    , use_external_crystal_(config.use_external_crystal) {
   if (config.auto_init) {
     std::error_code ec;
     if (!init(ec)) {
@@ -154,8 +155,7 @@ bool Bno055::wait_for_chip_id(std::error_code &ec) {
   if (!ec) {
     ec = std::make_error_code(std::errc::no_such_device);
   }
-  logger_.error("No BNO055 chip ID (0x{:02x}) at address 0x{:02x}", CHIP_ID,
-                base_config_.address);
+  logger_.error("No BNO055 chip ID (0x{:02x}) at address 0x{:02x}", CHIP_ID, base_config_.address);
   return false;
 }
 

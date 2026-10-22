@@ -1,6 +1,7 @@
 #include "mib_system.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -37,17 +38,18 @@ void MibSystem::start() {
   }
 
   publication_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [this](std::mutex &mutex,
-                         std::condition_variable &condition_variable) -> bool {
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
+        publish_diagnostics();
         log_drive_status();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::publication_task_interval);
         return false;
       },
-      .task_config = {.name = "MIB state publication", .stack_size_bytes = 4 * 1024},
+      // 6 KB: also builds and publishes Diagnostics.
+      .task_config = {.name = "MIB state publication", .stack_size_bytes = 6 * 1024},
   });
   publication_task_->start();
 
@@ -130,6 +132,17 @@ bool MibSystem::initialize_pubsub() {
 
   if (!status_publisher_->is_valid()) {
     logger_.error("Failed to create MIB status publisher");
+    return false;
+  }
+
+  diagnostics_publisher_ = std::make_unique<espp::Publisher<rammp::Diagnostics>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::Diagnostics>::Config{.topic = rammp::kMcbDiagnostics.name,
+                                                  .type_name = rammp::kMcbDiagnostics.type,
+                                                  .reliability = Reliability::BEST_EFFORT});
+
+  if (!diagnostics_publisher_->is_valid()) {
+    logger_.error("Failed to create MIB diagnostics publisher");
     return false;
   }
 
@@ -331,34 +344,36 @@ void MibSystem::start_imu_task() {
   }
 
   imu_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [this](std::mutex &mutex,
-                         std::condition_variable &condition_variable) -> bool {
-        update_imu();
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        const bool ok = update_imu();
 
         std::unique_lock<std::mutex> lock(mutex);
-        condition_variable.wait_for(lock, mib::config::imu_task_interval);
+        condition_variable.wait_for(lock, ok ? mib::config::imu_task_interval
+                                             : mib::config::imu_retry_interval);
         return false;
       },
-      .task_config = {.name = "MIB IMU", .stack_size_bytes = 4 * 1024},
+      // 6 KB: the IMU log line left 508 B free of 4 KB on the bench.
+      .task_config = {.name = "MIB IMU", .stack_size_bytes = 6 * 1024},
   });
   imu_task_->start();
 }
 
-void MibSystem::update_imu() {
+bool MibSystem::update_imu() {
   auto *imu = mib_.imu();
   std::error_code ec;
   const bool ok = imu->update(ec);
+  imu_reading_ok_.store(ok);
 
   // Logging shares the publication rate so a failing bus does not flood the console.
   const auto now = std::chrono::steady_clock::now();
   if (now - last_imu_log_ < mib::config::publication_task_interval) {
-    return;
+    return ok;
   }
   last_imu_log_ = now;
 
   if (!ok) {
     logger_.warn("IMU read failed: {}", ec.message());
-    return;
+    return false;
   }
 
   const auto data = imu->data();
@@ -370,6 +385,40 @@ void MibSystem::update_imu() {
                data.gyro_radps.z, data.accel_mps2.x, data.accel_mps2.y, data.accel_mps2.z,
                data.calibration.system, data.calibration.gyro, data.calibration.accel,
                data.calibration.mag);
+  return true;
+}
+
+void MibSystem::publish_diagnostics() {
+  // Raw readings are integers in 10^-decimals of the row's unit (RAMMP_DIAG_TABLE).
+  auto to_raw = [](float value, rammp::DiagId id, size_t field) {
+    const auto decimals = rammp::kDiagItems[static_cast<size_t>(id)].decimals[field];
+    return static_cast<int32_t>(std::lround(value * std::pow(10.0f, decimals)));
+  };
+
+  rammp::Diagnostics diagnostics{};
+  diagnostics.seq = ++diagnostics_sequence_;
+  diagnostics.items.resize(rammp::kDiagCount);
+
+  // A failed read leaves the last good sample in the driver; send nothing rather than stale data.
+  auto *imu = mib_.imu();
+  if (imu != nullptr && imu_reading_ok_.load()) {
+    const auto data = imu->data();
+    constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+    diagnostics.items[static_cast<size_t>(rammp::DiagId::IMU_TILT)].values = {
+        to_raw(data.euler.roll * kRadToDeg, rammp::DiagId::IMU_TILT, 0),
+        to_raw(data.euler.pitch * kRadToDeg, rammp::DiagId::IMU_TILT, 1),
+        to_raw(data.euler.heading * kRadToDeg, rammp::DiagId::IMU_TILT, 2),
+    };
+    diagnostics.items[static_cast<size_t>(rammp::DiagId::IMU_STATUS)].values = {
+        to_raw(data.gyro_radps.z * kRadToDeg, rammp::DiagId::IMU_STATUS, 0),
+        to_raw(data.calibration.gyro, rammp::DiagId::IMU_STATUS, 1),
+        to_raw(data.temperature_c, rammp::DiagId::IMU_STATUS, 2),
+    };
+  }
+
+  if (!diagnostics_publisher_->publish(diagnostics)) {
+    logger_.warn("Failed to publish diagnostics");
+  }
 }
 
 void MibSystem::publish_motor_commands() {

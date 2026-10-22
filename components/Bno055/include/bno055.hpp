@@ -69,26 +69,26 @@ public:
 
   /// @brief One complete set of sensor and fusion outputs.
   struct Data {
-    Vector3 accel_mps2;               ///< Raw acceleration including gravity.
-    Vector3 mag_ut;                   ///< Magnetic field, in microtesla.
-    Vector3 gyro_radps;               ///< Angular rate.
-    Euler euler;                      ///< Fused orientation as Euler angles.
-    Quaternion orientation;           ///< Fused orientation as a quaternion.
-    Vector3 linear_accel_mps2;        ///< Acceleration with gravity removed.
-    Vector3 gravity_mps2;             ///< Gravity vector.
-    int8_t temperature_c{0};          ///< Die temperature, in degrees Celsius.
-    CalibrationStatus calibration;    ///< Per-sensor calibration status.
+    Vector3 accel_mps2;            ///< Raw acceleration including gravity.
+    Vector3 mag_ut;                ///< Magnetic field, in microtesla.
+    Vector3 gyro_radps;            ///< Angular rate.
+    Euler euler;                   ///< Fused orientation as Euler angles.
+    Quaternion orientation;        ///< Fused orientation as a quaternion.
+    Vector3 linear_accel_mps2;     ///< Acceleration with gravity removed.
+    Vector3 gravity_mps2;          ///< Gravity vector.
+    int8_t temperature_c{0};       ///< Die temperature, in degrees Celsius.
+    CalibrationStatus calibration; ///< Per-sensor calibration status.
   };
 
   /// @brief Driver configuration.
   struct Config {
-    uint8_t device_address{DEFAULT_ADDRESS};             ///< I2C address of the sensor.
-    BasePeripheral::probe_fn probe{nullptr};             ///< Probe the I2C address.
-    BasePeripheral::write_fn write{nullptr};             ///< Write bytes to the sensor.
+    uint8_t device_address{DEFAULT_ADDRESS};                     ///< I2C address of the sensor.
+    BasePeripheral::probe_fn probe{nullptr};                     ///< Probe the I2C address.
+    BasePeripheral::write_fn write{nullptr};                     ///< Write bytes to the sensor.
     BasePeripheral::write_then_read_fn write_then_read{nullptr}; ///< Write then read.
-    OperatingMode mode{OperatingMode::IMU};              ///< Fusion mode to run in.
-    bool use_external_crystal{true};                     ///< Use the board's 32 kHz crystal.
-    bool auto_init{true};                                ///< Call init() on construction.
+    OperatingMode mode{OperatingMode::IMU};                      ///< Fusion mode to run in.
+    bool use_external_crystal{true}; ///< Use the board's 32 kHz crystal.
+    bool auto_init{true};            ///< Call init() on construction.
     espp::Logger::Verbosity log_level{espp::Logger::Verbosity::WARN};
   };
 

@@ -17,6 +17,9 @@ inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50
 /// @brief IMU read task period.
 inline constexpr auto imu_task_interval = std::chrono::milliseconds{10};
 
+/// @brief IMU read retry period after a failed read, so a missing IMU does not flood the log.
+inline constexpr auto imu_retry_interval = std::chrono::milliseconds{1000};
+
 /// @brief I2C address of the BNO055 IMU on the internal I2C bus (SDA=GPIO7, SCL=GPIO8).
 inline constexpr std::uint8_t imu_i2c_address = 0x28;
 
