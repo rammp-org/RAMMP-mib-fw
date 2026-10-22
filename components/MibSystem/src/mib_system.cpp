@@ -324,6 +324,54 @@ void MibSystem::log_drive_status() {
                right_rad_per_second);
 }
 
+void MibSystem::start_imu_task() {
+  if (!mib_.init_imu()) {
+    logger_.warn("IMU unavailable; continuing without it");
+    return;
+  }
+
+  imu_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex,
+                         std::condition_variable &condition_variable) -> bool {
+        update_imu();
+
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_for(lock, mib::config::imu_task_interval);
+        return false;
+      },
+      .task_config = {.name = "MIB IMU", .stack_size_bytes = 4 * 1024},
+  });
+  imu_task_->start();
+}
+
+void MibSystem::update_imu() {
+  auto *imu = mib_.imu();
+  std::error_code ec;
+  const bool ok = imu->update(ec);
+
+  // Logging shares the publication rate so a failing bus does not flood the console.
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_imu_log_ < mib::config::publication_task_interval) {
+    return;
+  }
+  last_imu_log_ = now;
+
+  if (!ok) {
+    logger_.warn("IMU read failed: {}", ec.message());
+    return;
+  }
+
+  const auto data = imu->data();
+  constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+  logger_.info("IMU: heading={:.1f} roll={:.1f} pitch={:.1f} deg gyro=({:.2f}, {:.2f}, {:.2f}) "
+               "rad/s accel=({:.2f}, {:.2f}, {:.2f}) m/s^2 calib sys={} gyr={} acc={} mag={}",
+               data.euler.heading * kRadToDeg, data.euler.roll * kRadToDeg,
+               data.euler.pitch * kRadToDeg, data.gyro_radps.x, data.gyro_radps.y,
+               data.gyro_radps.z, data.accel_mps2.x, data.accel_mps2.y, data.accel_mps2.z,
+               data.calibration.system, data.calibration.gyro, data.calibration.accel,
+               data.calibration.mag);
+}
+
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
@@ -365,6 +413,8 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
+
+    start_imu_task();
 
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");

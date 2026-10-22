@@ -6,6 +6,7 @@
 
 #include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
+#include "bno055.hpp"
 #include "base_component.hpp"
 #include "esp32-p4-eth.hpp"
 
@@ -33,6 +34,15 @@ public:
 
     return init_ethernet();
   }
+
+  /// @brief Bring up the BNO055 IMU on the board's internal I2C bus.
+  /// @return True if the IMU responded and entered its fusion mode.
+  /// @note Blocks for roughly 700 ms while the IMU resets.
+  bool init_imu();
+
+  /// @brief Access the IMU.
+  /// @return Pointer to the IMU, or nullptr if init_imu() has not succeeded.
+  mib::Bno055 *imu() { return imu_.get(); }
 
   /// @brief Start RTPS after Ethernet has an active link.
   /// @return True if the RTPS participant was started.
@@ -95,6 +105,7 @@ private:
   MIB() : BaseComponent("MIB", espp::Logger::Verbosity::INFO) {}
   espp::Esp32P4Eth *board_{nullptr};
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_{nullptr};
+  std::unique_ptr<mib::Bno055> imu_{nullptr};
   std::string ethernet_ip_address_;
 };
 

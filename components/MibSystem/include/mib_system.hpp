@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -79,6 +80,14 @@ private:
   /// \note Runs on the publication task and feeds only the motor command topics.
   void publish_motor_commands();
 
+  /// Start the IMU read task if the IMU initialized.
+  /// \note Runs on the state task during INIT. A missing IMU is logged, not fatal.
+  void start_imu_task();
+
+  /// Read the IMU once and periodically log its orientation and calibration.
+  /// \note Runs on the IMU task.
+  void update_imu();
+
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
@@ -102,4 +111,6 @@ private:
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
+  std::unique_ptr<espp::Task> imu_task_;         ///< Reads the IMU at 100 Hz.
+  std::chrono::steady_clock::time_point last_imu_log_{}; ///< Last IMU log time; IMU task only.
 };
