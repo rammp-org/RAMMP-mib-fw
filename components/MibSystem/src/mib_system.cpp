@@ -385,6 +385,8 @@ void MibSystem::run_state_step() {
     }
     if (!latch_.attach(mib_.rtps_participant())) {
       logger_.error("Failed to attach the e-stop latch");
+      state_.store(SystemState::ERROR);
+      return;
     }
     state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
     break;
