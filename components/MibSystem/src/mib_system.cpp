@@ -6,19 +6,16 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
-#include "estop/estop.hpp"
 
 using namespace std::chrono_literals;
 
-// The robot-wide e-stop latch: watches "hmi". Clear button: normally open to GND, held 2 s.
-static estop::Latch latch({.clear_input = {.gpio_num = GPIO_NUM_3}});
-
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-  mib_(mib::bsp::MIB::instance()), drive_controller_() {}
+  mib_(mib::bsp::MIB::instance()), drive_controller_(),
+  latch_({.clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
 
 void MibSystem::start() {
-  latch.start(); // first: it starts latched, so nothing moves until a clear succeeds
+  latch_.start(); // first: it starts latched, so nothing moves until a clear succeeds
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
@@ -332,8 +329,8 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
-  // latch.active() is the e-stop: while it is true, the motors get zero velocity and DISARMED.
-  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch.active();
+  // latch_.active() is the e-stop: while it is true, the motors get zero velocity and DISARMED.
+  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.active();
   command.requested_state = drive ? rammp::RequestedState::ARMED
                                   : rammp::RequestedState::DISARMED;
   command.mode = rammp::ControlMode::VELOCITY;
@@ -386,7 +383,7 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
-    if (!latch.attach(mib_.rtps_participant())) {
+    if (!latch_.attach(mib_.rtps_participant())) {
       logger_.error("Failed to attach the e-stop latch");
     }
     state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
