@@ -38,6 +38,7 @@ private:
     IDLE,          ///< Initialized and waiting; drive is disabled.
     CALIBRATE,     ///< Running a calibration routine.
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
+    ESTOP,         ///< The e-stop latch is active; on release, back to IDLE.
     ERROR,         ///< Initialization or runtime failure; not operational.
   };
 

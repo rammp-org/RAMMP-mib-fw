@@ -176,6 +176,7 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
   case SystemState::INIT:
   case SystemState::IDLE:
   case SystemState::CALIBRATE:
+  case SystemState::ESTOP:
   case SystemState::ERROR:
     drive_controller_.stop();
     break;
@@ -265,6 +266,10 @@ void MibSystem::publish_system_state() {
   case SystemState::DRIVE_ENABLED:
     status.systemState = MIB::MibSystemState::ENABLED;
     break;
+  case SystemState::ESTOP:
+    status.systemState = MIB::MibSystemState::ERROR;
+    status.error_message = "e-stop";
+    break;
   case SystemState::ERROR:
     status.systemState = MIB::MibSystemState::ERROR;
     status.error_message = "MIB system error";
@@ -307,6 +312,9 @@ void MibSystem::log_drive_status() {
   case SystemState::DRIVE_ENABLED:
     state_name = "DRIVE_ENABLED";
     break;
+  case SystemState::ESTOP:
+    state_name = "ESTOP";
+    break;
   case SystemState::ERROR:
     state_name = "ERROR";
     break;
@@ -329,7 +337,8 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
-  // latch_.active() is the e-stop: while it is true, the motors get zero velocity and DISARMED.
+  // ESTOP stops the motors through the state; latch_.active() is a backstop until #37:
+  // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.active();
   command.requested_state = drive ? rammp::RequestedState::ARMED
                                   : rammp::RequestedState::DISARMED;
@@ -360,6 +369,15 @@ void MibSystem::publish_motor_commands() {
 }
 
 void MibSystem::run_state_step() {
+  // The e-stop overrides every running state; a release returns to IDLE (drive must be re-enabled).
+  const auto state = state_.load();
+  if (latch_.active() && (state == SystemState::IDLE || state == SystemState::CALIBRATE ||
+                          state == SystemState::DRIVE_ENABLED)) {
+    drive_controller_.stop();
+    state_.store(SystemState::ESTOP);
+    logger_.warn("E-stop latched: drive stopped");
+  }
+
   switch (state_.load()) {
   case SystemState::INIT:
     logger_.info("System state: INIT - initializing MIB");
@@ -398,6 +416,12 @@ void MibSystem::run_state_step() {
     break;
   case SystemState::DRIVE_ENABLED:
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
+    break;
+  case SystemState::ESTOP:
+    if (!latch_.active()) {
+      state_.store(SystemState::IDLE);
+      logger_.info("E-stop released: IDLE until drive is re-enabled");
+    }
     break;
   case SystemState::ERROR:
     logger_.error("System state: ERROR - running error placeholder");
