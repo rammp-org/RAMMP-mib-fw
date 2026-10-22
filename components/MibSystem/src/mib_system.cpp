@@ -337,9 +337,9 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
-  // ESTOP stops the motors through the state; latch_.active() is a backstop until #37:
+  // ESTOP stops the motors through the state; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
-  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.active();
+  const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.is_active();
   command.requested_state = drive ? rammp::RequestedState::ARMED
                                   : rammp::RequestedState::DISARMED;
   command.mode = rammp::ControlMode::VELOCITY;
@@ -371,8 +371,8 @@ void MibSystem::publish_motor_commands() {
 void MibSystem::run_state_step() {
   // The e-stop overrides every running state; a release returns to IDLE (drive must be re-enabled).
   const auto state = state_.load();
-  if (latch_.active() && (state == SystemState::IDLE || state == SystemState::CALIBRATE ||
-                          state == SystemState::DRIVE_ENABLED)) {
+  if (latch_.is_active() && (state == SystemState::IDLE || state == SystemState::CALIBRATE ||
+                             state == SystemState::DRIVE_ENABLED)) {
     drive_controller_.stop();
     state_.store(SystemState::ESTOP);
     logger_.warn("E-stop latched: drive stopped");
@@ -418,7 +418,7 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
   case SystemState::ESTOP:
-    if (!latch_.active()) {
+    if (!latch_.is_active()) {
       state_.store(SystemState::IDLE);
       logger_.info("E-stop released: IDLE until drive is re-enabled");
     }
