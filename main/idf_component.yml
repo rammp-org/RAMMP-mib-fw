@@ -7,9 +7,4 @@ dependencies:
   espp/cdr: '>=1.3'
   espp/logger: '>=1.3'
   espp/task: '>=1.3'
-  # TODO(espp release): replace with `espp/bno055: '>=<release>'` once
-  # esp-cpp/espp#858 ships. Pinned to the PR branch until then.
-  espp/bno055:
-    git: https://github.com/alexchunlin/espp.git
-    path: components/bno055
-    version: feature/bno055
+  espp/bno055: '>=1.3.10'
