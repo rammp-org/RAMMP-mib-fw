@@ -34,7 +34,7 @@ void MibSystem::start() {
     std::this_thread::sleep_for(10ms);
   }
 
-  if (state_.load() == SystemState::ERROR) {
+  if (state_.load() == SystemState::ERROR && !estop_error_.load()) {
     return;
   }
 
@@ -361,8 +361,15 @@ void MibSystem::publish_motor_commands() {
 }
 
 void MibSystem::run_state_step() {
-  if (latch_.is_active() && state_.load() != SystemState::INIT) {
-    state_.store(SystemState::ERROR); // e-stop
+  // E-stop: ERROR while the latch is active, then IDLE once it clears (drive must be re-enabled).
+  const auto state = state_.load();
+  if (latch_.is_active() && state != SystemState::INIT && state != SystemState::ERROR) {
+    estop_error_.store(true);
+    drive_controller_.stop();
+    state_.store(SystemState::ERROR);
+  } else if (!latch_.is_active() && estop_error_.load()) {
+    estop_error_.store(false);
+    state_.store(SystemState::IDLE);
   }
   switch (state_.load()) {
   case SystemState::INIT:
