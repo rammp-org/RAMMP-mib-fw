@@ -367,9 +367,6 @@ void MibSystem::run_state_step() {
     estop_error_.store(true);
     drive_controller_.stop();
     state_.store(SystemState::ERROR);
-  } else if (!latch_.is_active() && estop_error_.load()) {
-    estop_error_.store(false);
-    state_.store(SystemState::IDLE);
   }
   switch (state_.load()) {
   case SystemState::INIT:
@@ -411,6 +408,11 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
   case SystemState::ERROR:
+    if (estop_error_.load() && !latch_.is_active()) {
+      estop_error_.store(false);
+      state_.store(SystemState::IDLE);
+      break;
+    }
     logger_.error("System state: ERROR - running error placeholder");
     break;
   }
