@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -79,6 +80,20 @@ private:
   /// \note Runs on the publication task and feeds only the motor command topics.
   void publish_motor_commands();
 
+  /// Start the IMU read task if the IMU initialized.
+  /// \note Runs on the state task during INIT. A missing IMU is logged, not fatal.
+  void start_imu_task();
+
+  /// Read the IMU once and periodically log its orientation and calibration.
+  /// \note Runs on the IMU task.
+  /// \return True if the read succeeded.
+  bool update_imu();
+
+  /// Publish one Diagnostics sample, one item per RAMMP_DIAG_TABLE row.
+  /// Rows the MIB has no reading for are sent with no values.
+  /// \note Runs on the publication task.
+  void publish_diagnostics();
+
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
@@ -93,7 +108,9 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
@@ -102,4 +119,8 @@ private:
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
+  std::unique_ptr<espp::Task> imu_task_;           ///< Reads the IMU at 100 Hz.
+  std::chrono::steady_clock::time_point last_imu_log_{}; ///< Last IMU log time; IMU task only.
+  std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
+  std::atomic<bool> imu_reading_ok_{false};              ///< True if the latest IMU read succeeded.
 };
