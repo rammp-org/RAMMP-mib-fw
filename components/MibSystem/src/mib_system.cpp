@@ -79,8 +79,11 @@ bool MibSystem::initialize_pubsub() {
     joystick_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
       mib_.rtps_participant(),
       espp::Subscriber<rammp::XYTwist>::Config{
-        .topic = rammp::kJoystickXYTwist.name,
-        .type_name = rammp::kJoystickXYTwist.type,
+        // ROS 2 (Jetson) naming for the link test: ROS 2 maps /a/b onto the DDS
+        // topic rt/a/b and pkg/msg/Type onto pkg::msg::dds_::Type_. The physical
+        // joystick still uses rammp::kJoystickXYTwist and will not match this.
+        .topic = "rt/" RAMMP_TOPIC_JOYSTICK_XY_TWIST,
+        .type_name = "rammp_msgs::msg::dds_::XYTwist_",
           .reliability = Reliability::BEST_EFFORT,
           .on_message = [this](const rammp::XYTwist &sample) {
             handle_joystick_message(sample);
@@ -124,8 +127,9 @@ bool MibSystem::initialize_pubsub() {
   status_publisher_ = std::make_unique<espp::Publisher<MIB::MibStatus>>(
       mib_.rtps_participant(),
       espp::Publisher<MIB::MibStatus>::Config{
-          .topic = MIB::kMibStatus.name,
-          .type_name = MIB::kMibStatus.type,
+          // ROS 2 (Jetson) naming for the link test; see the joystick subscriber.
+          .topic = "rt/" RAMMP_TOPIC_MIB_STATUS,
+          .type_name = "rammp_msgs::msg::dds_::MibStatus_",
           .reliability = Reliability::BEST_EFFORT});
 
   if (!status_publisher_->is_valid()) {
