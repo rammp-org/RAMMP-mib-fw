@@ -66,19 +66,25 @@ Ownership follows the system state rather than a client policy:
 - Seat commands only happen in IDLE with nothing moving, so they need no
   ownership change.
 
-## What the base serves on the wire (planned)
+## What the base serves on the wire
 
 The subset of the arm's surface that the base needs, with the same types:
 
 | Arm surface | Type | Base equivalent |
 |---|---|---|
-| `/acquire_control` | `rammp_common_interfaces/AcquireControl`, seizes | same type, base namespace |
-| `/release_control` | `ReleaseControl`, token must match | same |
-| `/revoke_control` | `RevokeControl`, no token | same |
-| `/estop` | `EStop` topic, robot-wide | same topic, shared with the arm |
-| `/control_status` | `ControlStatus`, on change | same, base namespace |
-| `/setpoint/twist` | `TwistSetpoint`: geometry twist plus token | same, base namespace |
-| `arbitration_mode` | launch parameter | constant in `MIBconfig.hpp` |
+| `/acquire_control` | `rammp_common_interfaces/AcquireControl`, seizes | `/base/acquire_control` |
+| `/release_control` | `ReleaseControl`, token must match | `/base/release_control` |
+| `/revoke_control` | `RevokeControl`, no token | `/base/revoke_control` |
+| `/estop` | `EStop` topic, robot-wide | not served: the MIB's e-stop is estop-core's `rammp/estop` latch |
+| `/control_status` | `ControlStatus`, on change, latched | `/base/control_status`, on change and every second |
+| `/setpoint/twist` | `TwistSetpoint`: geometry twist plus token | `/base/setpoint/twist`, `rammp_base_interfaces/TwistSetpoint` |
+| `arbitration_mode` | launch parameter | `ArbitrationMode` in the Arbiter's config |
+
+Done: `components/ArbitrationServer` serves the first five rows' base column,
+with C++ mirrors of the types in rammp-rtps, and its example subscribes to the
+twist. `tools/ros2_bench` runs the arm's own arbitration conformance checks
+against it from ROS 2, unchanged, and passes them (bar the `/estop` ones,
+skipped).
 
 Not ported: the stream session services (`OpenStream`, `CloseStream`,
 `StreamStatus`, `ListControllers`). They exist on the arm because it has
@@ -86,21 +92,62 @@ several controllers at different rates and the client has to say which one it
 is opening. The base has one, and we control both publishers. Adding them later
 is additive.
 
-`TwistSetpoint` is moving out of `rammp_arm_interfaces` into a new
-`rammp_control_interfaces` package. The firmware side will take the C++ mirror
-from `rammp-rtps` once it lands; until then nothing in this repo depends on its
-final shape. The base also needs tokened `DriveCommand` and `SeatCommand`
+The base's `TwistSetpoint` landed in `rammp_base_interfaces` (rammp-interfaces-ros2
+dev), the same shape as the arm's. The base also needs tokened `DriveCommand` and `SeatCommand`
 types in `rammp_base_interfaces`, plus a `ModeCommand` the Jetson sends to ask
 the base for a control mode: MANUAL, COMBINED (the joystick drives with an
 alternative stick mapping while also controlling the arm), or AUTONOMOUS. New
 modes are enum values, not new messages.
 
 The espp RTPS service and pub/sub wrappers default to the ROS 2 wire protocol,
-so the MIB can serve these to ROS 2 clients with the unmodified
-`rammp_common_interfaces` types. To verify at implementation time: that espp's
-CDR layer serializes a 16-byte array the way ROS 2 expects, and whether an espp
-publisher can offer transient-local durability so `control_status` is latched
-like the arm's, or has to be resent periodically like `MibStatus`.
+so the MIB serves these to ROS 2 clients with the unmodified
+`rammp_common_interfaces` types.
+
+## On the wire
+
+Measured on the bench: the MIB on Ethernet behind a TP-Link TL-SG105 switch, a
+Mac running ROS 2 Jazzy (Fast DDS 2.14) through `tools/ros2_bench`.
+
+The two questions this section used to leave open:
+
+- **espp's CDR matches ROS 2.** An `AcquireControl` request serialized by espp
+  is byte-identical to rclpy's: `uint8[16]` is a fixed array with no length
+  prefix. On hardware, a token off by its last byte is refused and a twist of
+  doubles arrives intact.
+- **`control_status` reaches a late subscriber.** espp writers advertise
+  transient_local, and a ROS 2 subscriber asking for transient_local gets the
+  status within about 80 ms of matching. Unlike ROS latching it replays the
+  writer's whole history (up to 10 samples, oldest first), so a client must keep
+  the newest. The MIB also resends every second.
+
+What it took for a ROS 2 host to reach the MIB at all, each one hiding the next:
+
+1. **The network has to deliver the discovery multicast.** Behind the bench's
+   TP-Link TL-SG105, packets the MIB sends to a multicast group it has itself
+   joined never reach the host; packets to any other group do, and the moment
+   the MIB leaves a group they arrive again. RTPS announces participants on
+   239.255.0.1, which the MIB always joins, so the host never discovers the MIB,
+   though the MIB discovers the host. Cabled directly, the announcements arrive
+   every 2 s and everything works on stock espp. This is network configuration,
+   not the firmware: the switch between the Jetson and the MIB must forward the
+   group (IGMP snooping off, or a querier), and the host's DDS must be bound to
+   the right interface (`tools/ros2_bench/README.md#network`).
+2. **IPv4 reassembly was off.** Fast DDS packs its endpoint announcements into
+   datagrams past the 1500-byte MTU. lwIP dropped the fragments, every
+   retransmit was the same datagram, and discovery stalled before the service
+   endpoints. `CONFIG_LWIP_IP4_REASSEMBLY=y`.
+3. **espp's limits are sized for espp peers.** Three services and the status
+   need more reliable endpoints than the default 5; every ROS 2 client takes a
+   proxy slot on each endpoint it matches; ROS 2 parameter-service names exceed
+   64 bytes. The settings are in `components/ArbitrationServer/README.md`.
+4. **Endpoints created after a deletion sometimes never match.** A ROS 2 node
+   that creates and destroys a subscription in a loop gets every third one
+   unmatched, indefinitely, and sometimes none at all afterwards; a new process
+   matches again. Reproduced on stock espp over a direct cable; the same loop
+   against a Fast DDS publisher matches every time. Clients made once, as the
+   orchestrator makes them, are unaffected; `ros2` CLI tools and clients made
+   per call are not. To be raised with espp
+   (`tools/ros2_bench/repro/endpoint_churn.py`).
 
 ## Modes, stick interrupts, and history (planned)
 
@@ -170,11 +217,11 @@ twist cannot command a jerk or exceed what the chair allows a human.
 ## Roadmap
 
 1. **`Arbiter` component.** Done: `components/Arbiter`, with an example.
-2. **RTPS server face.** Services, e-stop subscription with the clear age
-   check, `control_status` publisher. Needs the C++ mirrors of the
-   `rammp_common_interfaces` types in `rammp-rtps`.
-3. **Twist input.** Subscribe to the base's `TwistSetpoint` once it has its
-   final home, convert to the drive controller's input.
+2. **RTPS server face.** Done: `components/ArbitrationServer`, tested from
+   ROS 2 on hardware. Not done: an `/estop` subscription; the MIB's e-stop is
+   estop-core's latch (RAMMP-mib-fw#36, #39), which should latch the Arbiter.
+3. **Twist input.** The type is settled and the example subscribes to it;
+   converting it to the drive controller's input is left for the wiring.
 4. **Joystick client.** The in-process owner described above.
 5. **Wire into `MibSystem`.** Handlers call `run_if_admitted`; `on_halt` feeds
    the state machine; the deadline runs on the state task; `arbitration_mode`
