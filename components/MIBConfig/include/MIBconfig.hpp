@@ -94,8 +94,8 @@ inline constexpr DriveProfileConfig drive_profile_normal{
     .max_angular_acceleration_radps2 = 2.926f,
     .max_linear_jerk_mps3 = 9.89f,
     .max_angular_jerk_radps3 = 29.26f,
-    .stopping_linear_acceleration_mps2 = 1.662f,
-    .stopping_angular_acceleration_radps2 = 4.000f,
+    .stopping_linear_acceleration_mps2 = 1.662f * 30.0f,
+    .stopping_angular_acceleration_radps2 = 4.000f * 10.0f,
     .max_centripetal_acceleration_mps2 = 1.500f,
 };
 
