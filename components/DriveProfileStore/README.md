@@ -29,7 +29,8 @@ firmware update that changes a default reaches every profile nobody has tuned.
 
 `invalid_field()` (`DriveController/include/drive_profile.hpp`) applies the
 checks `espp::TrajectoryPlanner::set_config()` makes, plus the ones it lacks:
-every field finite, jerk and centripetal limits not negative.
+every field finite, jerk and centripetal limits not negative. There are
+deliberately no upper limits: the clinician tuning the chair sets the speeds.
 
 ## Changing a profile over RTPS
 
