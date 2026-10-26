@@ -39,6 +39,6 @@ extern "C" void app_main(void) {
   });
   task.start();
 
-  MibSystem system;
-  system.start(); // blocks forever
+  // MibSystem system;
+  // system.start(); // blocks forever
 }

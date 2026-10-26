@@ -1,6 +1,22 @@
 # components/imu/CMakeLists.txt
-idf_component_register(
-  SRCS "src/imu.cpp"
-  INCLUDE_DIRS "."
-  REQUIRES adithya-187326__bno055 driver logger
+# The following lines of boilerplate have to be in your project's CMakeLists
+# in this exact order for cmake to work correctly
+cmake_minimum_required(VERSION 3.20)
+
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# add the component directories that we want to use
+set(EXTRA_COMPONENT_DIRS
+  "../../"
 )
+
+set(
+  COMPONENTS
+  "main esptool_py IMU"
+  CACHE STRING
+  "List of components to include"
+  )
+
+project(imu_example)
+
+set(CMAKE_CXX_STANDARD 20)
