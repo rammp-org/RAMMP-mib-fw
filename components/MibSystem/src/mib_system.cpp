@@ -6,7 +6,6 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
-#include "esp_system.h"
 
 using namespace std::chrono_literals;
 
@@ -34,11 +33,7 @@ void MibSystem::start() {
   }
 
   if (state_.load() == SystemState::ERROR) {
-    // Nothing to publish. The state task reboots the MIB after error_reboot_delay; keep
-    // this object (and that task) alive until it does.
-    while (true) {
-      std::this_thread::sleep_for(2s);
-    }
+    return;
   }
 
   publication_task_ = std::make_unique<espp::Task>(espp::Task::Config{
@@ -492,24 +487,8 @@ void MibSystem::run_state_step() {
     run_estop_step();
     break;
   case SystemState::ERROR:
-    run_error_step();
+    logger_.error("System state: ERROR - running error placeholder");
     break;
-  }
-}
-
-void MibSystem::run_error_step() {
-  const auto now = std::chrono::steady_clock::now();
-  if (error_entered_at_ == std::chrono::steady_clock::time_point{}) {
-    error_entered_at_ = now;
-    logger_.error("System state: ERROR - rebooting in {} s to retry bring-up",
-                  std::chrono::duration_cast<std::chrono::seconds>(
-                      mib::config::error_reboot_delay)
-                      .count());
-    return;
-  }
-  if (now - error_entered_at_ >= mib::config::error_reboot_delay) {
-    logger_.error("Rebooting MIB");
-    esp_restart();
   }
 }
 

@@ -119,11 +119,6 @@ private:
   /// \note Runs on the state task.
   void run_estop_step();
 
-  /// Reboot the MIB once mib::config::error_reboot_delay has passed in ERROR.
-  /// Bring-up then runs again from power-on, which is the only recovery from ERROR.
-  /// \note Runs on the state task.
-  void run_error_step();
-
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
@@ -162,7 +157,6 @@ private:
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::chrono::steady_clock::time_point estop_entered_at_{}; ///< When ESTOP was last entered.
-  std::chrono::steady_clock::time_point error_entered_at_{}; ///< First ERROR step; zero until then.
   mutable std::mutex estop_mutex_;             ///< Protects estop_entered_at_.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
