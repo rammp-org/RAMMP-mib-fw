@@ -8,7 +8,8 @@ Usage:
   python fit_drive_response.py BAG_DIR [--out OUT_DIR] [--centripetal-limit 1.5]
 
 Prints a DriveProfileConfig block for components/MIBConfig/include/MIBconfig.hpp
-and writes fit.png and params.json to OUT_DIR.
+and writes fit.png, params.json and profile.json (the block's values, for
+tools/drive_profile) to OUT_DIR.
 """
 
 import argparse
@@ -69,21 +70,28 @@ def unidentified(log, linear, turn, p: Params, simulate_kwargs, tolerance=0.002)
     return names
 
 
-def config_block(p: Params, name, wheel_diameter, wheel_separation, centripetal_limit):
+def profile_values(p: Params, wheel_diameter, wheel_separation, centripetal_limit):
+    """The fit as DriveProfileConfig fields, in chassis units, rounded to 3 places."""
     radius = wheel_diameter / 2.0
     turn_scale = radius / (wheel_separation / 2.0)  # turn wheel rad/s -> chassis rad/s
-    return f"""inline constexpr DriveProfileConfig {name}{{
-    .max_linear_velocity_mps = {p.forward * radius:.3f}f,
-    .max_reverse_linear_velocity_mps = {p.forward * p.reverse_scale * radius:.3f}f,
-    .max_angular_velocity_radps = {p.turn * turn_scale:.3f}f,
-    .max_linear_acceleration_mps2 = {p.linear_accel * radius:.3f}f,
-    .max_angular_acceleration_radps2 = {p.turn_accel * turn_scale:.3f}f,
-    .max_linear_jerk_mps3 = 0.0f,
-    .max_angular_jerk_radps3 = 0.0f,
-    .stopping_linear_acceleration_mps2 = {p.linear_stop_accel * radius:.3f}f,
-    .stopping_angular_acceleration_radps2 = {p.turn_stop_accel * turn_scale:.3f}f,
-    .max_centripetal_acceleration_mps2 = {centripetal_limit:.3f}f,
-}};"""
+    values = {
+        "max_linear_velocity_mps": p.forward * radius,
+        "max_reverse_linear_velocity_mps": p.forward * p.reverse_scale * radius,
+        "max_angular_velocity_radps": p.turn * turn_scale,
+        "max_linear_acceleration_mps2": p.linear_accel * radius,
+        "max_angular_acceleration_radps2": p.turn_accel * turn_scale,
+        "max_linear_jerk_mps3": 0.0,
+        "max_angular_jerk_radps3": 0.0,
+        "stopping_linear_acceleration_mps2": p.linear_stop_accel * radius,
+        "stopping_angular_acceleration_radps2": p.turn_stop_accel * turn_scale,
+        "max_centripetal_acceleration_mps2": centripetal_limit,
+    }
+    return {key: round(value, 3) for key, value in values.items()}
+
+
+def config_block(values, name):
+    fields = "".join(f"    .{key} = {value:.3f}f,\n" for key, value in values.items())
+    return f"inline constexpr DriveProfileConfig {name}{{\n{fields}}};"
 
 
 def plot_fit(log, linear, turn, out, path):
@@ -126,8 +134,10 @@ def main():
     p = fit(log, linear, turn, simulate_kwargs)
     out = simulate(p, log.t, log.linear_stick, log.side_stick, **simulate_kwargs)
 
+    values = profile_values(p, args.wheel_diameter, args.wheel_separation, args.centripetal_limit)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "params.json").write_text(json.dumps(asdict(p), indent=2))
+    (args.out / "profile.json").write_text(json.dumps(values, indent=2))
     plot_fit(log, linear, turn, out, args.out / "fit.png")
 
     print("Fitted parameters (wheel units):")
@@ -141,9 +151,9 @@ def main():
         print(f"\nUnidentified by this recording (±30% changes RMS error <0.2%): {', '.join(loose)}."
               "\nTheir fitted values are arbitrary; set them from other evidence.")
     print(f"\nMIBconfig.hpp block ({args.wheel_diameter} m wheels, {args.wheel_separation} m separation):")
-    print(config_block(p, args.profile_name, args.wheel_diameter, args.wheel_separation,
-                       args.centripetal_limit))
-    print(f"\nWrote {args.out / 'fit.png'} and {args.out / 'params.json'}")
+    print(config_block(values, args.profile_name))
+    print(f"\nWrote {args.out / 'fit.png'}, {args.out / 'params.json'} and {args.out / 'profile.json'}"
+          "\n(send profile.json to a MIB with tools/drive_profile/drive_profile.py set --from-json)")
 
 
 if __name__ == "__main__":
