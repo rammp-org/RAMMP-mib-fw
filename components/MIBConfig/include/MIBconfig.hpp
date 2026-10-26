@@ -14,6 +14,12 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
 
+/// @brief How long the system holds ESTOP before returning to IDLE.
+inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
+
+/// @brief How long the system stays in ERROR before rebooting the MIB to retry bring-up.
+inline constexpr auto error_reboot_delay = std::chrono::seconds{10};
+
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;
 

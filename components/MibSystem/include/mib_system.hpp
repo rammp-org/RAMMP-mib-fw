@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -37,8 +38,31 @@ private:
     IDLE,          ///< Initialized and waiting; drive is disabled.
     CALIBRATE,     ///< Running a calibration routine.
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
+    AUTONOMOUS,    ///< The Jetson drives the base; any joystick input ends it (back to IDLE).
+    SHARED,        ///< Shared control; the joystick commands nothing, even when touched.
+    ESTOP,         ///< Emergency stop; everything halts, then back to IDLE.
     ERROR,         ///< Initialization or runtime failure; not operational.
   };
+
+  /// Guards shared with the state-machine model (tools/hfsm/mib_system.json).
+  /// \return True if the command asks to enable driving.
+  static bool drive_enable_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::ENABLE;
+  }
+  /// \return True if the command asks to disable driving.
+  static bool drive_disable_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::DISABLE;
+  }
+  /// \return True if the command changes the profile while already driving (an ENABLE
+  ///         received in DRIVE_ENABLED).
+  static bool profile_change_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::ENABLE;
+  }
+  /// \return True if the stick is off centre or any button is pressed.
+  static bool joystick_touched(const rammp::XYTwist &sample) {
+    return sample.x != 0.0f || sample.y != 0.0f || sample.twist != 0.0f ||
+           sample.buttons != rammp::Buttons::NONE;
+  }
 
   /// Create the RTPS publishers and subscribers.
   /// \note The RTPS participant must already be started.
@@ -48,6 +72,57 @@ private:
   /// Run one iteration of the state machine, acting on the current state.
   /// \note Runs on the state task.
   void run_state_step();
+
+  /// Enter ESTOP from the current state. Stops the drive and (re)starts the
+  /// mib::config::estop_hold_duration timer; ESTOP then returns to IDLE.
+  /// \note Entry point for the robot-wide e-stop (estop-core, PR #36). Ignored in INIT
+  ///       (no e-stop can arrive yet, and the blocking INIT step would overwrite the
+  ///       state) and in ERROR (bring-up failed; not operational). Safe to call from an
+  ///       RTPS receive thread.
+  void enter_estop();
+
+  /// Jetson control requests. The RTPS messages (AutonomousRequest, AutonomousStop,
+  /// SharedRequest, SharedStop) are not defined yet and their names may change, so these
+  /// take no payload and nothing calls them. They run on an RTPS receive thread once wired.
+  /// Autonomy starts from IDLE or DRIVE_ENABLED and always ends in IDLE, so driving has
+  /// to be re-enabled from the joystick afterwards.
+  /// IDLE or DRIVE_ENABLED -> AUTONOMOUS. Ignored elsewhere.
+  void handle_autonomous_request();
+  /// AUTONOMOUS -> IDLE. Ignored elsewhere.
+  void handle_autonomous_stop();
+  /// IDLE or DRIVE_ENABLED -> SHARED. Ignored elsewhere.
+  void handle_shared_request();
+  /// SHARED -> IDLE. Ignored elsewhere.
+  void handle_shared_stop();
+
+  /// Enter AUTONOMOUS or SHARED from a manual state.
+  /// \return False (and logs) if the current state is not IDLE or DRIVE_ENABLED.
+  bool enter_autonomy(SystemState autonomy_state, const char *name);
+
+  /// Leave autonomy: stop the drive and go to IDLE.
+  void leave_autonomy(const char *reason);
+
+  /// Handle one drive setpoint from the Jetson (autonomy).
+  /// \param linear_mps Forward velocity in metres per second.
+  /// \param angular_radps Angular velocity in radians per second, positive counter-clockwise.
+  /// \note Acted on in AUTONOMOUS and SHARED only. The RTPS topic for this is not defined
+  ///       yet, so nothing calls this. Runs on an RTPS receive thread once it does.
+  void handle_autonomy_setpoint(float linear_mps, float angular_radps);
+
+  /// Enter CALIBRATE from IDLE.
+  /// \note The trigger (a joystick command or another source) is not finalized; nothing
+  ///       calls this yet. Only valid from IDLE.
+  void enter_calibrate();
+
+  /// Leave ESTOP for IDLE once the hold time has elapsed. Nothing is resumed: driving must
+  /// be re-enabled and the Jetson must request control again.
+  /// \note Runs on the state task.
+  void run_estop_step();
+
+  /// Reboot the MIB once mib::config::error_reboot_delay has passed in ERROR.
+  /// Bring-up then runs again from power-on, which is the only recovery from ERROR.
+  /// \note Runs on the state task.
+  void run_error_step();
 
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
@@ -86,6 +161,9 @@ private:
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
+  std::chrono::steady_clock::time_point estop_entered_at_{}; ///< When ESTOP was last entered.
+  std::chrono::steady_clock::time_point error_entered_at_{}; ///< First ERROR step; zero until then.
+  mutable std::mutex estop_mutex_;             ///< Protects estop_entered_at_.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.

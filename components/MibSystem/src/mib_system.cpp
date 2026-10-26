@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
+#include "esp_system.h"
 
 using namespace std::chrono_literals;
 
@@ -33,7 +34,11 @@ void MibSystem::start() {
   }
 
   if (state_.load() == SystemState::ERROR) {
-    return;
+    // Nothing to publish. The state task reboots the MIB after error_reboot_delay; keep
+    // this object (and that task) alive until it does.
+    while (true) {
+      std::this_thread::sleep_for(2s);
+    }
   }
 
   publication_task_ = std::make_unique<espp::Task>(espp::Task::Config{
@@ -171,11 +176,75 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
     // (a left turn), so x is negated.
     drive_controller_.set_target(sample.y, -sample.x);
     break;
+  case SystemState::AUTONOMOUS:
+    // Touching the joystick ends autonomy and hands control back to the joystick.
+    if (joystick_touched(sample)) {
+      leave_autonomy("joystick touched in AUTONOMOUS");
+    }
+    break;
+  case SystemState::SHARED:
+    // The joystick commands nothing in shared mode, even when touched. Drive input
+    // comes from the Jetson through handle_autonomy_setpoint().
+    break;
+  case SystemState::CALIBRATE:
+    // The joystick is ignored while calibrating.
+    break;
   case SystemState::INIT:
   case SystemState::IDLE:
-  case SystemState::CALIBRATE:
+  case SystemState::ESTOP:
   case SystemState::ERROR:
     drive_controller_.stop();
+    break;
+  }
+}
+
+bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
+  const auto current_state = state_.load();
+  if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
+    logger_.warn("Ignoring {} request outside IDLE or DRIVE_ENABLED", name);
+    return false;
+  }
+  drive_controller_.stop();
+  state_.store(autonomy_state);
+  logger_.info("Entering {} - placeholder", name);
+  return true;
+}
+
+void MibSystem::leave_autonomy(const char *reason) {
+  drive_controller_.stop();
+  state_.store(SystemState::IDLE);
+  logger_.info("Autonomy ended ({}) - back to IDLE", reason);
+}
+
+void MibSystem::handle_autonomous_request() { enter_autonomy(SystemState::AUTONOMOUS, "AUTONOMOUS"); }
+
+void MibSystem::handle_autonomous_stop() {
+  if (state_.load() != SystemState::AUTONOMOUS) {
+    logger_.warn("Ignoring autonomous stop outside AUTONOMOUS state");
+    return;
+  }
+  leave_autonomy("AutonomousStop");
+}
+
+void MibSystem::handle_shared_request() { enter_autonomy(SystemState::SHARED, "SHARED"); }
+
+void MibSystem::handle_shared_stop() {
+  if (state_.load() != SystemState::SHARED) {
+    logger_.warn("Ignoring shared stop outside SHARED state");
+    return;
+  }
+  leave_autonomy("SharedStop");
+}
+
+void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) {
+  switch (state_.load()) {
+  case SystemState::AUTONOMOUS:
+  case SystemState::SHARED:
+    // Placeholder: the Jetson setpoint drives the base in both autonomy states.
+    logger_.debug("Autonomy setpoint linear={} angular={} - placeholder", linear_mps,
+                  angular_radps);
+    break;
+  default:
     break;
   }
 }
@@ -212,8 +281,8 @@ void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
 
 void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   const auto current_state = state_.load();
-  switch (command.request) {
-  case rammp::DriveRequest::ENABLE:
+  if (drive_enable_requested(command)) {
+    // In DRIVE_ENABLED this is profile_change_requested(): same request, profile only.
     if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
       logger_.warn("Ignoring drive enable command outside IDLE state");
       return;
@@ -229,19 +298,17 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     } else {
       logger_.info("Drive profile updated to {}", static_cast<uint8_t>(command.profile));
     }
-    break;
-  case rammp::DriveRequest::DISABLE:
-    if (current_state != SystemState::DRIVE_ENABLED) {
-      logger_.warn("Ignoring drive disable command outside DRIVE_ENABLED state");
+  } else if (drive_disable_requested(command)) {
+    if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
+        current_state != SystemState::SHARED) {
+      logger_.warn("Ignoring drive disable command outside a drive state");
       return;
     }
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
-    break;
-  default:
+  } else {
     logger_.warn("Ignoring unknown drive request {}", static_cast<uint8_t>(command.request));
-    return;
   }
 }
 
@@ -262,6 +329,19 @@ void MibSystem::publish_system_state() {
     break;
   case SystemState::DRIVE_ENABLED:
     status.systemState = MIB::MibSystemState::ENABLED;
+    break;
+  case SystemState::AUTONOMOUS:
+    status.systemState = MIB::MibSystemState::ENABLED;
+    status.status_text = "AUTONOMOUS";
+    break;
+  case SystemState::SHARED:
+    status.systemState = MIB::MibSystemState::ENABLED;
+    status.status_text = "SHARED";
+    break;
+  case SystemState::ESTOP:
+    status.systemState = MIB::MibSystemState::ERROR;
+    status.status_text = "ESTOP";
+    status.error_message = "Emergency stop";
     break;
   case SystemState::ERROR:
     status.systemState = MIB::MibSystemState::ERROR;
@@ -304,6 +384,15 @@ void MibSystem::log_drive_status() {
     break;
   case SystemState::DRIVE_ENABLED:
     state_name = "DRIVE_ENABLED";
+    break;
+  case SystemState::AUTONOMOUS:
+    state_name = "AUTONOMOUS";
+    break;
+  case SystemState::SHARED:
+    state_name = "SHARED";
+    break;
+  case SystemState::ESTOP:
+    state_name = "ESTOP";
     break;
   case SystemState::ERROR:
     state_name = "ERROR";
@@ -386,14 +475,80 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: IDLE - running idle placeholder");
     break;
   case SystemState::CALIBRATE:
-    logger_.debug("System state: CALIBRATE - running calibration placeholder");
+    // Placeholder routine: completes at once. A real calibration stays here until done.
+    logger_.info("System state: CALIBRATE - calibration placeholder done, returning to IDLE");
+    state_.store(SystemState::IDLE);
     break;
   case SystemState::DRIVE_ENABLED:
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
+  case SystemState::AUTONOMOUS:
+    logger_.debug("System state: AUTONOMOUS - running autonomous placeholder");
+    break;
+  case SystemState::SHARED:
+    logger_.debug("System state: SHARED - running shared control placeholder");
+    break;
+  case SystemState::ESTOP:
+    run_estop_step();
+    break;
   case SystemState::ERROR:
-    logger_.error("System state: ERROR - running error placeholder");
+    run_error_step();
     break;
   }
+}
 
+void MibSystem::run_error_step() {
+  const auto now = std::chrono::steady_clock::now();
+  if (error_entered_at_ == std::chrono::steady_clock::time_point{}) {
+    error_entered_at_ = now;
+    logger_.error("System state: ERROR - rebooting in {} s to retry bring-up",
+                  std::chrono::duration_cast<std::chrono::seconds>(
+                      mib::config::error_reboot_delay)
+                      .count());
+    return;
+  }
+  if (now - error_entered_at_ >= mib::config::error_reboot_delay) {
+    logger_.error("Rebooting MIB");
+    esp_restart();
+  }
+}
+
+void MibSystem::enter_estop() {
+  const auto current_state = state_.load();
+  if (current_state == SystemState::INIT || current_state == SystemState::ERROR) {
+    logger_.warn("Ignoring e-stop while system is in INIT or ERROR");
+    return;
+  }
+
+  drive_controller_.stop();
+  {
+    std::lock_guard<std::mutex> lock(estop_mutex_);
+    estop_entered_at_ = std::chrono::steady_clock::now();
+  }
+  state_.store(SystemState::ESTOP);
+  logger_.warn("E-stop: entering ESTOP, back to IDLE after {} ms",
+               std::chrono::duration_cast<std::chrono::milliseconds>(
+                   mib::config::estop_hold_duration)
+                   .count());
+}
+
+void MibSystem::enter_calibrate() {
+  if (state_.load() != SystemState::IDLE) {
+    logger_.warn("Ignoring calibrate request outside IDLE state");
+    return;
+  }
+  drive_controller_.stop();
+  state_.store(SystemState::CALIBRATE);
+  logger_.info("Entering CALIBRATE - placeholder");
+}
+
+void MibSystem::run_estop_step() {
+  {
+    std::lock_guard<std::mutex> lock(estop_mutex_);
+    if (std::chrono::steady_clock::now() - estop_entered_at_ < mib::config::estop_hold_duration) {
+      return;
+    }
+  }
+  state_.store(SystemState::IDLE);
+  logger_.info("E-stop hold elapsed - back to IDLE");
 }
