@@ -326,16 +326,13 @@ void MibSystem::publish_system_state() {
     status.systemState = MIB::MibSystemState::ENABLED;
     break;
   case SystemState::AUTONOMOUS:
-    status.systemState = MIB::MibSystemState::ENABLED;
-    status.status_text = "AUTONOMOUS";
+    status.systemState = MIB::MibSystemState::AUTONOMOUS;
     break;
   case SystemState::SHARED:
-    status.systemState = MIB::MibSystemState::ENABLED;
-    status.status_text = "SHARED";
+    status.systemState = MIB::MibSystemState::SHARED;
     break;
   case SystemState::ESTOP:
-    status.systemState = MIB::MibSystemState::ERROR;
-    status.status_text = "ESTOP";
+    status.systemState = MIB::MibSystemState::ESTOP;
     status.error_message = "Emergency stop";
     break;
   case SystemState::ERROR:
