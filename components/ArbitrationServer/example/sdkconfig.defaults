@@ -1,0 +1,32 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The RAMMP MIB boards are pre-v3 silicon.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Each reliable endpoint takes a stateful slot, and SEDP keeps 2 writers and 2 readers.
+# The server needs 4 writers (status + 3 services) and 3 readers, past the default 5.
+CONFIG_RTPS_LIMIT_NUM_STATEFUL_WRITERS=8
+CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS=8
+
+# A ROS 2 node announces its parameter services with names past the default 64
+# bytes (rq/<ns>/<node>/describe_parametersRequest). The MIB must parse them to get
+# to the endpoints after them in the same discovery stream.
+CONFIG_RTPS_LIMIT_MAX_TOPICNAME_LENGTH=128
+CONFIG_RTPS_LIMIT_MAX_TYPENAME_LENGTH=128
+
+# Fast DDS batches discovery data into datagrams past the 1500-byte MTU, so they
+# arrive IP-fragmented. Without reassembly lwIP drops them, and every retransmit is
+# the same oversized datagram, so discovery of a ROS 2 node stalls for good.
+CONFIG_LWIP_IP4_REASSEMBLY=y
+CONFIG_LWIP_IP_REASS_MAX_PBUFS=48
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
+
+# Each ROS 2 client is a remote reader on the reply writer (and a remote writer on the
+# request reader). The Jetson runs several: the orchestrator, an operator tool, the CLI.
+CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER=16
+CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER=16
