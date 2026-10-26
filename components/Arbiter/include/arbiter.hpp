@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <utility>
@@ -33,6 +34,11 @@ enum class HaltReason : uint8_t {
   OWNERSHIP_SEIZED,  ///< A new grant took the base from its owner; the new owner acts next.
   EMERGENCY_STOP,    ///< The software e-stop was engaged.
 };
+
+/// @brief Name of a halt reason, for logs.
+/// @param reason The halt reason.
+/// @return "OWNERSHIP_REVOKED", "OWNERSHIP_SEIZED", or "EMERGENCY_STOP".
+const char *to_string(HaltReason reason);
 
 /// @brief Result of a grant request. Mirrors the AcquireControl service response.
 struct GrantResult {
@@ -77,25 +83,26 @@ struct ArbitrationStatus {
 /// separate from MibSystem's state machine, and testable in its example with
 /// nothing but a counter standing in for the drive.
 ///
-/// Lock discipline, carried over from the arm driver:
+/// Lock discipline, carried over from the arm driver (the reasoning is in arbiter.cpp):
 ///
 /// - The mutex IS held across the command inside run_if_admitted(), so
-///   admit-and-deliver is atomic against revoke() and estop(). Otherwise a
-///   command admitted a moment before a revoke could land AFTER the halt and
-///   restart a stopped base.
-/// - The mutex is NOT held across on_halt() on the ownership paths, so a halt
-///   handler may take its own locks freely.
-/// - estop() never waits for the mutex. It latches an atomic flag first, so
-///   admission is refused from that instant whoever holds the lock, then
-///   delivers the halt, and only then takes the mutex for bookkeeping. It then
-///   delivers the halt a second time UNDER the mutex, which is what stops a
-///   command admitted just before the latch from landing after the first halt.
-///   So `on_halt` must be idempotent, and it must never call back into the
-///   Arbiter.
+///   admit-and-deliver is atomic against revoke() and estop().
+/// - estop() never waits for the mutex: an atomic latch refuses admission first.
+///
+/// Rules for `on_halt`, which follow from that:
+///
+/// - It must be idempotent. An e-stop delivers it twice.
+/// - It must never call back into the Arbiter. The second e-stop delivery runs
+///   under the Arbiter's mutex and would deadlock.
+/// - It may be called from several threads at once (an e-stop alongside a seize,
+///   or alongside a command inside run_if_admitted()), so what it touches must be
+///   thread-safe.
+/// - Any lock it takes is ordered AFTER the Arbiter's mutex. Never call grant(),
+///   release(), revoke(), estop() or run_if_admitted() while holding such a lock.
 ///
 /// What is NOT here, on purpose: the RTPS services and status topic (the
 /// "server" face), the e-stop clear age check, and the in-firmware joystick
-/// client. Those build on this class; see components/Arbiter/README.md.
+/// client. Those build on this class; see docs/arbitration.md.
 class Arbiter : public espp::BaseComponent {
 public:
   /// Called whenever the base must stop. See the class notes for the rules.
@@ -105,8 +112,9 @@ public:
   struct Config {
     ArbitrationMode mode{ArbitrationMode::ENFORCED}; ///< Fixed for the Arbiter's lifetime.
     halt_fn on_halt{};                               ///< Stops the base. May be empty.
-    /// 0 mints tokens from the hardware RNG. Any other value seeds a deterministic
-    /// generator instead, for a bench test that wants repeatable tokens.
+    /// 0 mints tokens from esp_fill_random(). Any other value seeds a deterministic
+    /// generator instead, for a test that wants repeatable tokens. Never seed on the
+    /// robot: the same seed reissues the same tokens after every reboot.
     uint64_t seed{0};
     espp::Logger::Verbosity log_level{espp::Logger::Verbosity::INFO}; ///< Log verbosity.
   };
@@ -115,13 +123,19 @@ public:
   /// @param config Mode, halt callback, and token seed.
   explicit Arbiter(const Config &config);
 
-  /// @brief Grant control of the base to one owner, minting a fresh token.
+  /// @brief Grant control of the base to one owner.
   /// @param owner_id Human-readable label, reported in status().
+  /// @param token A key to adopt instead of minting one, so an orchestrator can share
+  ///        one key across the arm and the base. std::nullopt mints a fresh token.
   /// @return The token and generation on success; accepted=false with a message
-  ///         if the e-stop is latched.
+  ///         if the e-stop is latched, or if `token` is all-zero.
+  /// @note An all-zero `token` is refused before anything changes: the current owner
+  ///       keeps the base and nothing halts. All-zero is what an untokened command
+  ///       carries, so adopting it would admit every such command.
   /// @note SEIZES. A current owner is halted (on_halt with OWNERSHIP_SEIZED) and
-  ///       dispossessed first. A re-grant is never a silent swap under a moving base.
-  GrantResult grant(const std::string &owner_id);
+  ///       dispossessed first. A re-grant is never a silent swap under a moving base,
+  ///       including when two grants race: each one seizes from the other.
+  GrantResult grant(const std::string &owner_id, const std::optional<Token> &token = std::nullopt);
 
   /// @brief Release control you hold.
   /// @param token The token from your grant.

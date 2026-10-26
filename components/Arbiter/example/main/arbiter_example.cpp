@@ -19,18 +19,6 @@ std::string hex(const mib::Token &token) {
   return out;
 }
 
-const char *name(mib::HaltReason reason) {
-  switch (reason) {
-  case mib::HaltReason::OWNERSHIP_REVOKED:
-    return "OWNERSHIP_REVOKED";
-  case mib::HaltReason::OWNERSHIP_SEIZED:
-    return "OWNERSHIP_SEIZED";
-  case mib::HaltReason::EMERGENCY_STOP:
-    return "EMERGENCY_STOP";
-  }
-  return "UNKNOWN";
-}
-
 } // namespace
 
 extern "C" void app_main(void) {
@@ -45,7 +33,7 @@ extern "C" void app_main(void) {
       .on_halt =
           [&](mib::HaltReason reason) {
             ++halts;
-            logger.warn("  on_halt({}) -> the drive would stop here", name(reason));
+            logger.warn("  on_halt({}) -> the drive would stop here", mib::to_string(reason));
           },
   });
 

@@ -2,7 +2,9 @@
 
 #include <cstring>
 
+#if defined(ESP_PLATFORM)
 #include "esp_random.h"
+#endif
 
 namespace mib {
 
@@ -14,12 +16,38 @@ Arbiter::Arbiter(const Config &config)
     , rng_(config.seed) {
   logger_.info("Arbiter ready: mode={}, no owner",
                mode_ == ArbitrationMode::ENFORCED ? "ENFORCED" : "DISABLED");
+  if (!use_hardware_rng_) {
+    logger_.warn("Tokens are seeded ({}): repeatable, and reissued after a reboot. Tests only.",
+                 config.seed);
+  }
 }
 
+const char *to_string(HaltReason reason) {
+  switch (reason) {
+  case HaltReason::OWNERSHIP_REVOKED:
+    return "OWNERSHIP_REVOKED";
+  case HaltReason::OWNERSHIP_SEIZED:
+    return "OWNERSHIP_SEIZED";
+  case HaltReason::EMERGENCY_STOP:
+    return "EMERGENCY_STOP";
+  }
+  return "UNKNOWN";
+}
+
+// esp_fill_random() on the ESP32-P4 (no RF) is seeded with entropy by the bootloader
+// and is not a continuous true RNG after that. That is enough here: a token is a
+// mistake boundary, and only has to differ across grants and across reboots.
 Token Arbiter::mint() {
   Token token{};
   if (use_hardware_rng_) {
+#if defined(ESP_PLATFORM)
     esp_fill_random(token.data(), token.size());
+#else
+    std::random_device device;
+    for (auto &byte : token) {
+      byte = static_cast<uint8_t>(device());
+    }
+#endif
     return token;
   }
   const uint64_t a = rng_();
@@ -47,40 +75,38 @@ void Arbiter::halt(HaltReason reason) {
   }
 }
 
-GrantResult Arbiter::grant(const std::string &owner_id) {
-  bool need_halt = false;
-  std::string previous_owner;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
+GrantResult Arbiter::grant(const std::string &owner_id, const std::optional<Token> &token) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  // Refused before anything changes, and before the e-stop check: the request is
+  // invalid in any state.
+  if (token && *token == Token{}) {
+    logger_.warn("Grant to '{}' refused: all-zero token", owner_id);
+    return {false, Token{}, generation_, "all-zero token"};
+  }
+  // A re-grant is revoke-then-grant, never a silent swap under a moving base. The halt
+  // runs without the mutex, so another grant can take the base in that window; then
+  // this one seizes from it in turn. Mint only once no owner is found under the lock.
+  while (true) {
     if (estopped_.load(std::memory_order_acquire)) {
       logger_.warn("Grant to '{}' refused: e-stopped", owner_id);
       return {false, Token{}, generation_, "e-stopped"};
     }
-    // A re-grant is revoke-then-grant, never a silent swap under a moving base.
-    if (owned_) {
-      owned_ = false;
-      token_ = Token{};
-      previous_owner = owner_id_;
-      owner_id_.clear();
-      need_halt = true;
+    if (!owned_) {
+      break;
     }
-  }
-
-  if (need_halt) {
+    const std::string previous_owner = owner_id_;
+    owned_ = false;
+    token_ = Token{};
+    owner_id_.clear();
+    lock.unlock();
+    halt(HaltReason::OWNERSHIP_SEIZED); // mutex NOT held
     // Loud on purpose. In a high-trust system an unexpected seizure is exactly the
     // mistake arbitration exists to catch.
-    logger_.warn("Control SEIZED: '{}' is taking the base from '{}'; halting", owner_id,
-                 previous_owner);
-    halt(HaltReason::OWNERSHIP_SEIZED); // mutex NOT held
+    logger_.warn("Control SEIZED: '{}' took the base from '{}'; halted", owner_id, previous_owner);
+    lock.lock();
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (estopped_.load(std::memory_order_acquire)) {
-    // Raced an estop() during the halt window above.
-    logger_.warn("Grant to '{}' refused: e-stopped during handover", owner_id);
-    return {false, Token{}, generation_, "e-stopped"};
-  }
-  token_ = mint();
+  token_ = token ? *token : mint();
   owned_ = true;
   owner_id_ = owner_id;
   ++generation_;
@@ -131,8 +157,8 @@ void Arbiter::revoke() {
 //   4. re-latch and re-deliver the halt under the mutex. See the two comments inside.
 void Arbiter::estop() {
   estopped_.store(true, std::memory_order_release);
-  logger_.error("E-STOP engaged");
   halt(HaltReason::EMERGENCY_STOP); // unconditional: an e-stop always halts
+  logger_.error("E-STOP engaged");  // after the halt: a log line can block on the UART
 
   std::lock_guard<std::mutex> lock(mutex_);
   // Re-latch UNDER the mutex. The early store races an estop_clear() that already

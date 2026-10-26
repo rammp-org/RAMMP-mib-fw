@@ -38,7 +38,7 @@ A command is admitted iff the e-stop is clear **and** (the mode is `DISABLED`
 
 | Method | What it does | Halts? |
 |---|---|---|
-| `grant(owner_id)` | Mints a token for one owner. **Seizes**: a current owner is halted and dispossessed first. Refused while e-stopped. | if someone was owner |
+| `grant(owner_id[, token])` | Mints a token for one owner, or adopts a non-zero `token`. **Seizes**: a current owner is halted and dispossessed first. Refused while e-stopped. | if someone was owner |
 | `release(token)` | Gives control back. Refused unless the token matches the current owner. | yes |
 | `revoke()` | Takes control from whoever holds it. Operator recovery; needs no token. | if someone was owner |
 | `estop()` | Drops the grant, halts, latches. | yes, twice |
@@ -78,32 +78,17 @@ an admitted command means right now.
 
 ## Lock discipline
 
-Carried over from the arm driver, where it was reviewed and tested. The
-reasoning is in the header; the rules are:
-
-- **The mutex is held across the command** inside `run_if_admitted`, so
-  admit-and-deliver is atomic against `revoke()` and `estop()`. Without this a
-  command admitted a moment before a revoke could land after the halt and
-  restart a stopped base.
-- **The mutex is not held across `on_halt`** on the ownership paths
-  (`grant`, `release`, `revoke`), so a halt handler may take its own locks.
-- **`estop()` never waits for the mutex.** It latches an atomic flag first, so
-  admission is refused from that instant whoever holds the lock, delivers the
-  halt, and only then takes the mutex for bookkeeping. It then delivers the
-  halt a second time *under* the mutex, which is what stops a command that had
-  already passed `admit()` from landing after the first halt.
-
-Consequences for the `on_halt` callback:
-
-- It **must be idempotent**. An e-stop delivers it twice.
-- It **must not call back into the Arbiter**. The second e-stop delivery runs
-  under the mutex and would deadlock.
-- It should be quick. On the MIB a halt is a planner stop and a state change,
-  so this is not a constraint in practice.
+Carried over from the arm driver. The rules for `on_halt` are in the class
+comment in `arbiter.hpp`; the reasoning is next to the code in `arbiter.cpp`.
+In short: the mutex is held across a command in `run_if_admitted`, it is not
+held across `on_halt` on the ownership paths, and `estop()` never waits for it.
+So `on_halt` must be idempotent (an e-stop delivers it twice), thread-safe, and
+must never call back into the Arbiter.
 
 ## Deviations from the arm's Arbiter
 
-Small and deliberate. Everything else is one-to-one.
+Small and deliberate. Everything else is one-to-one; the host tests are the
+arm's tests where the surface is the same.
 
 - **Admission is a wrapper, not a decorator.** The arm's Arbiter implements
   the driver's sink interfaces and forwards each method. The MIB has three
@@ -117,21 +102,53 @@ Small and deliberate. Everything else is one-to-one.
   the system state machine treats them differently: after a revoke nobody owns the
   base and the stick returns to the GUI; after a seize the chair has stopped and the
   new owner's next command decides what happens.
+- **Racing grants each seize.** The arm's `grant` halts the old owner with the
+  mutex released and then installs the new one, so a second grant landing in
+  that window could take the base with no halt and then be silently
+  overwritten. Here `grant` loops: after the halt it looks again, and seizes
+  (and halts) once more if someone took the base meanwhile. The arm has the
+  same race; `test/host` has a case for it that fails on the arm's logic.
 - **`release(token)` lives in the core.** On the arm the ROS server retains the
   minted token and checks a release against it. The core already holds the
   token, so checking it here avoids a second copy.
-- **Tokens come from the hardware RNG** (`esp_fill_random`) unless a seed is
-  given, in which case a `std::mt19937_64` makes them repeatable for a bench
-  test. The arm seeds its generator from `std::random_device`.
+- **Tokens come from `esp_fill_random`** unless a seed is given, in which case
+  a `std::mt19937_64` makes them repeatable for a test. The arm seeds its
+  generator from `std::random_device`. On the ESP32-P4 (no RF) the RNG is
+  seeded with entropy by the bootloader and is not a continuous true RNG after
+  that, which is enough for a mistake boundary: tokens only have to differ
+  across grants and reboots. Never seed on the robot; the Arbiter warns if you do.
 - **Enum values are `UPPER_CASE`** (`ENFORCED`, `OWNERSHIP_REVOKED`) to match
   this repo, where the arm uses `kEnforced`, `kOwnershipRevoked`.
-- **Rejections are logged** at debug level as well as counted. The arm's core
-  has no logger and leaves logging to its transport.
+- **The core logs.** Grants, seizes, releases, revokes, the e-stop and refused
+  grants are logged, and rejections at debug level. The arm's core has no
+  logger and leaves logging to its transport. The e-stop and seize paths log
+  after the halt, never before: a log line can block on the UART.
+- **A seize clears the owner first.** During the seize halt `status()` shows no
+  owner; the arm keeps showing the old one until the new grant lands.
+- **A pre-supplied token** (`grant(owner_id, token)`) follows the arm's
+  kinova-gen3-driver#90 and rammp-interfaces-ros2 dev: adopted if non-zero,
+  refused before anything changes if all-zero.
 
 Like the arm's, this is a **mistake boundary, not a security boundary**.
 Anything on the bus can observe a token. It keeps two well-behaved systems
 from fighting over the base; it does not defend against a hostile one. It is
 also a software e-stop, not the hardware chain.
+
+## Tests
+
+`test/host` builds the Arbiter with the host compiler and runs 23 checks: the
+arm's `arbiter_test.cpp` cases where the MIB has the same surface, the
+pre-supplied token, and two races the arm's suite does not cover (racing grants,
+and an e-stop during a command in flight). UBSan everywhere, ASan on Linux
+(Apple's ASan deadlocks at startup on recent macOS).
+
+```console
+idf.py reconfigure   # once, in the repo root: fetches the espp headers
+components/Arbiter/test/host/run.sh
+```
+
+The RTPS face is tested on hardware from ROS 2: see
+[components/ArbitrationServer](../ArbitrationServer/README.md).
 
 ## Example
 
