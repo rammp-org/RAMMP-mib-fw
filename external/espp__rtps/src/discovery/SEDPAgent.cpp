@@ -23,6 +23,7 @@ This file is part of embeddedRTPS.
 Author: i11 - Embedded Software, RWTH Aachen University
 */
 
+#include "rtps/discovery/ParticipantProxyData.hpp"
 #include "rtps/discovery/SEDPAgent.hpp"
 #include "rtps/discovery/TopicData.hpp"
 #include "rtps/entities/Participant.hpp"
@@ -162,13 +163,41 @@ uint32_t SEDPAgent::getNumRemoteUnmatchedWriters() {
   return m_unmatchedRemoteWriters.getNumElements();
 }
 
-void SEDPAgent::handlePublisherReaderMessage(const TopicData &writerData,
+namespace {
+// RTPS 2.2 8.5.3.3 / 9.6.2.2: an endpoint announced without unicast locators of
+// its own is reachable at its participant's default unicast locators (from
+// SPDP). Fast DDS always includes a per-endpoint PID_UNICAST_LOCATOR, but
+// Cyclone DDS omits it unless network partitions are configured, so without
+// this fallback a Cyclone (ROS 2 rmw_cyclonedds) reader is matched but every
+// sample is sent to an invalid locator.
+rtps::TopicData withDefaultUnicastLocator(const rtps::TopicData &announced,
+                                          const rtps::ParticipantProxyData &participant) {
+  if (announced.unicastLocator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
+    return announced;
+  }
+  for (const auto &locator : participant.m_defaultUnicastLocatorList) {
+    if (locator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
+      rtps::TopicData resolved = announced;
+      const auto &ip = locator.address;
+      resolved.unicastLocator =
+          rtps::FullLengthLocator::createUDPv4Locator(ip[0], ip[1], ip[2], ip[3], locator.port);
+      return resolved;
+    }
+  }
+  return announced;
+}
+} // namespace
+
+void SEDPAgent::handlePublisherReaderMessage(const TopicData &announcedWriterData,
                                              const ReaderCacheChange &change) {
   // TODO Is it okay to add Endpoint if the respective participant is unknown
   // participant?
-  if (!m_part->findRemoteParticipant(writerData.endpointGuid.prefix)) {
+  const ParticipantProxyData *remoteParticipant =
+      m_part->findRemoteParticipant(announcedWriterData.endpointGuid.prefix);
+  if (remoteParticipant == nullptr) {
     return;
   }
+  const TopicData writerData = withDefaultUnicastLocator(announcedWriterData, *remoteParticipant);
 
   if (writerData.isDisposedFlagSet() || writerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(writerData, change);
@@ -242,11 +271,14 @@ void SEDPAgent::handleRemoteEndpointDeletion(const TopicData &topic,
   removeUnmatchedEntity(guid);
 }
 
-void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &readerData,
+void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &announcedReaderData,
                                                 const ReaderCacheChange &change) {
-  if (!m_part->findRemoteParticipant(readerData.endpointGuid.prefix)) {
+  const ParticipantProxyData *remoteParticipant =
+      m_part->findRemoteParticipant(announcedReaderData.endpointGuid.prefix);
+  if (remoteParticipant == nullptr) {
     return;
   }
+  const TopicData readerData = withDefaultUnicastLocator(announcedReaderData, *remoteParticipant);
 
   if (readerData.isDisposedFlagSet() || readerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(readerData, change);

@@ -285,9 +285,14 @@ bool StatefulReader::sendPreemptiveAckNack(const WriterProxy &writer) {
   info.destPort = writer.remoteLocator.port;
   PayloadBuffer payload;
   rtps::MessageFactory::addHeader(payload, m_attributes.endpointGuid.prefix);
+  // RTPS 2.2 8.3.5.5: a SequenceNumberSet's bitmapBase must be >= 1. A base of
+  // 0 is what Fast DDS and Connext historically sent for pre-emptive ACKNACKs,
+  // and Cyclone DDS only tolerates it from those vendors; from any other vendor
+  // id it drops the submessage as malformed ("recvUC: malformed packet received
+  // from vendor 13.37"), so the remote writer never learns this reader exists.
   SequenceNumberSet number_set;
   number_set.base.high = 0;
-  number_set.base.low = 0;
+  number_set.base.low = 1;
   number_set.numBits = 0;
   rtps::MessageFactory::addAckNack(payload, writer.remoteWriterGuid.entityId,
                                    m_attributes.endpointGuid.entityId, number_set, Count_t{1},
