@@ -3,10 +3,12 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include "bsp.hpp"
 #include "base_component.hpp"
 #include "drive_controller.hpp"
+#include "drive_profile_store.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
@@ -64,12 +66,26 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_drive_command(const rammp::DriveCommand &command);
 
+  /// Queue a change to one drive profile's limits for the state task.
+  /// \param command The profile, the new limits or a reset, and whether to save.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block. A
+  ///       newer command replaces one still waiting.
+  void handle_drive_profile_command(const rammp::DriveProfileCommand &command);
+
+  /// Apply the queued drive profile command, if any, and record its outcome.
+  /// \note Runs on the state task, since a persistent change writes flash.
+  void apply_drive_profile_command();
+
   /// Handle a motor controller status report.
   void handle_motor_status();
 
   /// Publish the current system state.
   /// \note Runs on the publication task.
   void publish_system_state();
+
+  /// Publish every drive profile's limits and the outcome of the last profile command.
+  /// \note Runs on the publication task.
+  void publish_drive_profiles();
 
   /// Publish the current seat state.
   /// \note Runs on the publication task.
@@ -85,6 +101,7 @@ private:
 
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
+  mib::DriveProfileStore drive_profiles_;     ///< Drive profile limits, saved in flash.
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
@@ -93,12 +110,21 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t drive_profile_state_sequence_{0};    ///< Sequence number for drive profile samples.
+  uint8_t drive_profile_command_ack_{0};       ///< req_id of the last profile command acted on.
+  MIB::DriveProfileResult drive_profile_result_{MIB::DriveProfileResult::NONE}; ///< Its outcome.
+  std::optional<rammp::DriveProfileCommand> pending_drive_profile_command_; ///< Not yet applied.
+  mutable std::mutex drive_profile_command_mutex_; ///< Protects the three above.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<MIB::DriveProfileState>>
+      drive_profile_publisher_; ///< Drive profile limits output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
+  std::unique_ptr<espp::Subscriber<rammp::DriveProfileCommand>>
+      drive_profile_command_subscriber_;         ///< Drive profile changes.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 
 #include "base_component.hpp"
 #include "differential_drive.hpp"
@@ -35,12 +36,20 @@ public:
   ///       decelerates toward the zero target.
   void stop();
 
-  /// @brief Apply one of the predefined trajectory-planner drive profiles.
+  /// @brief Make a drive profile the active one and apply its limits.
   /// @param profile The desired drive response profile.
+  /// @param values The profile's limits, from DriveProfileStore.
   /// @return True if the planner accepted the profile configuration.
   /// @note The planner keeps its current velocity, so switching while driving
   ///       ramps to the new limits instead of stepping to zero.
-  bool update_drive_profile(MIB::DriveProfile profile);
+  bool update_drive_profile(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
+
+  /// @brief Re-apply a profile's limits after they changed, if it is the active one.
+  /// @param profile The profile whose limits changed.
+  /// @param values Its new limits.
+  /// @return True if the profile is not active, or the planner accepted the limits.
+  /// @note Like update_drive_profile(), keeps the current velocity.
+  bool refresh_drive_profile(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
 
   /// @brief Get the current trajectory-limited wheel speeds.
   /// @return Left and right wheel speeds in RPM.
@@ -58,11 +67,11 @@ public:
 
 private:
   static Config default_config();
-  static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
-  static const config::DriveProfileConfig &profile_values(MIB::DriveProfile profile);
+  bool apply_locked(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
+  std::mutex profile_mutex_; ///< Orders profile switches against limit changes.
   MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
 };
 
