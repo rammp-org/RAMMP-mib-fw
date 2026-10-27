@@ -40,5 +40,7 @@ embeddedRTPS built the reader/writer proxy from the per-endpoint locator
 only, so a Cyclone subscriber was matched but every sample went to an invalid
 locator: `ros2 topic list` showed the MIB's topics while `ros2 topic echo`
 stayed silent. Fix: when the announcement carries no UDPv4 unicast locator,
-copy the first default unicast locator of the announcing participant (already
-parsed into `ParticipantProxyData::m_defaultUnicastLocatorList`).
+copy a default unicast locator of the announcing participant (already parsed
+into `ParticipantProxyData::m_defaultUnicastLocatorList`), preferring one on
+the MIB's own /24 so a Jetson with several interfaces listed in its Cyclone
+`<Interfaces>` config is reached over the PoE link and not, say, its Wi-Fi.

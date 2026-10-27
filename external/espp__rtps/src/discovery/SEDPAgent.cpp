@@ -170,21 +170,37 @@ namespace {
 // Cyclone DDS omits it unless network partitions are configured, so without
 // this fallback a Cyclone (ROS 2 rmw_cyclonedds) reader is matched but every
 // sample is sent to an invalid locator.
+//
+// A participant on several interfaces (Cyclone with more than one
+// <NetworkInterface>) announces one default locator per interface; prefer the
+// one on our own subnet, since the others are not reachable from this link.
 rtps::TopicData withDefaultUnicastLocator(const rtps::TopicData &announced,
-                                          const rtps::ParticipantProxyData &participant) {
+                                          const rtps::ParticipantProxyData &participant,
+                                          const rtps::Ip4AddressBytes &localIp) {
   if (announced.unicastLocator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
     return announced;
   }
+  const rtps::LocatorIPv4 *chosen = nullptr;
   for (const auto &locator : participant.m_defaultUnicastLocatorList) {
-    if (locator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
-      rtps::TopicData resolved = announced;
-      const auto &ip = locator.address;
-      resolved.unicastLocator =
-          rtps::FullLengthLocator::createUDPv4Locator(ip[0], ip[1], ip[2], ip[3], locator.port);
-      return resolved;
+    if (locator.kind != rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
+      continue;
+    }
+    if (locator.isSameSubnet(localIp)) {
+      chosen = &locator;
+      break;
+    }
+    if (chosen == nullptr) {
+      chosen = &locator;
     }
   }
-  return announced;
+  if (chosen == nullptr) {
+    return announced;
+  }
+  rtps::TopicData resolved = announced;
+  const auto &ip = chosen->address;
+  resolved.unicastLocator =
+      rtps::FullLengthLocator::createUDPv4Locator(ip[0], ip[1], ip[2], ip[3], chosen->port);
+  return resolved;
 }
 } // namespace
 
@@ -197,7 +213,7 @@ void SEDPAgent::handlePublisherReaderMessage(const TopicData &announcedWriterDat
   if (remoteParticipant == nullptr) {
     return;
   }
-  const TopicData writerData = withDefaultUnicastLocator(announcedWriterData, *remoteParticipant);
+  const TopicData writerData = withDefaultUnicastLocator(announcedWriterData, *remoteParticipant, m_part->m_localIpAddress);
 
   if (writerData.isDisposedFlagSet() || writerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(writerData, change);
@@ -278,7 +294,7 @@ void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &announcedReader
   if (remoteParticipant == nullptr) {
     return;
   }
-  const TopicData readerData = withDefaultUnicastLocator(announcedReaderData, *remoteParticipant);
+  const TopicData readerData = withDefaultUnicastLocator(announcedReaderData, *remoteParticipant, m_part->m_localIpAddress);
 
   if (readerData.isDisposedFlagSet() || readerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(readerData, change);
