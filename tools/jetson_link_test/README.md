@@ -1,116 +1,86 @@
-# MIB <-> Jetson RTPS link test
+# MIB <-> Jetson link over RTPS (ROS 2 Humble, Cyclone DDS)
 
-Checks that the MIB (ESP32-P4, espp `rtps`) and a Jetson running ROS 2 can see
-each other's topics over the PoE Ethernet link. The MIB runs the normal firmware
-with two endpoints renamed for ROS 2; the Jetson reads and writes them with the
-`ros2` CLI and the small `ros2/rammp_msgs` package in this directory.
+How the MIB (ESP32-P4, espp `rtps` / embeddedRTPS) and the Jetson (ROS 2 Humble,
+`rmw_cyclonedds_cpp`) talk to each other over the PoE Ethernet link, what had to
+change to make it work, and how to run it. The `ros2/rammp_msgs` package in this
+directory is the ROS 2 side of the shared message definitions.
 
-## What has to match (not just the `rt/` prefix)
+## What is happening on the wire
 
-ROS 2 maps names onto DDS as follows, with any RMW (Fast DDS or Cyclone DDS).
-All of them must match on both sides or the endpoints are listed but never pair.
+1. **Network.** The MIB runs a DHCP server on its Ethernet port (`192.168.4.1/24`,
+   `MIBconfig.hpp`). The Jetson's wired interface is set to DHCP and gets
+   `192.168.4.x`. The Jetson's other interface (Wi-Fi / lab network,
+   `192.168.1.x`) stays up; the MIB can only reach the `192.168.4.0/24` side.
+2. **Participant discovery (SPDP).** Both sides multicast their participant
+   announcement to `239.255.0.1:7400` (domain 0). The announcement carries the
+   participant's *default unicast locators*: the address and port where its
+   endpoints can be reached. Cyclone announces one locator per interface it is
+   configured to use.
+3. **Endpoint discovery (SEDP).** Each side then tells the other, over reliable
+   unicast, which topics it publishes and subscribes to, with the DDS topic name,
+   type name and QoS. Two endpoints pair only if all three are compatible.
+4. **Data.** Matched writers send samples straight to the reader's unicast
+   locator. Everything the MIB publishes is best-effort, so there are no
+   acknowledgements on user topics.
 
-| | ROS 2 | On the wire (what the MIB must use) |
+## What ROS 2 expects from the MIB
+
+ROS 2 mangles names before they reach DDS, so the MIB must use the mangled form
+or nothing pairs even though `ros2 topic list` shows the topic.
+
+| | ROS 2 | On the wire |
 |---|---|---|
 | Topic | `/rammp/mib/status` | `rt/rammp/mib/status` |
 | Type | `rammp_msgs/msg/MibStatus` | `rammp_msgs::msg::dds_::MibStatus_` |
-| Reliability | subscriber must be `best_effort` | MIB publishes `BEST_EFFORT` |
+| Reliability | subscriber must ask for `best_effort` | MIB publishes `BEST_EFFORT` |
 | Domain | `ROS_DOMAIN_ID` unset or `0` | espp `rtps` domain 0 |
 
-The firmware's type names from `external/rammp-rtps` (`rammp/msg/MibStatus`,
-`rammp/msg/XYTwist`) are **not** ROS 2 type names, so a ROS 2 node never pairs
-with them. The struct layouts need no change: `ros2/rammp_msgs/msg/*.msg` mirrors
-them field for field, in wire order.
-
-## MIB side
-
-The commit "use ROS 2 names on the status and joystick endpoints" on this branch
-renames two endpoints in `components/MibSystem/src/mib_system.cpp`:
+The names in `external/rammp-rtps` (`rammp/msg/MibStatus`, ...) are not ROS 2
+names. On this branch the commit "use ROS 2 names on the status and joystick
+endpoints" renames two endpoints in `components/MibSystem/src/mib_system.cpp`:
 
 | Endpoint | DDS topic | DDS type |
 |---|---|---|
 | status publisher | `rt/rammp/mib/status` | `rammp_msgs::msg::dds_::MibStatus_` |
 | joystick subscriber | `rt/rammp/joystick/xy_twist` | `rammp_msgs::msg::dds_::XYTwist_` |
 
-While flashed with that commit the physical joystick no longer matches those two
-endpoints (it still uses the old names). Flash from the repo root as usual:
+While that is flashed, the physical joystick (still on the old names) does not
+match those two endpoints. The struct layouts are unchanged;
+`ros2/rammp_msgs/msg/*.msg` mirrors them field for field, in wire order.
 
-```bash
-idf.py -p PORT flash monitor
-```
+## What had to be fixed in the MIB's RTPS stack
 
-The console should reach `System state: INIT` -> `Board IP: 192.168.4.1` and
-then log `Drive status: state=IDLE joystick x=... y=...` every 500 ms.
+espp `rtps` is only validated against Fast DDS. Cyclone DDS is stricter and
+behaves differently in two places, which made the MIB's topics visible on the
+Jetson while no data ever arrived. Both fixes live in a patched copy of the
+component under `external/espp__rtps` (selected by `override_path` in
+`main/idf_component.yml`); `external/espp__rtps/PATCHES.md` has the details.
 
-## Jetson side
+1. **Pre-emptive ACKNACK with sequence base 0.** The RTPS spec requires base
+   >= 1. Cyclone forgives base 0 only from eProsima and RTI vendor ids; from
+   embeddedRTPS (vendor 13.37) it dropped the message as malformed, printing
+   `recvUC: malformed packet received from vendor 13.37 ...` on the Jetson and
+   leaving discovery half done. Fixed to base 1.
+2. **No fallback to the participant's default locator.** Cyclone does not put a
+   per-endpoint unicast locator into its endpoint announcements (Fast DDS does).
+   The MIB built its reader/writer proxies from that per-endpoint locator only,
+   so a Cyclone subscriber matched and every sample went to an invalid address.
+   Fixed to fall back to the announcing participant's default unicast locator,
+   preferring the one on the MIB's own `/24`.
 
-The MIB is the DHCP server (`192.168.4.1/24`, from `MIBconfig.hpp`), so the
-Jetson's wired interface must be set to DHCP (automatic). PoE injector or PoE
-switch between the two; the network itself does not care about the power.
+That second point is also why the Jetson's Cyclone configuration matters: if
+Cyclone advertises only the `192.168.1.x` address, the MIB has nothing
+reachable to fall back to. The MIB then logs
+`Dropping UDP send ... to 192.168.1.11 ... 'Not enough space'` for every packet
+it tries to send there.
 
-```bash
-# Network
-ip -4 addr show                 # expect 192.168.4.x on the wired interface
-ping -c 3 192.168.4.1
+## Jetson setup (done once)
 
-# ROS 2 environment (see "Cyclone DDS" below for the RMW we actually run)
-source /opt/ros/$ROS_DISTRO/setup.bash
-unset ROS_DOMAIN_ID                           # MIB is on domain 0
-
-# Build the message package once
-mkdir -p ~/rammp_ws/src
-cp -r <this repo>/tools/jetson_link_test/ros2/rammp_msgs ~/rammp_ws/src/
-cd ~/rammp_ws && colcon build --packages-select rammp_msgs
-source ~/rammp_ws/install/setup.bash
-```
-
-Read from the MIB:
-
-```bash
-ros2 topic list                                              # expect /rammp/mib/status
-ros2 topic echo --qos-reliability best_effort /rammp/mib/status
-```
-
-Write to the MIB (shows up in the MIB's `Drive status:` log line, no need to
-enable drive):
-
-```bash
-ros2 topic pub -r 10 --qos-reliability best_effort /rammp/joystick/xy_twist \
-  rammp_msgs/msg/XYTwist "{x: 0.0, y: 0.2, twist: 0.0, buttons: 0}"
-```
-
-Pass: `echo` prints `MibStatus` samples with `seq` climbing, and the MIB log
-shows the `x`/`y` you published.
-
-## Cyclone DDS (Humble)
-
-The Jetson stack runs `rmw_cyclonedds_cpp`. The espp `rtps` component the MIB
-uses is only validated against Fast DDS (`rmw_fastrtps_cpp`, ROS 2 Jazzy); its
-older READMEs listed Cyclone DDS as "partial / unverified", and Cyclone is the
-stricter implementation about discovery packets. The naming and QoS rules above
-are ROS 2 conventions and apply to both RMWs unchanged, so if Cyclone fails
-where Fast DDS works, the gap is embeddedRTPS <-> Cyclone discovery, not the
-messages. Humble vs Jazzy should not matter: ROS 2 types use the same XCDR1
-wire encoding on both.
-
-Run the test twice, Fast DDS first, so a Cyclone-specific failure is obvious:
-
-```bash
-# 1. Fast DDS (installed by default on Humble)
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-ros2 topic list && ros2 topic echo --qos-reliability best_effort /rammp/mib/status
-
-# 2. Cyclone DDS
-sudo apt install ros-$ROS_DISTRO-rmw-cyclonedds-cpp   # if not already present
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
-ros2 daemon stop                                        # the daemon caches the previous RMW
-ros2 topic list && ros2 topic echo --qos-reliability best_effort /rammp/mib/status
-```
-
-Cyclone uses **one** network interface by default and on a Jetson with Wi-Fi up
-that is usually not the wired port. Pin it with `~/cyclonedds.xml` (replace
-`eth0` with the interface that holds `192.168.4.x` in `ip -4 addr`):
+**Cyclone interface configuration.** Cyclone uses a single interface by default,
+and on the Jetson that is the Wi-Fi/lab side. Listing both interfaces makes it
+advertise both addresses; the MIB picks the `192.168.4.x` one, and ROS 2 traffic
+with the rest of the lab keeps using the other. `~/cyclonedds.xml`
+(interface names from `ip -4 -o addr show`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8" ?>
@@ -118,7 +88,8 @@ that is usually not the wired port. Pin it with `~/cyclonedds.xml` (replace
   <Domain Id="any">
     <General>
       <Interfaces>
-        <NetworkInterface name="eth0" priority="default" multicast="default"/>
+        <NetworkInterface name="WIRED_IF" priority="default" multicast="default"/>
+        <NetworkInterface name="OTHER_IF" priority="default" multicast="default"/>
       </Interfaces>
       <AllowMulticast>true</AllowMulticast>
     </General>
@@ -126,23 +97,82 @@ that is usually not the wired port. Pin it with `~/cyclonedds.xml` (replace
 </CycloneDDS>
 ```
 
-Fast DDS uses every interface, so it needs no such file.
+The file only takes effect in a shell that exports `CYCLONEDDS_URI`, so the
+export lives in `~/.zshrc` and every new terminal gets it:
 
-What each outcome means under Cyclone:
+```bash
+export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
+```
 
-| Observation | Meaning |
-|---|---|
-| `/rammp/mib/status` in `ros2 topic list` | Cyclone accepted the MIB's SPDP/SEDP discovery |
-| `echo` prints samples | data path works; the firmware's endpoints can be consumed by the Jetson stack as-is |
-| listed but `echo` silent | check `best_effort` first; then compare with Fast DDS |
-| not listed under Cyclone, listed under Fast DDS | embeddedRTPS discovery not accepted by Cyclone; capture it with `sudo tcpdump -i eth0 udp port 7400 -w spdp.pcap` and raise it against the espp `rtps` component |
+**Message package.** `ros2 topic echo` can only decode a type it has a package
+for:
+
+```bash
+mkdir -p ~/rammp_ws/src
+cp -r <this repo>/tools/jetson_link_test/ros2/rammp_msgs ~/rammp_ws/src/
+cd ~/rammp_ws && colcon build --packages-select rammp_msgs
+```
+
+Source `/opt/ros/humble/setup.zsh` and `~/rammp_ws/install/setup.zsh` in the
+shell (or in `~/.zshrc`). `ROS_DOMAIN_ID` stays unset.
+
+**After changing any of the above:** `ros2 daemon stop`. The daemon is a
+long-lived process that keeps the configuration it was started with, so
+`ros2 topic list` can look right while a fresh `echo` or `pub` in a badly
+configured shell does not.
+
+## Running it
+
+MIB, from the repo root:
+
+```bash
+idf                          # ESP-IDF environment (see ~/.zshrc on the Mac)
+idf.py -p PORT flash monitor
+```
+
+Console: `Board IP: 192.168.4.1`, then `Drive status: state=IDLE joystick x=0
+y=0 ...` every 500 ms.
+
+Jetson, after `ping -c 3 192.168.4.1` succeeds:
+
+```bash
+ros2 topic list -t                                   # /rammp/mib/status [rammp_msgs/msg/MibStatus]
+ros2 topic echo --qos-reliability best_effort /rammp/mib/status
+```
+
+`MibStatus` samples stream with `seq` climbing. Without the `best_effort` flag
+the subscription is reliable, never matches the MIB's writer, and prints nothing.
+
+Jetson to MIB:
+
+```bash
+ros2 topic pub -r 10 --qos-reliability best_effort /rammp/joystick/xy_twist \
+  rammp_msgs/msg/XYTwist "{x: 0.0, y: 0.2, twist: 0.0, buttons: 0}"
+```
+
+The MIB's `Drive status:` line shows `y=0.2` within a second (it logs the latest
+sample in every state, drive does not have to be enabled).
 
 ## Troubleshooting
 
-| Symptom | Likely cause |
+| Symptom | Cause |
 |---|---|
 | Jetson has no `192.168.4.x` address | wired interface not on DHCP, or link down (PoE power / cable) |
-| `ros2 topic list` is empty | different domain; stale `ros2 daemon` after switching RMW (`ros2 daemon stop`); Cyclone bound to the wrong interface (see `CYCLONEDDS_URI` above); or multicast blocked (firewall: allow UDP 7400-7500; managed PoE switch with IGMP snooping: disable it or use an injector) |
-| Topic listed, `echo` prints nothing | subscription not `best_effort` |
-| `echo` fails to decode | `rammp_msgs` not built/sourced, or a field was reordered relative to `mib_message.hpp` |
-| MIB log never shows the published `x`/`y` | Jetson publisher not reaching 192.168.4.1: `ros2 topic info -v /rammp/joystick/xy_twist` should list the MIB's subscription |
+| `ros2 topic list` empty | stale daemon (`ros2 daemon stop`), Cyclone on the wrong interface (`echo $CYCLONEDDS_URI`), or multicast blocked (firewall UDP 7400-7500, IGMP snooping on a managed PoE switch) |
+| `The message type 'rammp_msgs/msg/MibStatus' is invalid` | `~/rammp_ws/install/setup.zsh` not sourced in this shell |
+| Topic listed, `echo` silent | missing `--qos-reliability best_effort`; or MIB flashed without the `external/espp__rtps` patches |
+| MIB logs `Dropping UDP send ... to 192.168.1.x` | the node's Cyclone advertised only the off-link address: `CYCLONEDDS_URI` not exported in that shell |
+| Jetson logs `malformed packet received from vendor 13.37` | MIB flashed without the `external/espp__rtps` patches |
+
+## Known limits and follow-ups
+
+- Only best-effort topics have been exercised. RELIABLE topics between the MIB
+  and Cyclone are untested.
+- The two RTPS fixes are local patches; they should be sent upstream to
+  esp-cpp/espp (`components/rtps`) so `external/espp__rtps` and the
+  `override_path` can be removed.
+- For the real integration, the ROS 2 names belong in `external/rammp-rtps`
+  (topics `rt/rammp/...`, types `rammp_msgs::msg::dds_::<Type>_`, with the
+  `.msg` files alongside the headers) so the joystick, PACE RACER and Jetson all
+  use one set of names. The endpoint-rename commit on this branch is a stand-in
+  for that and should not be merged as is.
