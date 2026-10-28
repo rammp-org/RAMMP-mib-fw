@@ -38,8 +38,15 @@ This prints the fitted parameters in wheel units, the RMS error, and a
 `DriveProfileConfig` block to paste into `MIBconfig.hpp`. The model is
 trapezoidal, so the block's jerk limits are 0; choose them with the jerk sweep
 below. It also writes
-`drive_fit_out/fit.png` (measured vs model) and `params.json`. It takes a few
-minutes.
+`drive_fit_out/fit.png` (measured vs model), `params.json`, and `profile.json`
+(the block's values). It takes a few minutes.
+
+To try a fit on a chair without reflashing, send `profile.json` to the MIB
+(see `components/DriveProfileStore/README.md`):
+
+```sh
+python tools/drive_profile/drive_profile.py set high --from-json drive_fit_out/profile.json
+```
 
 The centripetal limit is held at `--centripetal-limit` (default 1.5 m/s²) rather
 than fitted, since a fit would just push it above anything the recording reached.

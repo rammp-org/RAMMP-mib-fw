@@ -1,0 +1,8 @@
+# Name,   Type, SubType,  Offset,  Size
+# nvs, phy_init and factory sit where the default single-app table puts them,
+# so flashing this table over the old one keeps NVS. littlefs holds the saved
+# drive profiles (DriveProfileStore).
+nvs,      data, nvs,      0x9000,  0x6000
+phy_init, data, phy,      0xf000,  0x1000
+factory,  app,  factory,  0x10000, 4M
+littlefs, data, littlefs, ,        1M

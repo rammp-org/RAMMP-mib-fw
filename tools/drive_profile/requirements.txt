@@ -1,0 +1,3 @@
+# CycloneDDS 0.10.5 has wheels for CPython 3.9 to 3.12; macOS's /usr/bin/python3
+# (3.9) works. Newer Pythons try to build it from source and fail.
+cyclonedds==0.10.5

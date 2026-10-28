@@ -31,3 +31,13 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_LV_MEM_SIZE=65536
 CONFIG_LV_MEM_SIZE_KILOBYTES=0
 CONFIG_LV_DISABLE_ASSERT_HANDLER_INCLUDE_WARNING=y
+
+# Flash and partition table. The MIB is a Waveshare ESP32-P4-ETH with 32 MB of
+# flash; we declare 16 MB (as espp's esp32-p4-eth example does) because beyond
+# 16 MB needs 32-bit flash addressing, which IDF still marks experimental, and
+# every partition ends below 5.1 MB. partitions.csv adds a LittleFS partition
+# for the saved drive profiles.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
