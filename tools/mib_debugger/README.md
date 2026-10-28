@@ -1,7 +1,8 @@
 # MIB Debugger
 
 A browser-based bench tool for the RAMMP MIB. It joins the board's DDS domain
-over Ethernet, stands in for the joystick, and shows what the MIB sends to the
+over Ethernet with the same RTPS stack the boards run (espp's, from the `espp`
+Python wheel), stands in for the joystick, and shows what the MIB sends to the
 wheel controllers. Nothing in the firmware needs to change to use it.
 
 New to the tool? [SETUP.md](SETUP.md) covers the install on each platform, and
@@ -39,11 +40,12 @@ Run once:
 ./setup.sh
 ```
 
-This creates `.venv` with the one dependency, CycloneDDS, using a CPython 3.9
-or 3.10 (the versions with prebuilt wheels). On Windows run `setup.cmd` from
-PowerShell or cmd instead. [SETUP.md](SETUP.md) has the per-platform details
-for macOS, Linux, WSL and Windows, including firewall rules and what to check
-when the tool stays on "searching".
+This creates `.venv` with the one dependency, the `espp` wheel, which carries
+the RTPS stack the MIB and the PACE RACER boards run; CPython 3.10 to 3.14 have
+wheels. On Windows run `setup.cmd` from PowerShell or cmd instead.
+[SETUP.md](SETUP.md) has the per-platform details for macOS, Linux, WSL and
+Windows, including firewall rules and what to check when the tool stays on
+"searching".
 
 ## Starting the tool
 
@@ -66,27 +68,15 @@ address. The firmware runs a DHCP server at 192.168.4.1. Choose Board, leave
 the interface on Auto-detect, and press Connect. Auto-detect picks the
 interface holding a 192.168.4.x address; the dropdown lists every interface
 with an address if you would rather choose. The connection pill in the header
-turns green once status samples arrive.
-If it does not, `./doctor.sh` (`doctor.cmd` on Windows) runs the connection
-checks one by one and names the failing one; see [SETUP.md](SETUP.md).
+turns green once status samples arrive. If it does not, `./doctor.sh`
+(`doctor.cmd` on Windows) runs the connection checks one by one and names the
+failing one; see [SETUP.md](SETUP.md).
 
-On Windows the dropdown shows the adapters' friendly names and the tool hands
-CycloneDDS the adapter's address; `run.cmd` replaces `run.sh`. Allow Python
-through Windows Firewall on both private and public networks when asked.
-[SETUP.md](SETUP.md) has the details.
-
-If the terminal prints lines like
-
-```
-recvUC: malformed packet received from vendor 13.37 length 48 state parse:shortmsg
-```
-
-the boards' firmware predates the CycloneDDS interop fix. Vendor 13.37 is
-espp's RTPS stack on the MIB and the PACE RACER boards; its discovery
-handshake has four defects that only show against CycloneDDS, and with them
-the tool stays on "searching" for ever. The fix is an espp patch in
-`interop/`, needed on every board on the chair; `BRANCH_NOTES.md` finding 10
-has the analysis and `./doctor.sh --trace` shows which step is failing.
+The tool used CycloneDDS until October 2026. espp's stack could not complete
+endpoint discovery with it (four protocol corners, `BRANCH_NOTES.md` finding
+10), so the tool now runs espp's own stack and the boards need no change. The
+patch for espp is kept in `interop/` for anyone pointing a CycloneDDS or ROS 2
+participant at the chair.
 
 ## Running without the board
 
@@ -324,8 +314,9 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 
 | File | Purpose |
 |---|---|
-| `mib_messages.py` | DDS types mirroring the C++ headers, byte for byte |
-| `mib_link.py` | Participant, endpoints, state store, watchdog |
+| `rtps_io.py` | espp RTPS participant with typed writers and readers, and the CDR codec |
+| `mib_messages.py` | Wire types mirroring the C++ headers, byte for byte |
+| `mib_link.py` | Endpoints, state store, watchdog, CAN transport, actuators |
 | `app.py` | JSON API and page server, connect and disconnect, standard library only |
 | `static/index.html` | The main GUI |
 | `static/params.html` | The Parameters page |
@@ -344,4 +335,5 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 The message definitions must stay in step with
 `external/rammp-rtps/components/rammp_rtps_messages`. The firmware matches
 topic and type names exactly, and every enum there is one byte wide, so those
-fields are declared as `uint8` here rather than as IDL enums.
+fields are declared as `t.u8` here. `rtps_io.encode` produces the same bytes
+CycloneDDS and espp::cdr do for these structs; `interop/` has the check.

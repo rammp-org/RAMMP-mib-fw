@@ -558,30 +558,18 @@ class FakeMib:
         self.running = True
 
     def start(self):
-        from cyclonedds.core import Policy, Qos
-        from cyclonedds.domain import DomainParticipant
-        from cyclonedds.pub import DataWriter, Publisher
-        from cyclonedds.sub import DataReader, Subscriber
-        from cyclonedds.topic import Topic
+        import rtps_io
+        self.participant = rtps_io.Participant(
+            interface_address="127.0.0.1" if self.local else (self.interface or ""),
+            log_level="error")
+        self.participant.start()
+        reliable = True
 
-        import mib_link
-        uri = mib_link.build_cyclonedds_uri(self.interface, self.local)
-        if uri:
-            import os
-            os.environ["CYCLONEDDS_URI"] = uri
+        def writer(name, dt, q=False):
+            return self.participant.writer(name, dt, bool(q))
 
-        from cyclonedds.util import duration
-        qos = Qos(Policy.Reliability.BestEffort, Policy.History.KeepLast(8))
-        reliable = Qos(Policy.Reliability.Reliable(duration(seconds=1)), Policy.History.KeepLast(8))
-        participant = DomainParticipant(self.domain_id)
-        pub = Publisher(participant)
-        sub = Subscriber(participant)
-
-        def writer(name, dt, q=qos):
-            return DataWriter(pub, Topic(participant, name, dt, qos=q), qos=q)
-
-        def reader(name, dt, q=qos):
-            return DataReader(sub, Topic(participant, name, dt, qos=q), qos=q)
+        def reader(name, dt, q=False):
+            return self.participant.reader(name, dt, bool(q))
 
         self.status_writer = writer(msg.TOPIC_MIB_STATUS, msg.MibStatus)
         self.motor_writers = {
@@ -601,7 +589,7 @@ class FakeMib:
         self.tuning_readers = {
             axis: reader(msg.motor_tuning_topic(axis), msg.MotorTuning) for axis in self.boards}
 
-        print(f"fake MIB up on domain {self.domain_id}; INIT for {self.boot_delay:.1f}s"
+        print(f"fake MIB up{' on loopback' if self.local else ''}; INIT for {self.boot_delay:.1f}s"
               + (f"; PACE boards on axes {sorted(self.boards)}" if self.boards else ""))
 
     def run(self):
@@ -797,7 +785,7 @@ class FakeMib:
 def main():
     parser = argparse.ArgumentParser(description="Stand-in for the RAMMP MIB firmware.")
     parser.add_argument("--domain", type=int, default=0, help="DDS domain id")
-    parser.add_argument("--interface", default=None, help="network interface to bind")
+    parser.add_argument("--interface", default=None, help="IPv4 address of the interface to bind")
     parser.add_argument("--boot-delay", type=float, default=1.0,
                         help="seconds to stay in INITIALIZING")
     parser.add_argument("--local", action="store_true",

@@ -1,9 +1,9 @@
 """DDS link to the RAMMP MIB board.
 
-Owns one DDS participant on domain 0, publishes the three joystick-side topics
-the MIB subscribes to, and subscribes to everything the MIB publishes. All
-state is kept behind a lock and handed to the web layer as a plain snapshot
-dictionary.
+Owns one RTPS participant (espp's own stack, see rtps_io.py) on domain 0,
+publishes the three joystick-side topics the MIB subscribes to, and
+subscribes to everything the MIB publishes. All state is kept behind a lock
+and handed to the web layer as a plain snapshot dictionary.
 
 Two background threads do the periodic work. The receive thread polls every
 reader; the transmit thread republishes the joystick at a fixed rate, because
@@ -23,6 +23,7 @@ import actuator_ctl
 import canopen_sdo
 import mcp266_objects
 import mib_messages as msg
+import rtps_io
 
 # The MIB runs a DHCP server on its Ethernet port and lives at this address.
 # The debugging host normally receives a lease on the same subnet.
@@ -71,55 +72,6 @@ CAN_MONITOR_DEPTH = 400
 # The Actuators page's list of joints (node, channel, range, profile) is kept
 # here between runs; the defaults in actuator_ctl apply when it is missing.
 ACTUATOR_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "actuators.json")
-
-
-def build_cyclonedds_uri(interface=None, local=False):
-    """Return a CycloneDDS XML configuration, or None to use the defaults.
-
-    Multicast discovery has to leave through the interface facing the board. On
-    a laptop with Wi-Fi up as well, CycloneDDS may otherwise pick the wrong one
-    and never see the MIB, so the interface is worth naming explicitly.
-
-    `local` targets the loopback interface and adds 127.0.0.1 as a unicast
-    discovery peer. That is what the bundled simulator needs, because multicast
-    between two processes on one macOS host is not reliable on its own.
-    """
-    if not interface and not local:
-        return None
-
-    peers = ""
-    if local:
-        peers = "<Discovery><Peers><Peer address=\"127.0.0.1\"/></Peers></Discovery>"
-        # Windows has no "lo0"; its loopback is picked by address, and it does
-        # not multicast, which the simulator does not need thanks to the peer.
-        interface = "127.0.0.1" if sys.platform == "win32" else (interface or "lo0")
-    # An IPv4 literal selects the interface by address (the only reliable way
-    # on Windows, where names are the adapters' friendly names); anything else
-    # is an OS interface name such as en9 or eth0.
-    if re.match(r"^\d+\.\d+\.\d+\.\d+$", interface):
-        selector = f'address="{interface}"'
-        multicast_attr = "false" if interface.startswith("127.") else "true"
-    else:
-        selector = f'name="{interface}"'
-        multicast_attr = "true"
-
-    # Against the chair, multicast is used for participant discovery only.
-    # With several espp participants on the wire (the MIB and the PACE RACER
-    # boards) CycloneDDS otherwise sends its endpoint discovery and heartbeats
-    # to the multicast group, where the boards' RTPS stack does not act on
-    # them, so the boards never learn the debugger's readers and never send a
-    # sample. Unicast per board is what a single-board bench already used.
-    multicast = "true" if local else "spdp"
-
-    return (
-        "<CycloneDDS><Domain>"
-        "<General><Interfaces>"
-        f'<NetworkInterface {selector} priority="default" multicast="{multicast_attr}"/>'
-        f"</Interfaces><AllowMulticast>{multicast}</AllowMulticast></General>"
-        + peers +
-        "</Domain></CycloneDDS>"
-    )
-
 
 
 def valid_samples(reader, datatype, count=10):
@@ -244,38 +196,21 @@ class MibLink:
 
     def start(self) -> None:
         """Create the participant and every endpoint, then start the threads."""
-        uri = build_cyclonedds_uri(self.interface, self.local)
-        if uri:
-            os.environ["CYCLONEDDS_URI"] = uri
+        # espp's stack picks the interface by address; the simulator runs on
+        # loopback. Reliability must match the firmware endpoint by endpoint
+        # or the two never pair: everything is best-effort except parameter
+        # writes and outbound CAN frames, whose firmware readers are reliable.
+        self._participant = rtps_io.Participant(
+            interface_address="127.0.0.1" if self.local else (self.interface or ""),
+            log_level="error")
+        self._participant.start()
+        reliable = True
 
-        # Imported here so an import error surfaces with a clear message rather
-        # than at module import time.
-        from cyclonedds.core import Policy, Qos
-        from cyclonedds.util import duration
-        from cyclonedds.domain import DomainParticipant
-        from cyclonedds.pub import DataWriter, Publisher
-        from cyclonedds.sub import DataReader, Subscriber
-        from cyclonedds.topic import Topic
+        def writer(topic_name, datatype, q=False):
+            return self._participant.writer(topic_name, datatype, bool(q))
 
-        # The MIB creates every endpoint best-effort with no durability, so the
-        # debugger must match or the endpoints will not pair.
-        qos = Qos(Policy.Reliability.BestEffort, Policy.History.KeepLast(8))
-        # Parameter writes are the one thing that must not be dropped, and the
-        # firmware's reader for them is reliable, so this writer must match.
-        reliable = Qos(Policy.Reliability.Reliable(duration(seconds=1)),
-                       Policy.History.KeepLast(8))
-
-        self._participant = DomainParticipant(self.domain_id)
-        publisher = Publisher(self._participant)
-        subscriber = Subscriber(self._participant)
-
-        def writer(topic_name, datatype, q=qos):
-            topic = Topic(self._participant, topic_name, datatype, qos=q)
-            return DataWriter(publisher, topic, qos=q)
-
-        def reader(topic_name, datatype):
-            topic = Topic(self._participant, topic_name, datatype, qos=qos)
-            return DataReader(subscriber, topic, qos=qos)
+        def reader(topic_name, datatype, q=False):
+            return self._participant.reader(topic_name, datatype, bool(q))
 
         self._writers["joystick"] = writer(msg.TOPIC_JOYSTICK_XY_TWIST, msg.XYTwist)
         self._writers["drive"] = writer(msg.TOPIC_JOYSTICK_DRIVE_COMMAND, msg.DriveCommand)
@@ -288,7 +223,10 @@ class MibLink:
         # The firmware's reader for outbound frames is reliable; its rx and
         # status writers are best-effort like everything else it publishes.
         self._writers["can_tx"] = writer(msg.TOPIC_JOYSTICK_CAN_TX, msg.CanFrame, reliable)
-        self._readers["can_rx"] = reader(msg.TOPIC_MIB_CAN_RX, msg.CanFrame)
+        # CAN frames arrive in bursts (a settings group is dozens of SDO
+        # replies), so this queue is deeper than the others.
+        self._readers["can_rx"] = self._participant.reader(msg.TOPIC_MIB_CAN_RX, msg.CanFrame,
+                                                           False, depth=1024)
         self._readers["can_status"] = reader(msg.TOPIC_MIB_CAN_STATUS, msg.CanStatus)
 
         for axis in ALL_AXES:
@@ -313,9 +251,9 @@ class MibLink:
         self._spawn(self._transmit_loop, "mib-tx")
 
         self.log(
-            f"DDS participant started on domain {self.domain_id}"
+            "RTPS participant started"
             + (" on loopback" if self.local
-               else f" via {self.interface}" if self.interface else ""),
+               else f" on {self.interface}" if self.interface else " on the default interface"),
             "good",
         )
 
@@ -325,23 +263,16 @@ class MibLink:
         self._threads.append(thread)
 
     def stop(self) -> None:
-        """Stop the threads and delete every DDS entity.
-
-        CycloneDDS reads its configuration when the first participant on a
-        domain is created and keeps it until the last one is gone, so the
-        participant has to be released here for a later connect on a
-        different interface to take effect.
-        """
+        """Stop the threads and the participant."""
         self._running = False
         for thread in self._threads:
             thread.join(timeout=1.0)
         self._threads = []
         self._readers.clear()
         self._writers.clear()
-        self._participant = None
-        import gc
-        gc.collect()
-        os.environ.pop("CYCLONEDDS_URI", None)
+        if self._participant is not None:
+            self._participant.stop()
+            self._participant = None
 
     # ------------------------------------------------------------- rx thread
 

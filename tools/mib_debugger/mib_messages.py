@@ -2,26 +2,23 @@
 
 Every struct here IS the wire layout: classic little-endian CDR (XCDR1) with
 fields in declaration order, matching the C++ headers in
-external/rammp-rtps/components/rammp_rtps_messages/include/messages/.
+external/rammp-rtps/components/rammp_rtps_messages/include/messages/. The
+field types are the `t.*` wire types of rtps_io, which encodes and decodes
+them; `rtps_io.encode(obj)` is what goes on the wire.
 
 The C++ side declares its enums as `enum class X : uint8_t`, so they occupy one
-byte on the wire. IDL enums default to four bytes, so every such field is
-declared here as uint8 and the readable names live in the IntEnum classes
-alongside. Changing a field to a plain IDL enum would silently break the wire
-format.
+byte on the wire, and every such field is declared here as `t.u8` with the
+readable names in the IntEnum classes alongside.
 
 Topic and type names must match the firmware exactly. embeddedRTPS compares
 both with strcmp in TopicData::matchesTopicOf, so a single differing character
 means the endpoints never pair up and no data flows.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import field
 from enum import IntEnum
-from typing import List
 
-import cyclonedds.idl as idl
-import cyclonedds.idl.types as pt
-from cyclonedds.idl import IdlStruct
+from rtps_io import message, t
 
 
 # --------------------------------------------------------------------------
@@ -99,54 +96,54 @@ class Buttons(IntEnum):
 # Joystick to MIB. These are the messages the debugger sends to drive the board.
 # --------------------------------------------------------------------------
 
-@dataclass
-class XYTwist(IdlStruct, typename="rammp/msg/XYTwist"):
+@message("rammp/msg/XYTwist")
+class XYTwist:
     """Stick position. 16 bytes on the wire."""
-    x: pt.float32 = 0.0
-    y: pt.float32 = 0.0
-    twist: pt.float32 = 0.0
-    buttons: pt.uint32 = 0
+    x: t.f32 = 0.0
+    y: t.f32 = 0.0
+    twist: t.f32 = 0.0
+    buttons: t.u32 = 0
 
 
-@dataclass
-class DriveCommand(IdlStruct, typename="rammp/msg/DriveCommand"):
+@message("rammp/msg/DriveCommand")
+class DriveCommand:
     """Enable or disable driving, with the profile to drive with. 2 bytes."""
-    request: pt.uint8 = 0
-    profile: pt.uint8 = 1
+    request: t.u8 = 0
+    profile: t.u8 = 1
 
 
-@dataclass
-class SeatCommand(IdlStruct, typename="rammp/msg/SeatCommand"):
+@message("rammp/msg/SeatCommand")
+class SeatCommand:
     """Absolute seat axis target. 8 bytes, the float aligning to offset 4."""
-    axis: pt.uint8 = 0
-    target: pt.float32 = 0.0
+    axis: t.u8 = 0
+    target: t.f32 = 0.0
 
 
 # --------------------------------------------------------------------------
 # MIB to joystick.
 # --------------------------------------------------------------------------
 
-@dataclass
-class SeatState(IdlStruct, typename="rammp/msg/seatState"):
-    front_back_tilt: pt.float32 = 0.0
-    lateral_tilt: pt.float32 = 0.0
-    elevation: pt.float32 = 0.0
-    translation: pt.float32 = 0.0
+@message("rammp/msg/seatState")
+class SeatState:
+    front_back_tilt: t.f32 = 0.0
+    lateral_tilt: t.f32 = 0.0
+    elevation: t.f32 = 0.0
+    translation: t.f32 = 0.0
 
 
-@dataclass
-class MibStatus(IdlStruct, typename="rammp/msg/MibStatus"):
+@message("rammp/msg/MibStatus")
+class MibStatus:
     """Status published by the MIB twice per second."""
-    systemState: pt.uint8 = 0
-    activeProfile: pt.uint8 = 1
+    systemState: t.u8 = 0
+    activeProfile: t.u8 = 1
     currentSeatState: SeatState = field(default_factory=SeatState)
-    error_message: str = "No error"
-    epoch_s: pt.int64 = 0
-    speed: pt.float32 = 0.0
-    utc_offset_min: pt.int16 = 0
-    seq: pt.uint8 = 0
-    status_text: str = ""
-    error_footer: str = ""
+    error_message: t.string = "No error"
+    epoch_s: t.i64 = 0
+    speed: t.f32 = 0.0
+    utc_offset_min: t.i16 = 0
+    seq: t.u8 = 0
+    status_text: t.string = ""
+    error_footer: t.string = ""
 
 
 # --------------------------------------------------------------------------
@@ -165,58 +162,58 @@ TUNING_DEFAULTS = {"speed_kp": 2.39, "speed_ki": 4.77, "hall_pll_hz": 10.0}
 # The board's own console prints the gains in A/rpm; this converts SI to that.
 SI_TO_PER_RPM = 2.0 * 3.14159265358979323846 / 60.0
 
-@dataclass
-class MotorCommand(IdlStruct, typename="rammp/msg/MotorCommand"):
+@message("rammp/msg/MotorCommand")
+class MotorCommand:
     """One axis's command. 28 bytes on the wire."""
-    seq: pt.uint8 = 0
-    requested_state: pt.uint8 = 0
-    mode: pt.uint8 = 0
-    clear_fault_req_id: pt.uint8 = 0
-    position: pt.float32 = 0.0
-    velocity: pt.float32 = 0.0
-    torque: pt.float32 = 0.0
-    torque_limit: pt.float32 = 0.0
-    vel_limit: pt.float32 = 0.0
-    accel_limit: pt.float32 = 0.0
+    seq: t.u8 = 0
+    requested_state: t.u8 = 0
+    mode: t.u8 = 0
+    clear_fault_req_id: t.u8 = 0
+    position: t.f32 = 0.0
+    velocity: t.f32 = 0.0
+    torque: t.f32 = 0.0
+    torque_limit: t.f32 = 0.0
+    vel_limit: t.f32 = 0.0
+    accel_limit: t.f32 = 0.0
 
 
-@dataclass
-class MotorState(IdlStruct, typename="rammp/msg/MotorState"):
+@message("rammp/msg/MotorState")
+class MotorState:
     """One axis's state, motor API version 3. 92 bytes on the wire, padding 2
     bytes before uptime_ms. Version 2 added tuning_ack and the three gain
     fields; version 3 kept the layout."""
-    api_version: pt.uint8 = MOTOR_API_VERSION
-    axis_id: pt.uint8 = 255
-    seq: pt.uint8 = 0
-    last_cmd_seq: pt.uint8 = 0
-    state: pt.uint8 = 0
-    mode: pt.uint8 = 0
-    fault_code: pt.uint8 = 0
-    clear_fault_ack: pt.uint8 = 0
-    vbus_measured: pt.uint8 = 0
-    tuning_ack: pt.uint8 = 0
-    cmd_age_ms: pt.uint16 = 0
-    drv_status: pt.uint16 = 0
-    uptime_ms: pt.uint32 = 0
-    fw_version: pt.uint32 = 0
-    position: pt.float32 = 0.0
-    velocity: pt.float32 = 0.0
-    torque_est: pt.float32 = 0.0
-    iq: pt.float32 = 0.0
-    id: pt.float32 = 0.0
-    vbus: pt.float32 = 0.0
-    ibus_est: pt.float32 = 0.0
-    torque_limit_eff: pt.float32 = 0.0
-    vel_limit_eff: pt.float32 = 0.0
-    accel_limit_eff: pt.float32 = 0.0
-    temps: pt.array[pt.float32, 4] = field(default_factory=lambda: [0.0] * 4)
-    speed_kp: pt.float32 = 0.0
-    speed_ki: pt.float32 = 0.0
-    hall_pll_hz: pt.float32 = 0.0
+    api_version: t.u8 = MOTOR_API_VERSION
+    axis_id: t.u8 = 255
+    seq: t.u8 = 0
+    last_cmd_seq: t.u8 = 0
+    state: t.u8 = 0
+    mode: t.u8 = 0
+    fault_code: t.u8 = 0
+    clear_fault_ack: t.u8 = 0
+    vbus_measured: t.u8 = 0
+    tuning_ack: t.u8 = 0
+    cmd_age_ms: t.u16 = 0
+    drv_status: t.u16 = 0
+    uptime_ms: t.u32 = 0
+    fw_version: t.u32 = 0
+    position: t.f32 = 0.0
+    velocity: t.f32 = 0.0
+    torque_est: t.f32 = 0.0
+    iq: t.f32 = 0.0
+    id: t.f32 = 0.0
+    vbus: t.f32 = 0.0
+    ibus_est: t.f32 = 0.0
+    torque_limit_eff: t.f32 = 0.0
+    vel_limit_eff: t.f32 = 0.0
+    accel_limit_eff: t.f32 = 0.0
+    temps: t.array(t.f32, 4) = field(default_factory=lambda: [0.0] * 4)
+    speed_kp: t.f32 = 0.0
+    speed_ki: t.f32 = 0.0
+    hall_pll_hz: t.f32 = 0.0
 
 
-@dataclass
-class MotorTuning(IdlStruct, typename="rammp/msg/MotorTuning"):
+@message("rammp/msg/MotorTuning")
+class MotorTuning:
     """Outer-loop gains for one axis, applied live by the board. 16 bytes.
 
     The board acts on a NEW tuning_req_id only and echoes it as
@@ -224,13 +221,13 @@ class MotorTuning(IdlStruct, typename="rammp/msg/MotorTuning"):
     speed_kp or speed_ki sets that gain to exactly 0 (API version 3). With
     persist set the board also writes the values to NVS.
     """
-    tuning_req_id: pt.uint8 = 0
-    persist: pt.uint8 = 0
-    reserved0: pt.uint8 = 0
-    reserved1: pt.uint8 = 0
-    speed_kp: pt.float32 = 0.0
-    speed_ki: pt.float32 = 0.0
-    hall_pll_hz: pt.float32 = 0.0
+    tuning_req_id: t.u8 = 0
+    persist: t.u8 = 0
+    reserved0: t.u8 = 0
+    reserved1: t.u8 = 0
+    speed_kp: t.f32 = 0.0
+    speed_ki: t.f32 = 0.0
+    hall_pll_hz: t.f32 = 0.0
 
 
 # --------------------------------------------------------------------------
@@ -307,22 +304,22 @@ PARAM_BY_NAME = {row[1]: row for row in PARAM_TABLE}
 PARAM_DEFAULTS = [row[6] for row in PARAM_TABLE]
 
 
-@dataclass
-class ParamSet(IdlStruct, typename="rammp/msg/ParamSet"):
+@message("rammp/msg/ParamSet")
+class ParamSet:
     """Set one parameter. 8 bytes on the wire."""
-    seq: pt.uint8 = 0
-    id: pt.uint8 = 0
-    value: pt.float32 = 0.0
+    seq: t.u8 = 0
+    id: t.u8 = 0
+    value: t.f32 = 0.0
 
 
-@dataclass
-class ParamState(IdlStruct, typename="rammp/msg/ParamState"):
+@message("rammp/msg/ParamState")
+class ParamState:
     """The whole parameter table as the MIB holds it."""
-    seq: pt.uint8 = 0
-    last_set_seq: pt.uint8 = 0
-    last_set_ok: pt.uint8 = 0
-    count: pt.uint8 = PARAM_COUNT
-    values: pt.array[pt.float32, PARAM_COUNT] = field(
+    seq: t.u8 = 0
+    last_set_seq: t.u8 = 0
+    last_set_ok: t.u8 = 0
+    count: t.u8 = PARAM_COUNT
+    values: t.array(t.f32, PARAM_COUNT) = field(
         default_factory=lambda: list(PARAM_DEFAULTS))
 
 
@@ -342,31 +339,31 @@ CAN_FLAG_RTR = 0x02
 CAN_BUS_STATES = {0: "active", 1: "warning", 2: "passive", 3: "bus-off"}
 
 
-@dataclass
-class CanFrame(IdlStruct, typename="rammp/msg/CanFrame"):
+@message("rammp/msg/CanFrame")
+class CanFrame:
     """One classic CAN frame. 16 bytes on the wire."""
-    seq: pt.uint8 = 0
-    flags: pt.uint8 = 0
-    dlc: pt.uint8 = 0
-    reserved: pt.uint8 = 0
-    id: pt.uint32 = 0
-    data: pt.array[pt.uint8, 8] = field(default_factory=lambda: [0] * 8)
+    seq: t.u8 = 0
+    flags: t.u8 = 0
+    dlc: t.u8 = 0
+    reserved: t.u8 = 0
+    id: t.u32 = 0
+    data: t.array(t.u8, 8) = field(default_factory=lambda: [0] * 8)
 
 
-@dataclass
-class CanStatus(IdlStruct, typename="rammp/msg/CanStatus"):
+@message("rammp/msg/CanStatus")
+class CanStatus:
     """Bridge health, published with the other periodic status. 36 bytes."""
-    initialized: pt.uint8 = 0
-    enabled: pt.uint8 = 0
-    bus_state: pt.uint8 = 0
-    reserved: pt.uint8 = 0
-    bitrate: pt.uint32 = 0
-    tx_ok: pt.uint32 = 0
-    tx_failed: pt.uint32 = 0
-    rx_frames: pt.uint32 = 0
-    rx_dropped: pt.uint32 = 0
-    bus_errors: pt.uint32 = 0
-    tx_error_count: pt.uint16 = 0
-    rx_error_count: pt.uint16 = 0
-    tx_gpio: pt.int16 = -1
-    rx_gpio: pt.int16 = -1
+    initialized: t.u8 = 0
+    enabled: t.u8 = 0
+    bus_state: t.u8 = 0
+    reserved: t.u8 = 0
+    bitrate: t.u32 = 0
+    tx_ok: t.u32 = 0
+    tx_failed: t.u32 = 0
+    rx_frames: t.u32 = 0
+    rx_dropped: t.u32 = 0
+    bus_errors: t.u32 = 0
+    tx_error_count: t.u16 = 0
+    rx_error_count: t.u16 = 0
+    tx_gpio: t.i16 = -1
+    rx_gpio: t.i16 = -1

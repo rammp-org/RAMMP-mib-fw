@@ -26,8 +26,9 @@ Once, from `tools/mib_debugger`:
 ./setup.sh
 ```
 
-This makes a Python virtual environment with CycloneDDS. It needs Python 3.9
-or 3.10; on a Mac `/usr/bin/python3` is normally fine. On Windows run
+This makes a Python virtual environment with the `espp` wheel, the same RTPS
+stack the boards run. It needs Python 3.10 to 3.14 (`brew install
+python@3.12` on a Mac, which ships 3.9). On Windows run
 `setup.cmd` from PowerShell or cmd, and later `run.cmd` and `sim.cmd`.
 [SETUP.md](SETUP.md) has the per-platform details and the firewall rules.
 
@@ -74,8 +75,8 @@ stays on "searching" with no samples:
 - check the interface dropdown shows an entry marked "(board subnet)"; if not,
   the laptop has no lease and the cable or DHCP is the problem,
 - press **Disconnect**, pick the interface explicitly, and connect again.
-  CycloneDDS chooses its multicast interface when the participant is created,
-  which is why Disconnect and Connect are the way to change it.
+  The RTPS stack binds its interface when the participant is created, which
+  is why Disconnect and Connect are the way to change it.
 
 **Disconnect** is safe at any time. It releases the stick and sends drive
 DISABLE before it drops the participant.

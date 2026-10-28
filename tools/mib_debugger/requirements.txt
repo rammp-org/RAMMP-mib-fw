@@ -1,4 +1,4 @@
-# The only third-party dependency. Prebuilt wheels exist for CPython 3.7 to 3.10
-# on macOS, Linux and Windows; newer interpreters have no wheel and would try to
-# build the C library from source. setup.sh / setup.cmd pick a suitable one.
-cyclonedds==0.10.5
+# The only third-party dependency: espp's Python package, which carries the
+# same RTPS stack the MIB and the PACE RACER boards run. Wheels exist for
+# CPython 3.10 to 3.14 on macOS, Linux and Windows.
+espp==1.3.10

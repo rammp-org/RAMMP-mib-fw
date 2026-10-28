@@ -6,7 +6,6 @@ one fails. Use it when the page stays on "searching":
     .venv/bin/python doctor.py                 # auto-detect the board's interface
     .venv/bin/python doctor.py --interface en9 # or an address, 192.168.4.4
     .venv/bin/python doctor.py --local         # against the simulator (sim.sh)
-    .venv/bin/python doctor.py --trace         # also write and summarise a CycloneDDS trace
 
 The steps:
 
@@ -15,13 +14,10 @@ The steps:
    announces themselves. The MIB and the PACE RACER boards show up as vendor
    13.37 (espp's RTPS stack). Nothing from 192.168.4.x means the boards'
    multicast is not reaching this machine: switch, firewall, wrong interface.
-3. DDS: join the domain the way the debugger does, list the participants and
-   every topic each one offers and reads, then count the samples that arrive.
-   Writers listed but no samples means the boards never learned this machine's
-   readers, which is the endpoint-discovery problem, not a network one.
-
-Lines reading "malformed packet received from vendor 13.37" are expected: the
-boards send a pre-emptive ACKNACK CycloneDDS rejects, six per discovery round.
+3. RTPS: join the domain the way the debugger does, with espp's own stack,
+   count how many of this machine's readers found a remote writer, and count
+   the samples that arrive on the MIB's status topics and the boards' state
+   topics.
 """
 
 import argparse
@@ -137,113 +133,47 @@ def step_multicast(address, seconds):
 
 # ------------------------------------------------------------------ step 3
 
-def step_dds(selector, local, seconds, trace_path):
-    banner(f"3. DDS participant on {selector or 'default interface'} for {seconds:.0f} s")
-    uri = mib_link.build_cyclonedds_uri(selector, local=local)
-    if trace_path:
-        trace = (f"<Tracing><Verbosity>finest</Verbosity><OutputFile>{trace_path}</OutputFile></Tracing>")
-        uri = uri.replace("</Domain>", trace + "</Domain>")
-    os.environ["CYCLONEDDS_URI"] = uri
-    from cyclonedds.builtin import (BuiltinDataReader, BuiltinTopicDcpsParticipant,
-                                    BuiltinTopicDcpsPublication, BuiltinTopicDcpsSubscription)
-    from cyclonedds.core import Policy, Qos
-    from cyclonedds.domain import DomainParticipant
-    from cyclonedds.sub import DataReader, Subscriber
-    from cyclonedds.topic import Topic
-
-    dp = DomainParticipant(0)
-    my_prefix = str(dp.guid)[:27]
-    r_part = BuiltinDataReader(dp, BuiltinTopicDcpsParticipant)
-    r_pub = BuiltinDataReader(dp, BuiltinTopicDcpsPublication)
-    r_sub = BuiltinDataReader(dp, BuiltinTopicDcpsSubscription)
-    qos = Qos(Policy.Reliability.BestEffort, Policy.History.KeepLast(8))
-    sub = Subscriber(dp)
-
-    def reader(topic, datatype):
-        return DataReader(sub, Topic(dp, topic, datatype, qos=qos), qos=qos)
-
+def step_rtps(address, local, seconds):
+    banner(f"3. RTPS participant on {'loopback' if local else address} for {seconds:.0f} s")
+    import rtps_io
+    participant = rtps_io.Participant(interface_address="127.0.0.1" if local else address,
+                                      log_level="error")
+    try:
+        participant.start()
+    except RuntimeError as exc:
+        verdict(False, str(exc))
+        return False
     readers = {
-        "rammp/mib/status": reader(msg.TOPIC_MIB_STATUS, msg.MibStatus),
-        "rammp/mib/can_status": reader(msg.TOPIC_MIB_CAN_STATUS, msg.CanStatus),
+        "rammp/mib/status": participant.reader(msg.TOPIC_MIB_STATUS, msg.MibStatus),
+        "rammp/mib/can_status": participant.reader(msg.TOPIC_MIB_CAN_STATUS, msg.CanStatus),
     }
     for axis in mib_link.ALL_AXES:
-        readers[msg.motor_state_topic(axis)] = reader(msg.motor_state_topic(axis), msg.MotorState)
+        readers[msg.motor_state_topic(axis)] = participant.reader(msg.motor_state_topic(axis), msg.MotorState)
     counts = collections.Counter()
     last_status = None
     end = time.time() + seconds
     while time.time() < end:
         for topic, rd in readers.items():
             for sample in rd.take(16):
-                if sample.__class__.__name__ in ("MibStatus", "CanStatus", "MotorState"):
-                    counts[topic] += 1
-                    if topic == "rammp/mib/status":
-                        last_status = sample
+                counts[topic] += 1
+                if topic == "rammp/mib/status":
+                    last_status = sample
         time.sleep(0.1)
-
-    participants = [str(p.key) for p in r_part.take(64)]
-    pubs = collections.defaultdict(list)
-    subs = collections.defaultdict(list)
-    for w in r_pub.take(256):
-        pubs[str(w.participant_key)[:27]].append(w.topic_name)
-    for r in r_sub.take(256):
-        subs[str(r.participant_key)[:27]].append(r.topic_name)
-    remote = [p for p in participants if p[:27] != my_prefix]
-    print(f"   participants discovered: {len(remote)} remote")
-    for p in remote:
-        pre = p[:27]
-        print(f"   {pre}  writes {len(pubs.get(pre, []))} topics, reads {len(subs.get(pre, []))}")
-        for t in sorted(pubs.get(pre, [])):
-            print(f"       -> {t}")
-    mib_pub = [pre for pre, topics in pubs.items() if "rammp/mib/status" in topics and pre != my_prefix]
-    verdict(bool(mib_pub), "MIB endpoints discovered (rammp/mib/status offered)" if mib_pub else
-            "no participant offers rammp/mib/status: the MIB was not discovered over DDS "
-            "(firewall blocking unicast UDP, or a different interface than step 2)")
+    matched = participant.matched_readers
+    participant.stop()
+    print(f"   readers that found a remote writer: {matched} of {len(readers)}")
+    verdict(matched > 0, "endpoint discovery with at least one board" if matched > 0 else
+            "no reader matched any writer: the boards were not discovered over RTPS "
+            "(firewall blocking UDP, or a different interface than step 2)")
     print("   samples received:")
     for topic in readers:
         print(f"       {counts[topic]:4d}  {topic}")
     ok = counts["rammp/mib/status"] > 0
     verdict(ok, "MibStatus samples arriving" + (
         f" (state {msg.MibSystemState(last_status.systemState).name})" if ok else
-        ": none. The MIB offers the topic but never sent to this machine, so it never "
-        "learned this machine's reader. That is the endpoint-discovery handshake, not "
-        "the network: the boards need the espp patch in interop/ (BRANCH_NOTES.md "
-        "finding 10)."))
-    if mib_pub and not ok:
-        print("   hint: run again with --trace to see what the MIB answered.")
-    del readers, r_part, r_pub, r_sub, sub, dp
-    return ok, (mib_pub[0] if mib_pub else None)
-
-
-# ------------------------------------------------------------------ trace
-
-def summarise_trace(path, mib_prefix):
-    banner(f"4. CycloneDDS trace summary ({path})")
-    try:
-        with open(path, "rb") as handle:
-            text = handle.read().decode("utf-8", "replace")
-    except OSError as exc:
-        print(f"   could not read the trace: {exc}")
-        return
-    by_port = collections.Counter(re.findall(rf"from udp/{re.escape(MIB_ADDRESS)}:(\d+)", text))
-    print("   packets from the MIB by source port: " + (", ".join(
-        f"{p} x{n}" for p, n in sorted(by_port.items())) or "none"))
-    print("   (7400 = discovery multicast, 7410 = discovery unicast, 7411 = user data)")
-    malformed = len(re.findall(r"malformed packet received", text))
-    print(f"   malformed (base-0 pre-emptive ACKNACK) packets dropped: {malformed}")
-    if mib_prefix:
-        # The trace prints a GUID prefix as three 32-bit groups without leading
-        # zeros ("e8f60ae0:c574000d:2500a55a"); the API gives dashed hex.
-        hexs = mib_prefix.replace("-", "")[:24]
-        short = ":".join(hexs[i:i + 8].lstrip("0") or "0" for i in (0, 8, 16))
-        acks = len(re.findall(rf"recv(?:UC)?: ACKNACK\([^)]*{re.escape(short)}", text))
-        matched = f"scanning all rds of topic rammp/mib/status" in text
-        print(f"   valid ACKNACKs from the MIB to this machine's discovery writers: {acks}")
-        verdict(matched, "this machine matched the MIB's status writer to its reader")
-        verdict(acks > 0, "the MIB acknowledged this machine's endpoint discovery" + ("" if acks else
-                ": it never did, so it cannot know this machine's readers"))
-    sends_uc = len(re.findall(rf"nn_xpack_send.*udp/{re.escape(MIB_ADDRESS)}:7410", text))
-    sends_mc = len(re.findall(r"nn_xpack_send.*udp/239\.255\.0\.1:7400", text))
-    print(f"   discovery sent by this machine: {sends_uc} unicast to the MIB, {sends_mc} multicast")
+        ": none in the window. If step 2 saw the MIB and a reader matched, the MIB is up but not "
+        "publishing status (check its serial log); if nothing matched, see above."))
+    return ok
 
 
 def main():
@@ -251,21 +181,14 @@ def main():
     parser.add_argument("--interface", help="interface name or IPv4 address facing the board")
     parser.add_argument("--local", action="store_true", help="test against the simulator on loopback")
     parser.add_argument("--seconds", type=float, default=8.0, help="how long to listen in steps 2 and 3")
-    parser.add_argument("--trace", action="store_true", help="write a CycloneDDS trace and summarise it")
-    parser.add_argument("--trace-file", default="mib_doctor_trace.log")
     args = parser.parse_args()
 
     address, name = step_interfaces(args)
     if address is None:
         return 1
-    if args.local:
-        selector = None
-    else:
+    if not args.local:
         step_multicast(address, args.seconds)
-        selector = app.interface_for_cyclonedds(address if sys.platform == "win32" else name)
-    ok, mib_prefix = step_dds(selector, args.local, args.seconds, args.trace_file if args.trace else None)
-    if args.trace:
-        summarise_trace(args.trace_file, mib_prefix)
+    ok = step_rtps(address, args.local, args.seconds)
     banner("Result")
     print("   connected: the debugger will work on this interface." if ok else
           "   not connected: see the first FAIL above.")

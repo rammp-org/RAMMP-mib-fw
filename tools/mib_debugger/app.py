@@ -1,7 +1,7 @@
 """Web front end for the RAMMP MIB debugger.
 
 Serves a single page and a small JSON API from the standard library, so the
-only third-party dependency in the whole tool is CycloneDDS. The page starts
+only third-party dependency in the whole tool is the espp wheel (its RTPS stack). The page starts
 disconnected; the Connect button in the browser creates the DDS participant,
 and Disconnect tears it down again.
 
@@ -92,22 +92,20 @@ def list_interfaces():
     return found
 
 
-def interface_for_cyclonedds(chosen):
-    """What to put in the CycloneDDS config for the interface the user picked.
+def interface_address(chosen):
+    """The IPv4 address for the interface the user picked, by name or address.
 
-    CycloneDDS matches a `name` against the OS interface name, which on Windows
-    is the adapter's friendly name and unreliable to type, so there the
-    interface is selected by its address instead. An address is accepted
-    everywhere; a name on the list is translated on Windows."""
+    espp's RTPS stack selects its interface by address. The dropdown and the
+    --interface flag accept the name (en9, eth0, "Ethernet 2") or the address;
+    a name is looked up in the interface list."""
     if not chosen:
-        return chosen
+        return None
     if re.match(r"^\d+\.\d+\.\d+\.\d+$", chosen):
         return chosen
-    if sys.platform == "win32":
-        for entry in list_interfaces():
-            if entry["name"].lower() == chosen.lower():
-                return entry["address"]
-    return chosen
+    for entry in list_interfaces():
+        if entry["name"].lower() == chosen.lower():
+            return entry["address"]
+    return None
 
 
 def detect_mib_interface():
@@ -142,7 +140,7 @@ class Connection:
             if self.mode == "board":
                 chosen = self.interface or detect_mib_interface()
             link = mib_link.MibLink(domain_id=self.domain,
-                                    interface=interface_for_cyclonedds(chosen),
+                                    interface=interface_address(chosen),
                                     local=(self.mode == "local"))
             try:
                 link.start()
@@ -151,8 +149,8 @@ class Connection:
                 raise
             if self.mode == "board" and not chosen:
                 link.log(
-                    f"No interface holds a {MIB_SUBNET_PREFIX}x address; using the "
-                    "CycloneDDS default. Plug the board in or pick an interface.",
+                    f"No interface holds a {MIB_SUBNET_PREFIX}x address; using the first "
+                    "non-loopback interface. Plug the board in or pick an interface.",
                     "warn")
             self.link = link
             return {"ok": True, "interface": chosen}
@@ -389,8 +387,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="Debug GUI for the RAMMP MIB.")
     parser.add_argument("--interface", default=None,
-                        help="network interface facing the board: a name such as en5, "
-                             "or its IPv4 address (use the address on Windows)")
+                        help="network interface facing the board: a name such as en5 or "
+                             "\"Ethernet 2\", or its IPv4 address")
     parser.add_argument("--local", action="store_true",
                         help="preselect simulator mode (loopback, for fake_mib.py)")
     parser.add_argument("--connect", action="store_true",

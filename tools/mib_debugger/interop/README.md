@@ -2,7 +2,10 @@
 
 `espp-rtps-cyclonedds-interop.patch` is the fix for `BRANCH_NOTES.md` finding
 10: four defects in espp's `components/rtps` that stop every sample between
-the boards and a CycloneDDS peer such as this debugger. It applies to espp at
+the boards and a CycloneDDS peer. The debugger itself no longer needs it: it
+runs espp's own stack since October 2026. The patch matters for anyone
+pointing a CycloneDDS participant, or a ROS 2 node on the CycloneDDS RMW, at
+the chair. It applies to espp at
 rtps 1.3.5 through 1.3.10 (the rtps sources are identical across them):
 
 ```
@@ -10,10 +13,10 @@ cd <espp checkout>
 git apply <this dir>/espp-rtps-cyclonedds-interop.patch
 ```
 
-Every board on the chair needs it: the MIB and both PACE RACER boards. Each
-firmware pulls `espp/rtps` from the component registry, so until an espp
-release carries the fix, point the firmware at a patched checkout with an
-`override_path` entry for `espp/rtps` in its `main/idf_component.yml`.
+To use it, every board on the chair needs it: the MIB and both PACE RACER
+boards. Each firmware pulls `espp/rtps` from the component registry, so until
+an espp release carries the fix, point the firmware at a patched checkout with
+an `override_path` entry for `espp/rtps` in its `main/idf_component.yml`.
 
 ## Reproducing without the chair
 
@@ -34,7 +37,8 @@ On a Mac with only the command-line tools, add
 to both configure steps.
 
 Then, with `<if>` the interface name CycloneDDS should use and `<ip>` its
-address (the debugger's venv has CycloneDDS):
+address, in a venv with `pip install cyclonedds==0.10.5` (Python 3.9 or 3.10;
+the debugger's own venv no longer has it):
 
 ```
 # espp writer -> CycloneDDS reader (reliable; "be" for best-effort on both)

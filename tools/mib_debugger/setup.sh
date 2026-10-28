@@ -1,15 +1,15 @@
 #!/bin/sh
 # Create a virtual environment for the MIB debugger with a Python that has a
-# prebuilt CycloneDDS wheel (CPython 3.9 or 3.10). Run once, then use run.sh.
+# prebuilt espp wheel (CPython 3.10 to 3.14). Run once, then use run.sh.
 # On Windows use setup.cmd instead.
 set -e
 cd "$(dirname "$0")"
 
 pick_python() {
-  for candidate in /usr/bin/python3 python3.10 python3.9 python3; do
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
       version=$("$candidate" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 99)
-      if [ "$version" -ge 9 ] && [ "$version" -le 10 ]; then
+      if [ "$version" -ge 10 ] && [ "$version" -le 14 ]; then
         echo "$candidate"; return 0
       fi
     fi
@@ -18,8 +18,8 @@ pick_python() {
 }
 
 PY=$(pick_python) || {
-  echo "No Python 3.9 or 3.10 found. CycloneDDS 0.10 ships no wheel for other versions." >&2
-  echo "Install one with: brew install python@3.10" >&2
+  echo "No Python 3.10 to 3.14 found; the espp wheel needs one of those." >&2
+  echo "Install one with: brew install python@3.12" >&2
   exit 1
 }
 

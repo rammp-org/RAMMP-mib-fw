@@ -160,11 +160,14 @@ main: PRs 24 and 35 fixed the turn direction there, so the branch's
 
 ### 10. espp's RTPS stack cannot complete endpoint discovery with CycloneDDS
 
-**Status: root-caused and fixed on a host build of espp (2026-10-28); the fix
-is not yet in the firmware. Patch and test harness in
-`tools/mib_debugger/interop/`.** This is why the debugger stays on
-"searching" against the chair and why every CycloneDDS peer prints
-`malformed packet received from vendor 13.37`.
+**Status: root-caused and fixed on a host build of espp (2026-10-28). The
+debugger no longer depends on it: since the same day it runs espp's own
+RTPS stack from the `espp` wheel, so both ends share one implementation and
+no board needs reflashing for the tool. The patch and test harness stay in
+`tools/mib_debugger/interop/` for anyone pointing a CycloneDDS participant
+or a ROS 2 node on the CycloneDDS RMW at the chair.** With an unpatched board
+such a peer stays without samples for ever and prints `malformed packet
+received from vendor 13.37`.
 
 espp's rtps component (`components/rtps`, a de-vendored embeddedRTPS) was
 only ever tested against FastDDS and ROS 2. CycloneDDS, which the debugger

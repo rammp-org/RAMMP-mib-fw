@@ -1,18 +1,17 @@
 # MIB debugger: setup by platform
 
-The debugger is a Python tool with one dependency, CycloneDDS. It runs on
-macOS, Linux (including WSL) and Windows from the same files; only the way
-Python is found and the network interface is named differ. This page is the
+The debugger is a Python tool with one dependency, the `espp` wheel, which
+carries the same RTPS stack the boards run. It runs on macOS, Linux (including
+WSL) and Windows from the same files; only the way Python is found and the
+network interface is named differ. This page is the
 install reference. [TUTORIAL.md](TUTORIAL.md) is what to do once it runs, and
 [README.md](README.md) describes every page.
 
 ## What every platform needs
 
-- **CPython 3.9 or 3.10.** CycloneDDS 0.10.5 publishes prebuilt wheels for
-  3.7 to 3.10 on macOS, Linux and Windows and nothing newer; a later Python
-  makes pip try to compile the C library, which fails without a CycloneDDS
-  install. The setup scripts look for a suitable interpreter and refuse to
-  continue otherwise.
+- **CPython 3.10 to 3.14.** The `espp` wheel exists for those on macOS, Linux
+  and Windows. The setup scripts pick the newest suitable interpreter and
+  refuse to continue otherwise.
 - **A wired Ethernet path to the MIB.** The MIB runs a DHCP server at
   192.168.4.1 and hands the computer a 192.168.4.x lease. A USB-C Ethernet
   adapter is fine. Wi-Fi does not reach the chair's network.
@@ -20,8 +19,7 @@ install reference. [TUTORIAL.md](TUTORIAL.md) is what to do once it runs, and
   Firewalls that block inbound UDP leave the tool on "searching" forever.
 - Nothing is installed system-wide. Everything lives in a `.venv` folder next
   to the tool, so it cannot disturb a ROS 2 or other DDS installation on the
-  same machine, and it sets its CycloneDDS configuration only inside its own
-  process.
+  same machine.
 
 ## macOS
 
@@ -31,9 +29,9 @@ cd tools/mib_debugger
 ./run.sh
 ```
 
-`setup.sh` prefers `/usr/bin/python3`, which is 3.9 on current macOS and has a
-wheel. If it reports no suitable Python, `brew install python@3.10` and run it
-again. A browser window opens at http://127.0.0.1:8712/.
+`setup.sh` takes the newest Python from 3.14 down to 3.10. macOS ships 3.9,
+which has no wheel, so `brew install python@3.12` first if nothing newer is
+installed. A browser window opens at http://127.0.0.1:8712/.
 
 The interface dropdown shows BSD names (`en9`); auto-detect picks the one
 holding a 192.168.4.x address. macOS asks once whether Python may accept
@@ -47,9 +45,8 @@ cd tools/mib_debugger
 ./run.sh
 ```
 
-Ubuntu 22.04 ships Python 3.10 and works as is. Ubuntu 24.04 ships 3.12, which
-has no wheel: install 3.10 beside it (`sudo add-apt-repository ppa:deadsnakes/ppa
-&& sudo apt install python3.10 python3.10-venv`) and `setup.sh` finds it. The
+Ubuntu 22.04 (Python 3.10) and 24.04 (3.12) both work as is; install
+`python3-venv` if `setup.sh` complains about venv. The
 interface list reads `ifconfig` (package `net-tools`) and falls back to
 `ip -o -4 addr`, so either tool is enough. Interface names are the kernel's
 (`eth0`, `enx…`). If `ufw` is on, allow UDP in on the board's interface.
@@ -83,15 +80,14 @@ setup.cmd
 run.cmd
 ```
 
-`setup.cmd` uses the `py` launcher to find Python 3.10 or 3.9. If neither is
-installed: `winget install Python.Python.3.10`, reopen the terminal, run
+`setup.cmd` uses the `py` launcher to find Python 3.14 down to 3.10. If none
+is installed: `winget install Python.Python.3.12`, reopen the terminal, run
 `setup.cmd` again. `run.cmd` and `sim.cmd` take the same arguments as the
 `.sh` scripts, for example `run.cmd --local` with `sim.cmd` in a second
 terminal for the simulator.
 
 The interface dropdown shows the adapters' friendly names ("Ethernet 2") as
-`ipconfig` reports them. The tool hands CycloneDDS the adapter's address
-rather than its name, which is what it matches reliably on Windows;
+`ipconfig` reports them; the RTPS stack is given the adapter's address.
 `run.cmd --interface 192.168.4.4` works as well.
 
 **Windows Firewall:** the first time Python receives from the network, a
@@ -120,33 +116,28 @@ first one that fails:
 ```
 ./doctor.sh                  # macOS, Linux; doctor.cmd on Windows
 ./doctor.sh --interface en9  # or an address
-./doctor.sh --trace          # also summarises a CycloneDDS trace
 ```
 
 Step 1 is the lease and a ping of the MIB, step 2 listens for the boards'
-discovery multicast, step 3 joins the domain, lists every topic each board
-offers and counts the samples that arrive. "MIB endpoints discovered" with
-zero MibStatus samples is the endpoint-discovery handshake failing (the
-boards never learned this machine's readers), not a cabling or firewall
-problem; `--trace` shows whether the MIB ever acknowledged this machine's
-discovery writers.
+discovery multicast, step 3 joins the domain with the debugger's own stack,
+reports how many readers found a remote writer and counts the samples that
+arrive.
 
 - **No lease.** The dropdown shows no entry marked "(board subnet)": cable,
   adapter or the MIB's DHCP. Ping 192.168.4.1.
 - **Wrong interface.** With Wi-Fi up as well, pick the board's interface
-  explicitly, Disconnect, Connect. CycloneDDS chooses its interface when the
+  explicitly, Disconnect, Connect. The stack binds its interface when the
   participant is created.
 - **Firewall.** Inbound UDP blocked on the board's interface; see the platform
   notes above.
 - **Managed switch with IGMP snooping and no querier.** The laptop's
   multicast reaches the boards but theirs never comes back. A dumb switch or
   a direct cable to the MIB avoids it.
-- **Lines reading `malformed packet received from vendor 13.37`** mean the
-  boards run an espp RTPS stack without the CycloneDDS interop fix
-  (`interop/espp-rtps-cyclonedds-interop.patch`, `BRANCH_NOTES.md` finding
-  10). With that stack the tool never gets a sample; the doctor's step 3
-  shows the MIB's topics with zero samples and `--trace` shows the MIB never
-  acknowledging this machine's endpoint discovery.
+- **Terminal lines that are not errors.** `Received unicast locator:
+  a.b.c.d:port` is the stack listing the boards' endpoints as it discovers
+  them. `Unable to bind ... port 7411` appears when a second participant on
+  the same machine (the simulator, or the doctor beside a running debugger)
+  probes for a free port; it moves to the next one.
 - **The MIB's boot log** over USB (`idf.py monitor`) shows whether its DDS
   endpoints were created; "BEST_EFFORT writer capacity reached" means a
   firmware build without the `CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=8`
