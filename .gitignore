@@ -36,3 +36,11 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 .vscode/
+
+# tools/ros2_bench: the pixi environment and the colcon workspace it builds
+tools/ros2_bench/.pixi/
+tools/ros2_bench/ws/
+tools/ros2_bench/pixi.lock
+# fetched by tools/ros2_bench/setup.sh from kinova-gen3-ros2, pinned
+tools/ros2_bench/conformance/checks_arbitration.py
+__pycache__/
