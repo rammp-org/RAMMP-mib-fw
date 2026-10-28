@@ -29,29 +29,85 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 MIB_SUBNET_PREFIX = "192.168.4."
 
 
-def list_interfaces():
-    """Return [{name, address, mib}] for every interface with an IPv4 address."""
-    try:
-        out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=3).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    found = []
-    current = None
+def _interfaces_ifconfig(out):
+    """BSD / macOS / Linux net-tools `ifconfig` output."""
+    found, current = [], None
     for line in out.splitlines():
-        head = re.match(r"^([a-z0-9]+):", line)
+        head = re.match(r"^([A-Za-z0-9_.-]+):", line)
         if head:
             current = head.group(1)
             continue
         addr = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)", line)
         if current and addr:
-            found.append({
-                "name": current,
-                "address": addr.group(1),
-                "mib": addr.group(1).startswith(MIB_SUBNET_PREFIX),
-            })
-    # The board's subnet first, loopback last.
-    found.sort(key=lambda i: (not i["mib"], i["name"] == "lo0", i["name"]))
+            found.append({"name": current, "address": addr.group(1)})
     return found
+
+
+def _interfaces_ip(out):
+    """Linux `ip -o -4 addr` output: one line per address."""
+    found = []
+    for line in out.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if m:
+            found.append({"name": m.group(1), "address": m.group(2)})
+    return found
+
+
+def _interfaces_ipconfig(out):
+    """Windows `ipconfig` output. Adapter headers are unindented lines ending in
+    a colon; the address line contains "IPv4" in every language Windows ships."""
+    found, current = [], None
+    for line in out.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(":"):
+            name = line.rstrip()[:-1]
+            name = re.sub(r"^.*?adapter\s+", "", name, flags=re.IGNORECASE)
+            current = name.strip()
+            continue
+        if current and "IPv4" in line:
+            addr = re.search(r"(\d+\.\d+\.\d+\.\d+)", line)
+            if addr:
+                found.append({"name": current, "address": addr.group(1)})
+    return found
+
+
+def _run(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def list_interfaces():
+    """Return [{name, address, mib}] for every interface with an IPv4 address."""
+    if sys.platform == "win32":
+        found = _interfaces_ipconfig(_run(["ipconfig"]))
+    else:
+        found = _interfaces_ifconfig(_run(["ifconfig"]))
+        if not found:
+            found = _interfaces_ip(_run(["ip", "-o", "-4", "addr"]))
+    for entry in found:
+        entry["mib"] = entry["address"].startswith(MIB_SUBNET_PREFIX)
+    # The board's subnet first, loopback last.
+    found.sort(key=lambda i: (not i["mib"], i["address"].startswith("127."), i["name"]))
+    return found
+
+
+def interface_for_cyclonedds(chosen):
+    """What to put in the CycloneDDS config for the interface the user picked.
+
+    CycloneDDS matches a `name` against the OS interface name, which on Windows
+    is the adapter's friendly name and unreliable to type, so there the
+    interface is selected by its address instead. An address is accepted
+    everywhere; a name on the list is translated on Windows."""
+    if not chosen:
+        return chosen
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", chosen):
+        return chosen
+    if sys.platform == "win32":
+        for entry in list_interfaces():
+            if entry["name"].lower() == chosen.lower():
+                return entry["address"]
+    return chosen
 
 
 def detect_mib_interface():
@@ -85,7 +141,8 @@ class Connection:
             chosen = None
             if self.mode == "board":
                 chosen = self.interface or detect_mib_interface()
-            link = mib_link.MibLink(domain_id=self.domain, interface=chosen,
+            link = mib_link.MibLink(domain_id=self.domain,
+                                    interface=interface_for_cyclonedds(chosen),
                                     local=(self.mode == "local"))
             try:
                 link.start()
@@ -332,7 +389,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="Debug GUI for the RAMMP MIB.")
     parser.add_argument("--interface", default=None,
-                        help="network interface facing the board, e.g. en5")
+                        help="network interface facing the board: a name such as en5, "
+                             "or its IPv4 address (use the address on Windows)")
     parser.add_argument("--local", action="store_true",
                         help="preselect simulator mode (loopback, for fake_mib.py)")
     parser.add_argument("--connect", action="store_true",

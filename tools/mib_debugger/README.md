@@ -4,8 +4,9 @@ A browser-based bench tool for the RAMMP MIB. It joins the board's DDS domain
 over Ethernet, stands in for the joystick, and shows what the MIB sends to the
 wheel controllers. Nothing in the firmware needs to change to use it.
 
-New to the tool? [TUTORIAL.md](TUTORIAL.md) walks through it in order, from
-install to programming an MCP266 over CAN.
+New to the tool? [SETUP.md](SETUP.md) covers the install on each platform, and
+[TUTORIAL.md](TUTORIAL.md) walks through the pages in order, from the first
+connection to programming an MCP266 over CAN.
 
 This tool lives on the `feature/21-mib-debugger` branch, which is not merged
 to `main`. Anything it reveals that `main` should fix is tracked in
@@ -38,9 +39,11 @@ Run once:
 ./setup.sh
 ```
 
-This creates `.venv` with the one dependency, CycloneDDS. Prebuilt wheels exist
-for CPython 3.9 to 3.12 only, so the script picks a suitable interpreter, which
-on a Mac is normally the one at `/usr/bin/python3`.
+This creates `.venv` with the one dependency, CycloneDDS, using a CPython 3.9
+or 3.10 (the versions with prebuilt wheels). On Windows run `setup.cmd` from
+PowerShell or cmd instead. [SETUP.md](SETUP.md) has the per-platform details
+for macOS, Linux, WSL and Windows, including firewall rules and what to check
+when the tool stays on "searching".
 
 ## Starting the tool
 
@@ -65,21 +68,10 @@ interface holding a 192.168.4.x address; the dropdown lists every interface
 with an address if you would rather choose. The connection pill in the header
 turns green once status samples arrive.
 
-Lines like this in the terminal are noise, not a failure:
-
-```
-recvUC: malformed packet received from vendor 13.37 length 48 state parse:shortmsg
-```
-
-Vendor 13.37 is espp's RTPS stack on the MIB and the PACE RACER boards. When
-one of them discovers the laptop it sends a pre-emptive ACKNACK to the
-laptop's discovery writers with a sequence-number base of 0, and CycloneDDS
-only accepts a base-0 pre-emptive ACKNACK from eProsima and RTI vendor ids.
-The packet is dropped, the boards' ordinary ACKNACKs (base 1 and up) go
-through, and discovery completes on the next heartbeat. One burst of six
-lines per discovery round (three boards, two writers each) is normal. The
-connection is fine if the Board panel's sample count climbs and Enable
-drive turns the badge to DRIVE_ENABLED.
+On Windows the dropdown shows the adapters' friendly names and the tool hands
+CycloneDDS the adapter's address; `run.cmd` replaces `run.sh`. Allow Python
+through Windows Firewall on both private and public networks when asked.
+[SETUP.md](SETUP.md) has the details.
 
 ## Running without the board
 
@@ -326,7 +318,9 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 | `static/tune.html` | The PACE tuning page |
 | `static/actuators.html` | The Actuators page |
 | `actuator_ctl.py` | Port of `mib::Actuator`: CiA 402 enable and set-point handshake, clamp and 0x607D limits, jogs, calibration, encoder set |
+| `SETUP.md` | Install and network setup for macOS, Linux, WSL and Windows |
 | `TUTORIAL.md` | Step-by-step walkthrough of all five pages |
+| `setup.cmd`, `run.cmd`, `sim.cmd` | Windows equivalents of the `.sh` scripts |
 | `canopen_sdo.py` | NMT and SDO client over the bridge, frame decoding for the monitor |
 | `mcp266_objects.py` | The MCP266 object table: settings, telemetry, actions |
 | `fake_mib.py` | Firmware stand-in for use without hardware, with two fake PACE RACER drive boards |

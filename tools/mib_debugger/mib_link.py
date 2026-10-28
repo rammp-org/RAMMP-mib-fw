@@ -12,6 +12,8 @@ driving.
 """
 
 import os
+import re
+import sys
 import threading
 import time
 from collections import deque
@@ -85,16 +87,35 @@ def build_cyclonedds_uri(interface=None, local=False):
     if not interface and not local:
         return None
 
-    name = interface or "lo0"
     peers = ""
     if local:
         peers = "<Discovery><Peers><Peer address=\"127.0.0.1\"/></Peers></Discovery>"
+        # Windows has no "lo0"; its loopback is picked by address, and it does
+        # not multicast, which the simulator does not need thanks to the peer.
+        interface = "127.0.0.1" if sys.platform == "win32" else (interface or "lo0")
+    # An IPv4 literal selects the interface by address (the only reliable way
+    # on Windows, where names are the adapters' friendly names); anything else
+    # is an OS interface name such as en9 or eth0.
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", interface):
+        selector = f'address="{interface}"'
+        multicast_attr = "false" if interface.startswith("127.") else "true"
+    else:
+        selector = f'name="{interface}"'
+        multicast_attr = "true"
+
+    # Against the chair, multicast is used for participant discovery only.
+    # With several espp participants on the wire (the MIB and the PACE RACER
+    # boards) CycloneDDS otherwise sends its endpoint discovery and heartbeats
+    # to the multicast group, where the boards' RTPS stack does not act on
+    # them, so the boards never learn the debugger's readers and never send a
+    # sample. Unicast per board is what a single-board bench already used.
+    multicast = "true" if local else "spdp"
 
     return (
         "<CycloneDDS><Domain>"
         "<General><Interfaces>"
-        f'<NetworkInterface name="{name}" priority="default" multicast="true"/>'
-        "</Interfaces><AllowMulticast>true</AllowMulticast></General>"
+        f'<NetworkInterface {selector} priority="default" multicast="{multicast_attr}"/>'
+        f"</Interfaces><AllowMulticast>{multicast}</AllowMulticast></General>"
         + peers +
         "</Domain></CycloneDDS>"
     )

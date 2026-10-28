@@ -26,9 +26,10 @@ Once, from `tools/mib_debugger`:
 ./setup.sh
 ```
 
-This makes a Python virtual environment with CycloneDDS. It needs a Python
-between 3.9 and 3.12 because CycloneDDS ships no wheel for newer versions; on a
-Mac `/usr/bin/python3` is normally fine.
+This makes a Python virtual environment with CycloneDDS. It needs Python 3.9
+or 3.10; on a Mac `/usr/bin/python3` is normally fine. On Windows run
+`setup.cmd` from PowerShell or cmd, and later `run.cmd` and `sim.cmd`.
+[SETUP.md](SETUP.md) has the per-platform details and the firewall rules.
 
 Every time:
 
