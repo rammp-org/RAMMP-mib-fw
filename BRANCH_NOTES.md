@@ -45,6 +45,20 @@ was found, and how to confirm a fix with the debugger.
 - **On this branch** the handler multiplies `sample.x` by the runtime parameter
   `JOYSTICK_X_SIGN`, default +1, purely so the bug can be demonstrated live.
   That parameter is a bench aid, not the fix.
+- **Why the chair turns correctly anyway (2026-10-28):** main's PR 24 added the
+  negation and swapped both inversion flags; PR 35 removed the negation again
+  because turning was backwards. Swapping both flags negates both wheel
+  outputs, which is what fixed forward/backward, and it also mirrors the
+  turn; with the negation gone, main's maths still says a rightward stick is
+  a left turn. The chair turns right because something on the chair mirrors
+  it: the HMI's "Stick left/right" setting (`stick_invert_x` in pace-hmi-fw
+  negates x before publishing), or the PACE board on the physical right wheel
+  being assigned axis 2, `drive_left`. The debugger therefore mirrors its own
+  stick by default (toggle under the pad); the simulator, which has no
+  mirror, shows the raw convention when the toggle is off. The clean fix is
+  still the negation on main, once the chair-side mirror is identified and
+  removed, and this branch's inversion defaults should be aligned with main's
+  (left false, right true) so the simulator drives forward like the chair.
 
 ### 2. Build breaks under ESP-IDF v6.1 (LVGL memory setting)
 

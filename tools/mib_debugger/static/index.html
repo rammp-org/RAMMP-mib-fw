@@ -251,7 +251,7 @@
       <div id="pad"><div class="axis h"></div><div class="axis v"></div><div id="knob"></div></div>
       <div class="joy-side">
         <div class="readout">
-          <span class="k">x (angular)</span><span id="rx">0.00</span>
+          <span class="k">x (as pushed)</span><span id="rx">0.00</span>
           <span class="k">y (linear)</span><span id="ry">0.00</span>
           <span class="k">twist</span><span id="rt">0.00</span>
         </div>
@@ -268,6 +268,10 @@
           <button data-xy="0,0.4">Creep</button>
         </div>
         <div class="hold" style="margin-top:6px">Hold the pad or a preset to drive. Releasing sends zero.</div>
+        <div class="row" style="margin-top:10px">
+          <label class="toggle"><input type="checkbox" id="mirrorChk"> Mirror left/right like the HMI</label>
+        </div>
+        <div class="hold">On, the tool sends −x for a rightward push, as the chair's joystick does, so right turns right. Off sends x as pushed and shows the firmware's own convention.</div>
         <div class="row" style="margin-top:12px">
           <button id="latchBtn">Latch current values</button>
           <button id="releaseBtn">Release</button>
@@ -420,6 +424,7 @@
   }));
   $('stopBtn').addEventListener('click', () => { release(); post({action: 'stop'}); });
   $('simChk').addEventListener('change', (e) => post({action: 'motor_sim', enabled: e.target.checked}));
+  $('mirrorChk').addEventListener('change', (e) => post({action: 'stick_mirror', enabled: e.target.checked}));
 
   // ---------------------------------------------------------------- seat
   // Ranges from RAMMP_SEAT_AXIS_TABLE, converted from raw tenths to whole units.
@@ -546,6 +551,7 @@
     jp.className = 'pill ' + (s.joystick.live ? 'on' : '');
     jp.lastChild.textContent = s.joystick.live ? 'stick live' : 'stick released';
     $('simChk').checked = s.motor_sim;
+    if (document.activeElement !== $('mirrorChk')) $('mirrorChk').checked = !!s.stick_mirror_x;
 
     // Prefer the board's live parameter table for geometry and inversion, so the
     // chassis-frame view stays right after a parameter change; fall back to the

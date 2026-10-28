@@ -414,6 +414,10 @@ def dispatch(link, body: dict):
     if action == "trace_clear":
         return link.trace_clear()
 
+    if action == "stick_mirror":
+        link.set_stick_mirror(bool(body.get("enabled")))
+        return {"ok": True}
+
     if action == "motor_sim":
         link.set_motor_sim(bool(body.get("enabled")))
         return {"ok": True}

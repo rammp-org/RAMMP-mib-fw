@@ -129,8 +129,11 @@ Do this with the wheels off the ground the first time.
    **↻ Spin R** and **Creep** presets work the same way: they drive while held
    and stop when released.
 4. Watch the Chassis frame readout. Push the pad to the right and read the
-   Motion line. On current firmware it reports "turning left (CCW)", which is
-   the joystick sign error tracked as finding 1 in `BRANCH_NOTES.md`.
+   Motion line: "turning right (CW)". The tool mirrors x before sending, as
+   the chair's HMI does, because the firmware's own convention turns the
+   other way (finding 1 in `BRANCH_NOTES.md`). Untick **Mirror left/right
+   like the HMI** under the pad to see that raw convention: the same push
+   then reads "turning left (CCW)".
 5. **Latch current values** keeps publishing whatever the readout shows
    without holding anything, for measurements. **Release** or **STOP** ends it.
    If the browser stops polling for 1.5 s while latched, the tool releases the
@@ -151,9 +154,9 @@ whether the last write was applied or rejected. Geometry changes affect the
 wheel commands immediately, so you can watch the Motor commands panel on the
 Debugger page respond.
 
-To test the turn-direction fix: set **Joystick X sign** to -1, go back to the
-Debugger page, push the pad right, and the Motion line now says "turning right
-(CW)".
+To test a firmware-side turn-direction fix: untick the stick mirror on the
+Debugger page, set **Joystick X sign** to -1 here, push the pad right, and the
+Motion line says "turning right (CW)" with no mirroring in the tool.
 
 Nothing here survives a reboot. **Restore all firmware defaults** puts the
 table back without one. When a value is settled, promote it into

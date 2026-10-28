@@ -125,6 +125,11 @@ class MibLink:
         # Latest command we are sending.
         self._joystick = msg.XYTwist(0.0, 0.0, 0.0, 0)
         self._joystick_live = False
+        # The chair's HMI publishes x mirrored (its "Stick left/right" setting),
+        # which is what makes a rightward push a right turn through the MIB's
+        # maths (BRANCH_NOTES.md finding 1). The tool's stick does the same by
+        # default so the pad drives the chair, and the simulator, like the HMI.
+        self._stick_mirror_x = True
         self._drive_profile = int(msg.DriveProfile.NORMAL)
 
         # Latest data received from the board.
@@ -566,10 +571,21 @@ class MibLink:
     def set_joystick(self, x: float, y: float, twist: float, button: bool = False) -> None:
         clamp = lambda v: max(-1.0, min(1.0, float(v)))
         with self._lock:
+            if self._stick_mirror_x:
+                x = -float(x)
             self._joystick = msg.XYTwist(
                 clamp(x), clamp(y), clamp(twist),
                 int(msg.Buttons.JOYSTICK if button else msg.Buttons.NONE),
             )
+
+    def set_stick_mirror(self, enabled: bool) -> None:
+        with self._lock:
+            self._stick_mirror_x = bool(enabled)
+            # Re-sign whatever is being sent right now.
+            j = self._joystick
+            self._joystick = msg.XYTwist(-j.x, j.y, j.twist, j.buttons)
+        self.log("Stick left/right " + ("mirrored like the HMI (sends -x)" if enabled
+                                        else "normal (sends x as pushed)"), "info")
 
     def set_joystick_live(self, live: bool) -> None:
         if not live:
@@ -1053,6 +1069,7 @@ class MibLink:
                 },
                 "drive_profile": msg.DriveProfile(self._drive_profile).name,
                 "motor_sim": self._motor_sim,
+                "stick_mirror_x": self._stick_mirror_x,
                 "axis_labels": {str(a): msg.AXIS_LABELS[a] for a in ALL_AXES},
                 "geometry": GEOMETRY,
                 "events": list(self._events)[:80],

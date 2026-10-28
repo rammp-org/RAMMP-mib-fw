@@ -18,6 +18,7 @@ to `main`. Anything it reveals that `main` should fix is tracked in
 - Shows the board's live system state, drive profile, seat state and status age.
 - Moves the board between IDLE and DRIVE_ENABLED, and selects the drive profile.
 - Drives with an on-screen joystick, hold-to-drive presets, or latched values.
+  The stick is mirrored left/right like the chair's HMI, so right turns right.
 - Shows the velocity command the MIB publishes for each wheel at 20 Hz.
 - Sends absolute seat targets on all four axes.
 - Optionally simulates the PACE RACER motor boards so the MIB sees them present.
