@@ -114,6 +114,23 @@ Git Bash users can keep using the `.sh` scripts; they find the venv's
 
 ## When it stays on "searching"
 
+Run the doctor first. It performs the checks below in order and names the
+first one that fails:
+
+```
+./doctor.sh                  # macOS, Linux; doctor.cmd on Windows
+./doctor.sh --interface en9  # or an address
+./doctor.sh --trace          # also summarises a CycloneDDS trace
+```
+
+Step 1 is the lease and a ping of the MIB, step 2 listens for the boards'
+discovery multicast, step 3 joins the domain, lists every topic each board
+offers and counts the samples that arrive. "MIB endpoints discovered" with
+zero MibStatus samples is the endpoint-discovery handshake failing (the
+boards never learned this machine's readers), not a cabling or firewall
+problem; `--trace` shows whether the MIB ever acknowledged this machine's
+discovery writers.
+
 - **No lease.** The dropdown shows no entry marked "(board subnet)": cable,
   adapter or the MIB's DHCP. Ping 192.168.4.1.
 - **Wrong interface.** With Wi-Fi up as well, pick the board's interface

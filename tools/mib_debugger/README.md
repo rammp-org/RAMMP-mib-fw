@@ -67,6 +67,8 @@ the interface on Auto-detect, and press Connect. Auto-detect picks the
 interface holding a 192.168.4.x address; the dropdown lists every interface
 with an address if you would rather choose. The connection pill in the header
 turns green once status samples arrive.
+If it does not, `./doctor.sh` (`doctor.cmd` on Windows) runs the connection
+checks one by one and names the failing one; see [SETUP.md](SETUP.md).
 
 On Windows the dropdown shows the adapters' friendly names and the tool hands
 CycloneDDS the adapter's address; `run.cmd` replaces `run.sh`. Allow Python
@@ -321,6 +323,7 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 | `SETUP.md` | Install and network setup for macOS, Linux, WSL and Windows |
 | `TUTORIAL.md` | Step-by-step walkthrough of all five pages |
 | `setup.cmd`, `run.cmd`, `sim.cmd` | Windows equivalents of the `.sh` scripts |
+| `doctor.py` (`doctor.sh`, `doctor.cmd`) | Step-by-step connection check: lease, discovery multicast, DDS endpoints and samples |
 | `canopen_sdo.py` | NMT and SDO client over the bridge, frame decoding for the monitor |
 | `mcp266_objects.py` | The MCP266 object table: settings, telemetry, actions |
 | `fake_mib.py` | Firmware stand-in for use without hardware, with two fake PACE RACER drive boards |
