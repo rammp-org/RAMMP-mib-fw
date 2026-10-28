@@ -65,8 +65,9 @@ GEOMETRY = {
 }
 ALL_AXES = (0, 1, 2, 3)
 
-# espp's examples assume the MCP266 answers on this CANopen node id.
-DEFAULT_CAN_NODE = 10
+# The chair's caster MCP266 is node 1 and the drive-wheel one node 3; the CAN
+# page starts on the first and can be pointed at the other.
+DEFAULT_CAN_NODE = 1
 CAN_MONITOR_DEPTH = 400
 
 # The Actuators page's list of joints (node, channel, range, profile) is kept

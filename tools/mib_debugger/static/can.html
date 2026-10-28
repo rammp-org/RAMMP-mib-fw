@@ -94,7 +94,7 @@
     <div class="kv" id="bridgeKv"></div>
     <div class="row" style="margin-top:12px">
       <span class="muted" style="font-size:12px">Node id</span>
-      <input type="number" id="node" min="1" max="127" value="10" style="width:70px">
+      <input type="number" id="node" min="1" max="127" value="1" style="width:70px">
       <button id="nodeBtn" class="small">Apply</button>
     </div>
     <div class="row" style="margin-top:10px">
@@ -104,7 +104,7 @@
       <button class="small danger" data-nmt="reset_node">Reset node</button>
       <button class="small" data-nmt="reset_comm">Reset comm</button>
     </div>
-    <div class="note">The MIB forwards frames untouched; everything CANopen happens in the tool. The MCP266 answers SDOs in pre-operational, so NMT start is only needed for PDOs. espp assumes node 10 at 1 Mbit/s.</div>
+    <div class="note">The MIB forwards frames untouched; everything CANopen happens in the tool. The MCP266 answers SDOs in pre-operational, so NMT start is only needed for PDOs. The caster controller is node 1, the drive-wheel controller node 3, both at 1 Mbit/s.</div>
   </section>
 
   <section class="panel c8 gated">

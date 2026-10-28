@@ -304,11 +304,14 @@ CONFIG_DEFAULTS = {
     "hardware_limits": True,
 }
 
+# The chair's wiring: one MCP266 (node 1) drives the front and rear caster
+# actuators on its M1 and M2 channels, another (node 3) the left and right
+# drive-wheel actuators. Edit on the Actuators page if a channel is swapped.
 DEFAULT_CONFIGS = [
-    {"name": "Leg 1", "node": 10, "axis": "m1"},
-    {"name": "Leg 2", "node": 10, "axis": "m2"},
-    {"name": "Leg 3", "node": 11, "axis": "m1"},
-    {"name": "Leg 4", "node": 11, "axis": "m2"},
+    {"name": "Front caster", "node": 1, "axis": "m1"},
+    {"name": "Rear caster", "node": 1, "axis": "m2"},
+    {"name": "Left drive wheel", "node": 3, "axis": "m1"},
+    {"name": "Right drive wheel", "node": 3, "axis": "m2"},
 ]
 
 

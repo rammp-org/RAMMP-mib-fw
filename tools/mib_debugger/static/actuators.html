@@ -332,8 +332,8 @@
     await saveList(list, c.name);
   });
   $('addBtn').addEventListener('click', async () => {
-    let n = actuators.length + 1; let name = `Leg ${n}`;
-    while (byName(name)) name = `Leg ${++n}`;
+    let n = actuators.length + 1; let name = `Joint ${n}`;
+    while (byName(name)) name = `Joint ${++n}`;
     const last = actuators[actuators.length - 1];
     const c = Object.assign({}, last ? last.config : {}, {name, node: last ? last.config.node : 10, axis: last && last.config.axis === 'm1' ? 'm2' : 'm1'});
     await saveList(actuators.map((x) => x.config).concat([c]), name);

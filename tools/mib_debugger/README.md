@@ -198,7 +198,7 @@ position mode produces motion (the velocity and duty commands are accepted but
 inert), and the EEPROM save over CAN is untested. If saving aborts, set the
 values in Basicmicro Motion Studio over USB and use this page for the rest.
 
-The simulator carries a fake MCP266 on node 10 with plausible defaults, a
+The simulator carries fake MCP266s on nodes 1 and 3 with plausible defaults, a
 pretend EEPROM (save stores the live values, NMT reset node restores them) and
 the same field-order quirk, so the whole page can be exercised off the bench.
 
@@ -280,7 +280,9 @@ here is what the firmware will do, and it needs no firmware beyond the bridge.
 - **Joints**: a list of (name, node id, channel M1/M2), each with its travel
   range in counts, jog step, motion profile and tolerance. Add and remove
   rows; the list is saved to `actuators.json` beside the tool. The defaults
-  are four legs on nodes 10 and 11; put the real node ids in.
+  follow the chair's wiring: front and rear caster actuators on the MCP266 at
+  node 1 (M1 and M2), left and right drive-wheel actuators on node 3. A saved
+  `actuators.json` wins over the defaults, so delete it to get them back.
 - **Jog − / Jog +** read the encoder and move one step from where the joint is.
   **Move** goes to an absolute count, clamped to the range; to min / middle /
   max are shortcuts. Every move first reads the clamp back from the
@@ -307,7 +309,7 @@ here is what the firmware will do, and it needs no firmware beyond the bridge.
   does. A node that does not answer is skipped for five seconds so one absent
   controller does not stall the page.
 
-The simulator carries two fake MCP266s (nodes 10 and 11) whose channels run a
+The simulator carries two fake MCP266s (nodes 1 and 3) whose channels run a
 CiA 402 state machine, a profile-position move against hard stops, the clamp,
 0x607D and the set-encoder commands, so the whole page can be tried off the
 chair.

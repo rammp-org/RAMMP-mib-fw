@@ -311,9 +311,11 @@ is its own board, so untick "same for both" if they need to differ.
 ## 9. Move the seat actuators
 
 Open **Actuators →**. Each row in **Joints** is one channel of one MCP266:
-pick the row to work on. The defaults are four legs on nodes 10 and 11; edit
-the name, node id and channel under **Configuration** and press **Save**, and
-the list is kept in `actuators.json` beside the tool.
+pick the row to work on. The defaults are the chair's wiring: front and rear
+caster actuators on node 1 (M1, M2), left and right drive-wheel actuators on
+node 3. If a channel is swapped, edit the node id and channel under
+**Configuration** and press **Save**; the list is kept in `actuators.json`
+beside the tool, and that file wins over the defaults once it exists.
 
 Do this with nothing in the actuator's way the first time, and with the
 chair's power switch in reach. Nothing here moves until you press a button,

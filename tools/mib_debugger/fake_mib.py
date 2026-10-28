@@ -4,8 +4,8 @@ This mirrors the behaviour of MibSystem in components/MibSystem: the same
 topics, the same state machine and the same guards, so the debugger sees a
 board that behaves like the real one. It is a development aid, not a
 simulation of the chassis. The trajectory planner is approximated by a simple
-acceleration limit, and no seat motion is modelled. Two fake MCP266s (nodes 10
-and 11) sit on a pretend CAN bus behind the bridge topics, each channel a CiA
+acceleration limit, and no seat motion is modelled. Two fake MCP266s (nodes 1
+and 3) sit on a pretend CAN bus behind the bridge topics, each channel a CiA
 402 drive on a joint with hard stops, for the CAN and Actuators pages.
 
 Run it in one terminal and the debugger in another. Both default to domain 0
@@ -547,8 +547,9 @@ class FakeMib:
         self.last_set_ok = 0
 
         # A pretend CAN bus with one MCP266 on it, behind the bridge topics.
-        # Two controllers, four channels: one per leg on the Actuators page.
-        self.mcps = [FakeMcp266(10), FakeMcp266(11, start=(8000, 12000))]
+        # Two controllers, four channels, on the chair's node ids: the caster
+        # actuators on node 1, the drive-wheel actuators on node 3.
+        self.mcps = [FakeMcp266(1), FakeMcp266(3, start=(8000, 12000))]
         # Two pretend PACE RACER drive boards, fed the command stream in-process.
         self.boards = {axis: FakePaceBoard(axis) for axis in (2, 3)} if boards else {}
         self.can_rx_seq = 0
