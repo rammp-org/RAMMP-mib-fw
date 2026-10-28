@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 
@@ -50,6 +51,11 @@ private:
   /// \note Runs on the state task.
   void run_state_step();
 
+  /// Power-on: end the e-stop's boot latch once, as soon as every node is heard and none
+  /// has engaged, so the chair can be used without a clear button.
+  /// \note Runs on the state task, while the e-stop holds the MIB in ERROR.
+  void release_boot_latch();
+
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
@@ -89,6 +95,8 @@ private:
   estop::Latch latch_;                         ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::atomic<bool> estop_error_{false};       ///< ERROR came from the e-stop: left once it clears.
+  bool boot_release_done_{false};              ///< The boot latch was released, or must not be.
+  std::chrono::steady_clock::time_point boot_release_tried_{}; ///< Last boot clear attempt.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.

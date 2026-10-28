@@ -3,6 +3,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string_view>
 #include <thread>
 
 #include "MIBconfig.hpp"
@@ -406,6 +407,9 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
   case SystemState::ERROR:
+    if (estop_error_.load()) {
+      release_boot_latch();
+    }
     if (estop_error_.load() && !latch_.is_active()) {
       estop_error_.store(false);
       state_.store(SystemState::IDLE);
@@ -415,4 +419,33 @@ void MibSystem::run_state_step() {
     break;
   }
 
+}
+
+void MibSystem::release_boot_latch() {
+  if (boot_release_done_) {
+    return;
+  }
+  const estop::LatchStatus status = latch_.status();
+  if (status.releases > 0) {
+    boot_release_done_ = true;
+    logger_.info("E-stop: boot latch released");
+    return;
+  }
+  // Any ENGAGED replaces the cause with its reason, so "boot" or "<node>: silent (deadman)"
+  // means no node's newest message engages. Only then can a clear attempt not end a press;
+  // after one, the e-stop is left latched for a deliberate clear.
+  const std::string_view cause(status.cause);
+  if (cause != "boot" && !cause.ends_with(": silent (deadman)")) {
+    boot_release_done_ = true;
+    logger_.warn("E-stop: engaged before the boot release ({}); it needs a manual clear",
+                 status.cause);
+    return;
+  }
+  // Refused until every watched node is heard, so retry until one succeeds.
+  const auto now = std::chrono::steady_clock::now();
+  if (status.clear_attempt_running || now - boot_release_tried_ < 1s) {
+    return;
+  }
+  boot_release_tried_ = now;
+  latch_.start_clear_attempt();
 }
