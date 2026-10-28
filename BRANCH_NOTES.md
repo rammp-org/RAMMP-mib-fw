@@ -88,6 +88,94 @@ was found, and how to confirm a fix with the debugger.
   default). Adding features will overflow it. Decide the real flash size for the
   PCB and update the partition table before that happens.
 
+### 6. Main's e-stop latch boots the MIB into ERROR; the debugger cannot clear it yet
+
+**Status: open on this branch (2026-10-27).**
+
+- `main` since PR 36 runs the estop-core latch, which starts latched, forces
+  the state to ERROR while active, and DISARMs the wheels. The clear GPIO is
+  `GPIO_NUM_NC`, so only a clear attempt on the `rammp/estop` topic releases
+  it. The debugger has no e-stop panel, so against current `main` firmware
+  Enable will never arm the wheels. It needs the `estop_message.hpp` layout
+  from a newer `rammp-rtps` than this branch pins.
+
+### 7. Speed-loop tuning of the PACE RACER boards needs no MIB change
+
+**Status: informational, for the tuning work.** Also closes finding 1 on
+main: PRs 24 and 35 fixed the turn direction there, so the branch's
+`JOYSTICK_X_SIGN` parameter now demonstrates a fixed bug.
+
+- The boards take their gains on `rammp/mib/motor_tuning/<axis>` and report
+  them in `rammp/<axis>/motor_state` (motor API v3, `motor_message.hpp` at
+  rammp-rtps `6e36aec`). Both are best-effort DDS topics on the chair's
+  Ethernet, so the debugger's PACE tuning page writes and reads them directly.
+  `feature/tune-pace-parameters` does the same from a serial console on the
+  MIB; the two are alternatives, not dependencies.
+- What does need the MIB: clearing a latched board fault, because the clear
+  counter rides in the MIB's own MotorCommand stream. The tune branch's `clr`
+  does it; the debugger cannot without a relay topic on the MIB.
+- The MIB sends `accel_limit = 0`, so the board steps its reference and the
+  only ramp is the MIB planner's. The boards' API doc names a stepped
+  reference as the first cause of shaking; main may want a real accel_limit
+  in every MotorCommand.
+
+### 8. Actuator moves need no MIB change either; the debugger ports mib::Actuator
+
+**Status: informational, for the seat work (2026-10-28).**
+
+- The debugger's Actuators page (`tools/mib_debugger/actuator_ctl.py`) is a
+  line-for-line port of `components/Actuator/src/actuator.cpp` on
+  `feature/2-actuator-control`, over the raw CAN bridge: the Mcp266 enable
+  sequence (mode written blind, fault reset, shutdown / switch on / enable),
+  the profile-position set-point handshake, the clamp read-modify-write with
+  the D, P, I setter order, 0x607D, the limit-switch refusal, and the
+  set-encoder command with the loop taken down first.
+- What it proves on the bench carries straight to the Actuator branch, and
+  the two unverified objects it leans on are the same ones that branch flags:
+  the mirrored set-encoder commands 22/23 and WRITENVM (command 94) over CAN.
+  If either aborts on the real MCP266, both the page and the firmware need
+  the Motion Studio route instead.
+- Bench observations the Actuator branch's DESIGN.md already records and the
+  page repeats in its notes: the MCP266 honours the per-move profile velocity
+  but takes its ramp from the stored Accel/Decel, and too low a velocity makes
+  the velocity loop cog.
+
+### 9. The embedded RTPS profile allows four best-effort writers; the MIB needs six
+
+**Status: fixed on this branch in `sdkconfig.defaults` (2026-10-28); main will hit it with its next publisher.**
+
+- espp's rtps engine is built with a static limits profile. The embedded
+  profile has `NUM_STATELESS_WRITERS=5`, one of which SPDP takes, so a
+  participant gets four best-effort writers. Main already uses three (status,
+  left and right motor command); this branch adds the parameter table, CAN rx
+  and CAN status, and the last two fail at boot with "BEST_EFFORT writer
+  capacity reached", after which the CAN bridge endpoints are missing.
+- **Fix:** `CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=8` in `sdkconfig.defaults`
+  raises only that pool (capacity-only, no wire change, a few hundred bytes).
+  An existing `sdkconfig` does not pick up a changed default: edit it, run
+  `idf.py menuconfig`, or delete it so it is regenerated.
+- Main is one publisher away from the same wall (a seat-state or e-stop
+  status topic would be the fifth). Readers have more headroom: three
+  best-effort and two reliable against caps of five each.
+
+### 10. espp rtps sends a base-0 pre-emptive ACKNACK that CycloneDDS rejects
+
+**Status: informational, upstream (espp) (2026-10-28).**
+
+- `StatefulReader::sendPreemptiveAckNack` in espp's rtps component sends a
+  SequenceNumberSet with base {0, 0} and no bits to each newly discovered
+  SEDP writer. CycloneDDS validates the base as a sequence number (must be
+  at least 1) and only patches a base-0 pre-emptive ACKNACK for eProsima and
+  RTI vendor ids, so from vendor 13.37 it is logged as "malformed packet
+  received ... state parse:shortmsg" and dropped. Every espp participant on
+  the chair does it on every SPDP round, so a CycloneDDS peer sees a burst of
+  warnings per round.
+- Harmless in practice: discovery completes through the regular ACKNACKs
+  (base = expected sequence number, at least 1) that follow the laptop's SEDP
+  heartbeats. A one-line change upstream, base {0, 1} instead of {0, 0},
+  would keep the meaning (nothing received yet) and silence it; FastDDS
+  accepts both, which is why espp's own interop matrix never saw it.
+
 ## Firmware changes on this branch (not for main)
 
 These exist only to support the debugger's Parameters page. They add about 320

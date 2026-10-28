@@ -23,6 +23,12 @@ to `main`. Anything it reveals that `main` should fix is tracked in
 - Programs the Basicmicro MCP266 motor controllers over CAN: reads and writes
   their settings (PID gains, QPPS, voltage and current limits, encoder modes),
   shows their telemetry, saves to EEPROM, and sniffs the bus.
+- Tunes the PACE RACER drive boards' speed loop (kp, ki, hall PLL) live over
+  the motor API, with a graph of the commanded velocity against what each
+  wheel's encoder reports, and step-response numbers to judge a change by.
+- Moves the seat actuators: jogs each MCP266 channel, sends it to an absolute
+  encoder count, and installs each joint's travel limits on the controller
+  itself, with the CiA 402 sequences the firmware's Actuator class uses.
 
 ## Setup
 
@@ -58,6 +64,22 @@ the interface on Auto-detect, and press Connect. Auto-detect picks the
 interface holding a 192.168.4.x address; the dropdown lists every interface
 with an address if you would rather choose. The connection pill in the header
 turns green once status samples arrive.
+
+Lines like this in the terminal are noise, not a failure:
+
+```
+recvUC: malformed packet received from vendor 13.37 length 48 state parse:shortmsg
+```
+
+Vendor 13.37 is espp's RTPS stack on the MIB and the PACE RACER boards. When
+one of them discovers the laptop it sends a pre-emptive ACKNACK to the
+laptop's discovery writers with a sequence-number base of 0, and CycloneDDS
+only accepts a base-0 pre-emptive ACKNACK from eProsima and RTI vendor ids.
+The packet is dropped, the boards' ordinary ACKNACKs (base 1 and up) go
+through, and discovery completes on the next heartbeat. One burst of six
+lines per discovery round (three boards, two writers each) is normal. The
+connection is fine if the Board panel's sample count climbs and Enable
+drive turns the badge to DRIVE_ENABLED.
 
 ## Running without the board
 
@@ -107,7 +129,10 @@ branch runs a raw CAN bridge (`components/MIBConfig/include/mib_can_bridge.hpp`)
 frames written to `rammp/joystick/can_tx` go out on the MIB's TWAI peripheral
 untouched, every frame the bus delivers comes back on `rammp/mib/can_rx`, and
 `rammp/mib/can_status` reports bridge health twice per second. The MIB knows
-nothing about CANopen. The SDO client, NMT commands and the MCP266 object
+nothing about CANopen. The two extra publishers push the MIB past the
+embedded RTPS profile's four best-effort writers, so `sdkconfig.defaults`
+raises `CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS` to 8; a boot log saying
+"BEST_EFFORT writer capacity reached" means a build without it. The SDO client, NMT commands and the MCP266 object
 dictionary live in `canopen_sdo.py` and `mcp266_objects.py`, so they can change
 without a reflash.
 
@@ -154,6 +179,116 @@ The simulator carries a fake MCP266 on node 10 with plausible defaults, a
 pretend EEPROM (save stores the live values, NMT reset node restores them) and
 the same field-order quirk, so the whole page can be exercised off the bench.
 
+## PACE tuning page
+
+The PACE tuning link opens a page for the two PACE RACER drive boards. It
+needs no firmware change on the MIB and no reflash: the boards take their
+speed-loop gains on the motor API's `rammp/mib/motor_tuning/<axis>` topic
+and report everything on `rammp/<axis>/motor_state`, and both are plain
+best-effort DDS topics on the chair's Ethernet. The debugger joins the same
+domain the MIB and the boards share, so it reads the boards' state and writes
+their gains directly. The MIB's only part is to keep streaming MotorCommand,
+which is the target the boards track. The `feature/tune-pace-parameters`
+branch does the same thing from a serial console on the MIB (`set`, `save`,
+`clr`, `tune`); this page is the same requests from the browser, with a graph.
+
+Topics, from `motor_message.hpp` (RAMMP motor API version 3):
+
+| direction | topic | what |
+|---|---|---|
+| MIB to board | `rammp/mib/motor_command/<axis>` | the velocity target, 20 Hz; the dashed line |
+| board to everyone | `rammp/<axis>/motor_state` | velocity from the hall PLL, iq, state, fault, gains in force, acks; the solid line |
+| debugger to board | `rammp/mib/motor_tuning/<axis>` | `speed_kp`, `speed_ki`, `hall_pll_hz`, `persist`, one request at a time |
+
+What the page offers:
+
+- **Drive boards**: for each wheel, state and mode, fault, API and firmware
+  version, command age, velocity, iq and torque, bus, temperatures, the limits
+  in force, the gains in force, and the tuning and clear-fault acks. A warning
+  line when the MIB is not streaming to the board or its API is too old.
+- **Speed-loop gains**: kp (A per rad/s), ki (A per rad) and PLL (Hz) per wheel,
+  seeded from the board, with a "same for both" option. Apply sends the values
+  once and the page waits for the board's `tuning_ack`; the request shows as
+  applied, pending or not acked. Enter 0 to switch kp or ki off (sent as the
+  API's negative "exactly 0", board API v3). Save writes the gains in force
+  to the board's NVS and asks for a second click.
+- **Step test**: profile, Enable and Disable, and buttons that latch the stick
+  at 25, 50 or 100 % forward, 50 % reverse, a spin, or a custom value, plus
+  Stop. A **pulse** latches the stick at a chosen value for a chosen time and
+  the server releases it on a timer, so the target goes high, holds, and
+  returns to zero without the operator: the test for judging how the wheel
+  follows. The MIB's planner ramps the target at the profile's acceleration
+  limit; "square it" raises the active profile's acceleration parameters to
+  their maximum for the pulse and restores them a second after it ends, which
+  needs this branch's runtime-parameter firmware and is greyed out otherwise.
+- **Last step response**: per wheel and for the last two target changes, so a
+  pulse shows both edges: the step size, 10–90 % rise time, overshoot, time
+  to settle within 5 %, steady-state error and peak iq.
+- **Velocity graph**: target (dashed) against measured (solid) for both
+  wheels, a window from 5 to 120 s, an optional iq strip, a chassis-frame
+  toggle that undoes the per-wheel inversion, pause, clear, and a CSV export
+  of everything buffered (up to two and a half minutes). A dotted marker shows
+  when each tuning request went out, so before and after are on one graph.
+
+Two network findings from the boards' own bench notes apply here as well. A
+switch with IGMP snooping and no querier can forward the laptop's multicast
+to a board but not the board's back, so discovery fails one way and the
+board never appears; a dumb switch or a direct cable avoids it. And nothing
+on this page clears a latched fault, because the clear counter travels in
+the MIB's MotorCommand stream: use the tune branch's `clr` or power-cycle
+the board.
+
+The simulator carries two fake drive boards with a PI speed loop on a
+first-order wheel, the API's state machine and watchdog, tuning with its
+ack, and a pretend NVS, so the whole page works off the bench and a gain
+change visibly changes the response. Start it with `--no-boards` to leave
+them out. Leave the "Simulate PACE RACER motor boards" checkbox on the
+Debugger page off when the simulator's boards are running, or two writers
+publish the same state.
+
+## Actuators page
+
+The Actuators link opens a page that positions the seat actuators through
+the same CAN bridge, one MCP266 channel at a time. It is a port of
+`mib::Actuator` from the `feature/2-actuator-control` branch (`actuator_ctl.py`
+mirrors `components/Actuator/src/actuator.cpp` SDO for SDO), so what works
+here is what the firmware will do, and it needs no firmware beyond the bridge.
+
+- **Joints**: a list of (name, node id, channel M1/M2), each with its travel
+  range in counts, jog step, motion profile and tolerance. Add and remove
+  rows; the list is saved to `actuators.json` beside the tool. The defaults
+  are four legs on nodes 10 and 11; put the real node ids in.
+- **Jog − / Jog +** read the encoder and move one step from where the joint is.
+  **Move** goes to an absolute count, clamped to the range; to min / middle /
+  max are shortcuts. Every move first reads the clamp back from the
+  controller, because the MCP266 reverts to its EEPROM at power-up and the
+  factory clamp [0, 0] forces every target to zero: a controller that has
+  reset is re-initialised before the target goes out.
+- **Travel limits** writes the range to the controller as both Basicmicro's
+  MinPos/MaxPos clamp (position PID record, commands 61-64, with the setter's
+  D, P, I field order handled) and the CiA 402 software limits 0x607D. "← current"
+  copies the live position into min or max. "Lift the clamp" is calibration
+  mode: the clamp is widened so the joint can be jogged to its mechanical
+  ends; absolute moves are refused until it is restored. **Save node to
+  EEPROM** makes the limits survive a power cycle; until then they are
+  re-written at the next move.
+- **Encoder count** installs a count for the current position (commands
+  22/23) with the loop taken down first, which is how an incremental encoder
+  is homed by hand: drive to a known end, set the count that end should read.
+- **Stop** is a CiA 402 quick stop (the drive holds), **Disable** drops the
+  power stage, **Clear faults** is the fault reset plus the Basicmicro E-stop
+  reset. The header's STOP quick-stops every joint this session has talked to
+  as well as disabling the drive.
+- A limit switch reported in the statusword refuses a further move in the
+  same direction and restarts the drive before a move away, as the firmware
+  does. A node that does not answer is skipped for five seconds so one absent
+  controller does not stall the page.
+
+The simulator carries two fake MCP266s (nodes 10 and 11) whose channels run a
+CiA 402 state machine, a profile-position move against hard stops, the clamp,
+0x607D and the set-encoder commands, so the whole page can be tried off the
+chair.
+
 ## State machine coverage
 
 The firmware exposes two transitions over the network: drive ENABLE moves IDLE
@@ -188,10 +323,13 @@ real PACE RACER boards are on the network, otherwise two writers will disagree.
 | `static/index.html` | The main GUI |
 | `static/params.html` | The Parameters page |
 | `static/can.html` | The MCP266 / CAN page |
-| `TUTORIAL.md` | Step-by-step walkthrough of all three pages |
+| `static/tune.html` | The PACE tuning page |
+| `static/actuators.html` | The Actuators page |
+| `actuator_ctl.py` | Port of `mib::Actuator`: CiA 402 enable and set-point handshake, clamp and 0x607D limits, jogs, calibration, encoder set |
+| `TUTORIAL.md` | Step-by-step walkthrough of all five pages |
 | `canopen_sdo.py` | NMT and SDO client over the bridge, frame decoding for the monitor |
 | `mcp266_objects.py` | The MCP266 object table: settings, telemetry, actions |
-| `fake_mib.py` | Firmware stand-in for use without hardware |
+| `fake_mib.py` | Firmware stand-in for use without hardware, with two fake PACE RACER drive boards |
 
 The message definitions must stay in step with
 `external/rammp-rtps/components/rammp_rtps_messages`. The firmware matches

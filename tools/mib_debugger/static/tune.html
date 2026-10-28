@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PACE RACER Tuning</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1e242c; --line: #2a313b;
+    --text: #e6e9ee; --muted: #8a94a3; --accent: #4f9cf5;
+    --good: #35c26d; --warn: #f0b429; --bad: #ef5350; --purple: #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+    border-radius: 999px; border: 1px solid var(--line); font-size: 12px;
+    background: var(--panel-2); color: var(--muted);
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--text); }
+  .pill.on .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .pill.off .dot { background: var(--bad); }
+  .state-badge {
+    font-family: var(--mono); font-weight: 700; font-size: 13px; padding: 5px 12px;
+    border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .state-badge[data-s="IDLE"] { color: var(--accent); border-color: var(--accent); }
+  .state-badge[data-s="ENABLED"] { color: var(--warn); border-color: var(--warn); }
+  .state-badge[data-s="INITIALIZING"] { color: var(--muted); }
+  .state-badge[data-s="ERROR"] { color: var(--bad); border-color: var(--bad); }
+  .stop {
+    background: var(--bad); color: #fff; border: 0; border-radius: 8px;
+    font-weight: 800; font-size: 14px; padding: 9px 18px; cursor: pointer;
+    letter-spacing: 1px; box-shadow: 0 2px 0 #9e2a28;
+  }
+  .stop:active { transform: translateY(1px); box-shadow: none; }
+
+  main {
+    display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px;
+    padding: 16px 18px; max-width: 1400px; margin: 0 auto;
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; min-width: 0;
+  }
+  .panel h2 {
+    margin: 0 0 12px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); font-weight: 600;
+  }
+  .c4 { grid-column: span 4; } .c5 { grid-column: span 5; }
+  .c6 { grid-column: span 6; } .c7 { grid-column: span 7; }
+  .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  @media (max-width: 1000px) { .c4,.c5,.c6,.c7,.c8 { grid-column: span 12; } }
+
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 12px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05101f; font-weight: 600; }
+  button.warn { background: var(--warn); border-color: var(--warn); color: #1a1200; font-weight: 600; }
+  button.sel { outline: 2px solid var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .label { color: var(--muted); font-size: 12px; min-width: 64px; }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+
+  /* State strip */
+  .strip { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chip {
+    padding: 7px 12px; border-radius: 7px; border: 1px dashed var(--line);
+    font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: default;
+    position: relative;
+  }
+  .chip.click { border-style: solid; cursor: pointer; color: var(--text); }
+  .chip.click:hover { border-color: var(--accent); }
+  .chip.cur { background: var(--panel-2); color: var(--text); border-color: var(--accent); border-style: solid; }
+  .chip.cur::before {
+    content: ""; position: absolute; left: 6px; top: 50%; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent); transform: translateY(-50%);
+  }
+  .chip.cur { padding-left: 18px; }
+  .arrow { color: var(--muted); font-size: 12px; }
+
+  /* Joystick */
+  .joy-wrap { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  #pad {
+    width: 220px; height: 220px; border-radius: 50%; background: var(--panel-2);
+    border: 2px solid var(--line); position: relative; touch-action: none;
+    cursor: crosshair; user-select: none; flex: none;
+  }
+  #pad.live { border-color: var(--warn); box-shadow: 0 0 0 4px rgba(240,180,41,.15); }
+  #pad .axis { position: absolute; background: var(--line); }
+  #pad .axis.h { left: 0; right: 0; top: 50%; height: 1px; }
+  #pad .axis.v { top: 0; bottom: 0; left: 50%; width: 1px; }
+  #knob {
+    position: absolute; width: 34px; height: 34px; border-radius: 50%;
+    background: var(--accent); left: 50%; top: 50%; transform: translate(-50%,-50%);
+    box-shadow: 0 2px 10px rgba(0,0,0,.5); pointer-events: none;
+  }
+  #pad.live #knob { background: var(--warn); }
+  .joy-side { flex: 1; min-width: 220px; }
+  .readout { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-family: var(--mono); font-size: 13px; }
+  .readout .k { color: var(--muted); }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .slider-row { display: grid; grid-template-columns: 90px 1fr 74px; gap: 10px; align-items: center; margin: 6px 0; }
+  .slider-row .v { font-family: var(--mono); text-align: right; font-size: 12px; }
+  .presets button { min-width: 84px; }
+  .hold { font-size: 11px; color: var(--muted); }
+
+  /* Motor table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  td.mono { font-family: var(--mono); }
+  td.num { text-align: right; font-family: var(--mono); }
+  th.num { text-align: right; }
+  .tag { padding: 2px 7px; border-radius: 5px; font-family: var(--mono); font-size: 11px; background: var(--panel-2); }
+  .tag.ARMED { color: var(--warn); } .tag.DISARMED { color: var(--muted); }
+  .stale { color: var(--muted); }
+  .bar { height: 6px; background: var(--panel-2); border-radius: 3px; position: relative; overflow: hidden; margin-top: 4px; }
+  .bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+
+  /* Seat */
+  .seat-row { display: grid; grid-template-columns: 96px 1fr 80px 62px; gap: 10px; align-items: center; margin: 8px 0; }
+  .seat-row .cur { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+
+  /* Log */
+  #log { font-family: var(--mono); font-size: 12px; max-height: 240px; overflow: auto; }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log .t { color: var(--muted); flex: none; }
+  #log .good { color: var(--good); } #log .warn { color: var(--warn); } #log .bad { color: var(--bad); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: var(--mono); }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; font: inherit; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.sel { background: var(--accent); color: #05101f; outline: none; font-weight: 600; }
+  body.offline .gated { opacity: .4; pointer-events: none; }
+  .rec { color: var(--good); font-size: 11px; margin-left: 6px; }
+  .err { color: var(--bad); font-size: 12px; margin-top: 8px; }
+
+  a.nav { color: var(--text); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+  a.nav:hover { border-color: var(--accent); }
+
+  /* Boards */
+  .boards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 1000px) { .boards { grid-template-columns: 1fr; } }
+  .board { background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px; }
+  .board h3 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; gap: 10px; }
+  .board h3 .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .board.offline { opacity: .55; }
+  .tag.FAULT { color: var(--bad); font-weight: 700; } .tag.HOLDING, .tag.SAFE_STOPPING { color: var(--warn); }
+  .warnline { color: var(--warn); font-size: 12px; margin-top: 6px; }
+  .badline { color: var(--bad); font-size: 12px; margin-top: 6px; }
+
+  /* Gains */
+  #gtable th, #gtable td { padding: 8px 8px; vertical-align: middle; }
+  #gtable input[type=number] { width: 104px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px var(--mono); }
+  #gtable input.diff { border-color: var(--warn); color: var(--warn); }
+  #gtable .live { font-family: var(--mono); color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #gtable .live b { color: var(--text); font-weight: 600; }
+  button.small { padding: 5px 9px; font-size: 12px; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.danger.armed { background: var(--bad); color: #fff; }
+  .ack { font-family: var(--mono); font-size: 12px; padding: 4px 9px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); white-space: nowrap; }
+  .ack.good { color: var(--good); } .ack.bad { color: var(--bad); } .ack.wait { color: var(--warn); }
+
+  /* Step test */
+  .steps button { min-width: 96px; }
+  .steps button.sel { outline: 2px solid var(--warn); }
+
+  /* Graph */
+  #graphWrap { position: relative; width: 100%; height: 380px; }
+  #graph { width: 100%; height: 100%; display: block; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; align-items: center; }
+  .legend i { display: inline-block; width: 22px; height: 0; border-top: 2px solid; margin-right: 6px; vertical-align: middle; }
+  .legend i.dash { border-top-style: dashed; }
+  #metrics td.num { white-space: nowrap; }
+  body.offline .gated { opacity: .4; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PACE RACER Tuning</h1>
+  <a class="nav" href="/">← Debugger</a>
+  <a class="nav" href="/params">Parameters</a>
+  <a class="nav" href="/can">MCP266 / CAN</a>
+  <a class="nav" href="/actuators">Actuators</a>
+  <span id="conn" class="pill off"><span class="dot"></span><span id="connText">disconnected</span></span>
+  <span id="stateBadge" class="state-badge" data-s="">—</span>
+  <span id="profileBadge" class="pill">profile —</span>
+  <span class="spacer"></span>
+  <span id="joyPill" class="pill"><span class="dot"></span>stick released</span>
+  <button class="stop" id="stopBtn" title="Release the stick and send drive DISABLE">STOP</button>
+</header>
+
+<main>
+
+  <section class="panel c12 gated">
+    <h2>Drive boards</h2>
+    <div class="boards" id="boards"></div>
+    <div class="note">Each wheel is its own PACE RACER board. The page reads every MotorState the boards publish at 20 Hz and writes MotorTuning straight to them over the same network the MIB uses; nothing goes through the MIB. The MIB only has to keep driving. A board that never appears here is off, not discovered (switch multicast; see the README), or has no axis set on its console.</div>
+  </section>
+
+  <section class="panel c12 gated">
+    <h2>Speed-loop gains <span class="spacer"></span><label class="toggle"><input type="checkbox" id="bothChk" checked> same values for both wheels</label></h2>
+    <div style="overflow-x:auto">
+    <table id="gtable">
+      <thead><tr><th>Wheel</th><th>kp <span class="muted">A per rad/s</span></th><th>ki <span class="muted">A per rad</span></th><th>hall PLL <span class="muted">Hz</span></th><th>In force on the board</th><th></th><th>Last request</th></tr></thead>
+      <tbody id="grows"></tbody>
+    </table>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="applyBtn">Apply to board (until reboot)</button>
+      <button class="danger" id="saveBtn">Save in force to NVS</button>
+      <button id="defaultsBtn">Fill hall defaults</button>
+      <span class="muted" style="font-size:12px">kp 2.39, ki 4.77, PLL 10 are the shipped defaults; the hub motor makes 2.6× the torque per amp, so expect to soften them</span>
+    </div>
+    <div class="note">Apply sends the three values once; the board applies them on its next tick without resetting the integrator, so it is safe under way. Enter 0 for kp or ki to switch that term off (sent as the API's "exactly 0", which needs board API v3). The board clamps each value into its compile-time range; read the "in force" column rather than assuming. Nothing survives the board's power cycle until it is saved to NVS, and Save writes whatever is in force at that moment. Order for a wheel that shakes: halve ki, then halve kp, then lower the PLL toward 5 (smoother, more lag) or raise it toward 20 if the loop hunts slowly.</div>
+  </section>
+
+  <section class="panel c5 gated">
+    <h2>Step test</h2>
+    <div class="row">
+      <span class="label">Profile</span>
+      <div class="seg" id="profSeg"><button data-p="0">LOW</button><button data-p="1" class="sel">NORMAL</button><button data-p="2">HIGH</button></div>
+      <button class="warn" id="enableBtn">Enable drive</button>
+      <button id="disableBtn">Disable drive</button>
+    </div>
+    <div class="row steps" style="margin-top:12px">
+      <button data-xy="0,0.25">▲ 25 %</button>
+      <button data-xy="0,0.5">▲ 50 %</button>
+      <button data-xy="0,1">▲ 100 %</button>
+      <button data-xy="0,-0.5">▼ 50 %</button>
+      <button data-xy="0.5,0">↻ spin 50 %</button>
+    </div>
+    <div class="row steps" style="margin-top:8px">
+      <span class="label">Custom</span>
+      <input type="number" id="customY" value="0.4" step="0.05" min="-1" max="1" style="width:80px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:13px var(--mono)">
+      <button data-custom="1">▲ go</button>
+      <button id="zeroBtn" class="primary">■ Stop (stick to zero)</button>
+    </div>
+    <div class="row steps" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <span class="label">Pulse</span>
+      <input type="number" id="pulseY" value="50" step="5" min="-100" max="100" style="width:70px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:13px var(--mono)"><span class="muted" style="font-size:12px">%</span>
+      <span class="muted" style="font-size:12px">for</span>
+      <input type="number" id="pulseS" value="2" step="0.5" min="0.1" max="30" style="width:64px;background:var(--panel-2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:13px var(--mono)"><span class="muted" style="font-size:12px">s</span>
+      <button class="warn" id="pulseBtn">⎍ Run pulse</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="toggle" id="steepLbl"><input type="checkbox" id="steepChk" checked> square it: raise the profile's acceleration limits for the pulse</label>
+    </div>
+    <div class="kv" style="margin-top:12px">
+      <span class="k">Pulse</span><span class="v" id="pulseV">idle</span>
+      <span class="k">Stick</span><span class="v" id="stickV">released</span>
+      <span class="k">Target L / R</span><span class="v" id="tgtV">—</span>
+      <span class="k">Measured L / R</span><span class="v" id="measV">—</span>
+    </div>
+    <div class="note">A step latches the stick at that value until Stop, so the chassis keeps moving: wheels off the ground first. A pulse latches it for the given time and the server releases it on a timer, so the target goes high, holds, and returns to zero on its own; the metrics table then reports both edges. The target the board tracks is the MIB's command after its trajectory planner, so the dashed line ramps at the profile's acceleration limit rather than stepping. "Square it" sets the active profile's linear and angular acceleration parameters to their maximum for the pulse and puts them back a second after it ends; it needs the Parameters page's firmware, and stays greyed out without it. The board itself steps the reference because the MIB sends no accel_limit; a stepped reference under a 0.5 integrator is the first cause of shaking.</div>
+  </section>
+
+  <section class="panel c7 gated">
+    <h2>Last step response</h2>
+    <table id="metrics">
+      <thead><tr><th>Wheel</th><th class="num">Step</th><th class="num">Rise 10–90 %</th><th class="num">Overshoot</th><th class="num">Settled ±5 %</th><th class="num">Steady error</th><th class="num">Peak iq</th></tr></thead>
+      <tbody id="mrows"><tr class="stale"><td colspan="7">no step seen yet: enable drive and press a step button</td></tr></tbody>
+    </table>
+    <div class="note">Computed from the trace for the last two target changes, so a pulse shows its rising and falling edge. A step starts where the target begins to change and the step size is the target it settles at. Rise is measured on the wheel, from 10 % to 90 % of the step. Overshoot is the peak past the final target as a share of the step. Settled is the time after which the wheel stays within 5 % of the step for half a second. Steady error is the mean target-minus-measured over the last half second once settled.</div>
+  </section>
+
+  <section class="panel c12">
+    <h2>Velocity: target vs measured
+      <span class="spacer"></span>
+      <label class="toggle"><input type="checkbox" id="showL" checked> <span style="color:#4f9cf5">Drive L</span></label>
+      <label class="toggle"><input type="checkbox" id="showR" checked> <span style="color:#a78bfa">Drive R</span></label>
+      <label class="toggle"><input type="checkbox" id="showIq"> iq strip</label>
+      <label class="toggle"><input type="checkbox" id="chassisChk"> chassis frame</label>
+      <span class="muted" style="font-size:12px">window</span>
+      <select id="win"><option value="5">5 s</option><option value="10" selected>10 s</option><option value="30">30 s</option><option value="60">60 s</option><option value="120">120 s</option></select>
+      <label class="toggle"><input type="checkbox" id="pause"> pause</label>
+      <button class="small" id="clearBtn">Clear</button>
+      <a class="nav" id="csvLink" href="/api/trace.csv" download>Export CSV</a>
+    </h2>
+    <div id="graphWrap"><canvas id="graph"></canvas></div>
+    <div class="legend">
+      <span><i class="dash" style="border-color:#4f9cf5"></i>L target (MIB command)</span>
+      <span><i style="border-color:#4f9cf5"></i>L measured (board)</span>
+      <span><i class="dash" style="border-color:#a78bfa"></i>R target</span>
+      <span><i style="border-color:#a78bfa"></i>R measured</span>
+      <span><i style="border-color:#f0b429"></i>iq (A, lower strip)</span>
+      <span><i style="border-color:#35c26d;border-top-style:dotted"></i>tuning request sent</span>
+      <span class="spacer"></span>
+      <span id="rate" class="mono"></span>
+    </div>
+  </section>
+
+  <section class="panel c12">
+    <h2>Events</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const post = (body) => fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json()).catch((e) => ({ok: false, error: String(e)}));
+  const AXES = ['2', '3'];
+  const NAME = {'2': 'Drive L', '3': 'Drive R'};
+  const COLOR = {'2': '#4f9cf5', '3': '#a78bfa'};
+  const DEFAULTS = {kp: 2.39, ki: 4.77, pll: 10};
+  const SI_TO_RPM = 2 * Math.PI / 60;
+  const fmt = (v, d = 3) => (v == null || Number.isNaN(v)) ? '—' : (+v).toFixed(d).replace(/\.?0+$/, '');
+
+  // ---------------------------------------------------------------- boards
+  let snap = null;
+  function boardCard(k) {
+    const b = snap && snap.boards ? snap.boards[k] : null;
+    if (!b) return `<div class="board offline"><h3><span class="sw" style="background:${COLOR[k]}"></span>${NAME[k]}<span class="spacer"></span><span class="tag">no MotorState</span></h3><div class="muted" style="font-size:12px">Nothing heard from this board yet.</div></div>`;
+    const stale = !b.online;
+    const warn = [];
+    if (b.api_version < 2) warn.push(`board API v${b.api_version}: tuning needs v2, exactly-zero needs v3`);
+    else if (b.api_version < 3) warn.push(`board API v${b.api_version}: a 0 gain (sent negative) is ignored; needs v3`);
+    if (b.cmd_age_ms >= 200) warn.push(`cmd_age ${b.cmd_age_ms === 65535 ? 'never' : b.cmd_age_ms + ' ms'}: the MIB is not streaming to this board`);
+    const fault = b.state === 'FAULT' ? `<div class="badline">FAULT ${b.fault}: clear it from the MIB (tune branch console: clr) or power-cycle the board</div>` : '';
+    return `<div class="board ${stale ? 'offline' : ''}">
+      <h3><span class="sw" style="background:${COLOR[k]}"></span>${NAME[k]}
+        <span class="tag ${b.state}">${b.state}</span><span class="tag">${b.mode}</span>
+        <span class="spacer"></span><span class="muted" style="font-size:11px;font-weight:400">${stale ? 'stale ' + fmt(b.age, 1) + ' s' : 'api v' + b.api_version + ' · fw ' + b.fw_version}</span></h3>
+      <div class="kv">
+        <span class="k">Velocity</span><span class="v">${fmt(b.velocity)} rad/s</span>
+        <span class="k">iq / torque</span><span class="v">${fmt(b.iq, 2)} A · ${fmt(b.torque_est, 2)} N·m</span>
+        <span class="k">Bus</span><span class="v">${fmt(b.vbus, 1)} V${b.vbus_measured ? '' : ' (nominal)'} · ${fmt(b.ibus_est, 1)} A</span>
+        <span class="k">Temps</span><span class="v">${b.temps.map((t) => fmt(t, 0)).join(' / ')} °C</span>
+        <span class="k">Limits in force</span><span class="v">tq ${fmt(b.torque_limit_eff, 1)} · vel ${fmt(b.vel_limit_eff, 1)} · acc ${b.accel_limit_eff ? fmt(b.accel_limit_eff, 1) : 'step'}</span>
+        <span class="k">Command age</span><span class="v">${b.cmd_age_ms === 65535 ? 'never' : b.cmd_age_ms + ' ms'} · seq ${b.last_cmd_seq}</span>
+        <span class="k">Gains in force</span><span class="v">kp ${fmt(b.speed_kp, 4)} · ki ${fmt(b.speed_ki, 4)} · PLL ${fmt(b.hall_pll_hz, 1)} Hz</span>
+        <span class="k">Acks</span><span class="v">tuning ${b.tuning_ack} · clear ${b.clear_fault_ack}</span>
+      </div>
+      ${warn.map((w) => `<div class="warnline">${w}</div>`).join('')}${fault}
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------- gains
+  function buildGains() {
+    $('grows').innerHTML = AXES.map((k) => `<tr id="g${k}">
+      <td><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${COLOR[k]};margin-right:6px"></span>${NAME[k]}</td>
+      <td><input type="number" step="0.01" min="0" id="kp${k}" data-k="${k}"></td>
+      <td><input type="number" step="0.01" min="0" id="ki${k}" data-k="${k}"></td>
+      <td><input type="number" step="0.5" min="0.5" max="50" id="pll${k}" data-k="${k}"></td>
+      <td class="live" id="live${k}">—</td>
+      <td><button class="small" data-seed="${k}" title="Copy the board's values into the inputs">⟲ from board</button></td>
+      <td><span class="ack" id="ack${k}">none yet</span></td>
+    </tr>`).join('');
+  }
+  buildGains();
+  const inputs = () => Array.from(document.querySelectorAll('#gtable input[type=number]'));
+  document.addEventListener('input', (e) => {
+    if (!e.target.matches('#gtable input[type=number]')) return;
+    e.target.dataset.touched = '1';
+    if ($('bothChk').checked && e.target.dataset.k === '2') {
+      const twin = $(e.target.id.replace(/2$/, '3'));
+      twin.value = e.target.value; twin.dataset.touched = '1';
+    }
+    paintDiff();
+  });
+  document.addEventListener('click', (e) => {
+    if (e.target.dataset.seed) seed(e.target.dataset.seed, true);
+  });
+  function seed(k, force) {
+    const b = snap && snap.boards ? snap.boards[k] : null;
+    if (!b) return;
+    [['kp', b.speed_kp], ['ki', b.speed_ki], ['pll', b.hall_pll_hz]].forEach(([n, v]) => {
+      const inp = $(n + k);
+      if (force || (!inp.dataset.touched && document.activeElement !== inp)) { inp.value = fmt(v, 4); delete inp.dataset.touched; }
+    });
+    paintDiff();
+  }
+  function paintDiff() {
+    AXES.forEach((k) => {
+      const b = snap && snap.boards ? snap.boards[k] : null;
+      [['kp', b && b.speed_kp], ['ki', b && b.speed_ki], ['pll', b && b.hall_pll_hz]].forEach(([n, v]) => {
+        const inp = $(n + k);
+        inp.classList.toggle('diff', b != null && inp.value !== '' && Math.abs(parseFloat(inp.value) - v) > 1e-4);
+      });
+    });
+  }
+  function readGains(k) {
+    const kp = parseFloat($('kp' + k).value), ki = parseFloat($('ki' + k).value), pll = parseFloat($('pll' + k).value);
+    if ([kp, ki, pll].some(Number.isNaN)) return null;
+    // 0 on the wire means "leave as is"; the page's 0 means "switch it off",
+    // which the API spells as a negative value (v3). PLL has no off.
+    return {kp: kp === 0 ? -1 : kp, ki: ki === 0 ? -1 : ki, pll: pll <= 0 ? 0 : pll};
+  }
+  async function sendGains(persist) {
+    const targets = $('bothChk').checked ? AXES : AXES;
+    for (const k of targets) {
+      const g = persist ? {kp: 0, ki: 0, pll: 0} : readGains(k);
+      if (!g) { $('ack' + k).className = 'ack bad'; $('ack' + k).textContent = 'fill all three'; continue; }
+      const r = await post({action: 'tuning', axis: +k, kp: g.kp, ki: g.ki, pll: g.pll, persist});
+      if (r && r.ok) { $('ack' + k).className = 'ack wait'; $('ack' + k).textContent = `#${r.req} sent, waiting for ack`; marks.push({t: Date.now() / 1000, label: `#${r.req}${persist ? ' save' : ''}`}); }
+      else { $('ack' + k).className = 'ack bad'; $('ack' + k).textContent = (r && r.error) || 'send failed'; }
+      inputs().forEach((i) => { if (i.dataset.k === k) delete i.dataset.touched; });
+    }
+  }
+  $('applyBtn').addEventListener('click', () => sendGains(false));
+  let saveArmed = 0;
+  $('saveBtn').addEventListener('click', () => {
+    // Two clicks within five seconds: a write to the board's NVS is permanent.
+    if (Date.now() - saveArmed > 5000) { saveArmed = Date.now(); $('saveBtn').classList.add('armed'); $('saveBtn').textContent = 'Click again to write NVS on both boards'; setTimeout(() => { $('saveBtn').classList.remove('armed'); $('saveBtn').textContent = 'Save in force to NVS'; }, 5000); return; }
+    saveArmed = 0; $('saveBtn').classList.remove('armed'); $('saveBtn').textContent = 'Save in force to NVS';
+    sendGains(true);
+  });
+  $('defaultsBtn').addEventListener('click', () => { AXES.forEach((k) => { $('kp' + k).value = DEFAULTS.kp; $('ki' + k).value = DEFAULTS.ki; $('pll' + k).value = DEFAULTS.pll; $('kp' + k).dataset.touched = $('ki' + k).dataset.touched = $('pll' + k).dataset.touched = '1'; }); paintDiff(); });
+  document.querySelectorAll('#gtable').forEach((t) => t.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendGains(false); }));
+
+  // ---------------------------------------------------------------- step test
+  let profile = 1, currentState = '';
+  document.querySelectorAll('#profSeg button').forEach((b) => b.addEventListener('click', () => {
+    profile = +b.dataset.p;
+    document.querySelectorAll('#profSeg button').forEach((x) => x.classList.toggle('sel', +x.dataset.p === profile));
+    if (currentState === 'DRIVE_ENABLED' || currentState === 'ENABLED') post({action: 'drive', enable: true, profile});
+  }));
+  $('enableBtn').addEventListener('click', () => post({action: 'drive', enable: true, profile}));
+  $('disableBtn').addEventListener('click', () => { zero(); post({action: 'drive', enable: false}); });
+  let stick = null;
+  async function step(x, y) {
+    stick = {x, y};
+    document.querySelectorAll('.steps button[data-xy]').forEach((b) => b.classList.toggle('sel', b.dataset.xy === `${x},${y}`));
+    await post({action: 'joystick', x, y, twist: 0, button: false});
+    await post({action: 'joystick_live', live: true});
+  }
+  async function zero() {
+    stick = null;
+    document.querySelectorAll('.steps button').forEach((b) => b.classList.remove('sel'));
+    await post({action: 'joystick', x: 0, y: 0, twist: 0, button: false});
+    await post({action: 'joystick_live', live: false});
+  }
+  document.querySelectorAll('.steps button[data-xy]').forEach((b) => b.addEventListener('click', () => { const [x, y] = b.dataset.xy.split(',').map(Number); step(x, y); }));
+  document.querySelector('.steps button[data-custom]').addEventListener('click', () => { const y = Math.max(-1, Math.min(1, parseFloat($('customY').value) || 0)); step(0, y); });
+  $('zeroBtn').addEventListener('click', zero);
+
+  // A pulse: the server latches the stick and releases it on its own timer.
+  // "Square it" raises the active profile's acceleration parameters first and
+  // restores them afterwards, so the MIB's planner ramps as fast as it can.
+  const PROFILE_BASE = 5, ACCEL_MAX = {lin: 10, ang: 20};
+  let restoreParams = null;
+  async function setParam(id, value) { await post({action: 'param_set', id, value}); await new Promise((r) => setTimeout(r, 120)); }
+  async function runPulse() {
+    const y = Math.max(-1, Math.min(1, (parseFloat($('pulseY').value) || 0) / 100));
+    const dur = Math.max(0.1, Math.min(30, parseFloat($('pulseS').value) || 2));
+    if (y === 0) return;
+    $('pulseBtn').disabled = true;
+    const prof = snap && snap.board ? ['LOW', 'NORMAL', 'HIGH'].indexOf(snap.board.activeProfile) : -1;
+    const canSteep = $('steepChk').checked && snap && snap.params && snap.params.values && prof >= 0;
+    if (canSteep && !restoreParams) {
+      const linId = PROFILE_BASE + 4 * prof + 2, angId = linId + 1;
+      restoreParams = [[linId, snap.params.values[linId]], [angId, snap.params.values[angId]]];
+      await setParam(linId, ACCEL_MAX.lin); await setParam(angId, ACCEL_MAX.ang);
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    marks.push({t: Date.now() / 1000, label: `pulse ${fmt(y * 100, 0)} % ${fmt(dur, 1)} s`});
+    const r = await post({action: 'pulse', x: 0, y, duration: dur});
+    if (!r || !r.ok) { $('pulseV').textContent = (r && r.error) || 'failed'; $('pulseBtn').disabled = false; }
+    // Put the acceleration limits back a second after the pulse has ended,
+    // so the stop itself is still as sharp as the pulse.
+    setTimeout(async () => {
+      if (restoreParams) { for (const [id, v] of restoreParams) await setParam(id, v); restoreParams = null; }
+      $('pulseBtn').disabled = false;
+    }, (dur + 1.0) * 1000);
+  }
+  $('pulseBtn').addEventListener('click', runPulse);
+  $('stopBtn').addEventListener('click', () => { zero(); post({action: 'stop'}); });
+  // Leaving the page must not leave the stick latched. The server's watchdog
+  // would catch it in 1.5 s; this is quicker.
+  window.addEventListener('pagehide', () => { if (stick) navigator.sendBeacon && fetch('/api/command', {method: 'POST', keepalive: true, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'joystick_live', live: false})}); });
+
+  // ---------------------------------------------------------------- trace
+  const buf = {'2': [], '3': []};
+  const KEEP_S = 150;
+  let cursor = 0, clockOffset = 0, marks = [], pointsPerSec = 0, lastCount = 0, lastCountT = Date.now();
+  async function pollTrace() {
+    try {
+      const r = await (await fetch('/api/trace?cursor=' + cursor)).json();
+      if (r.cursor < cursor) { cursor = 0; AXES.forEach((k) => buf[k].length = 0); }   // server restarted or cleared
+      cursor = r.cursor;
+      if (r.now) clockOffset = Date.now() / 1000 - r.now;
+      for (const p of r.points) {
+        const k = String(p.axis);
+        if (!buf[k]) continue;
+        buf[k].push({t: p.t + clockOffset, target: p.target, measured: p.measured, iq: p.iq, state: p.state});
+      }
+      const cut = Date.now() / 1000 - KEEP_S;
+      AXES.forEach((k) => { const b = buf[k]; let i = 0; while (i < b.length && b[i].t < cut) i++; if (i) b.splice(0, i); });
+      lastCount += r.points.length;
+      const dt = (Date.now() - lastCountT) / 1000;
+      if (dt > 1) { pointsPerSec = lastCount / dt; lastCount = 0; lastCountT = Date.now(); $('rate').textContent = pointsPerSec ? `${pointsPerSec.toFixed(0)} samples/s` : ''; }
+    } catch (e) {}
+    if (!$('pause').checked) draw();
+  }
+  $('clearBtn').addEventListener('click', async () => { AXES.forEach((k) => buf[k].length = 0); marks = []; await post({action: 'trace_clear'}); draw(); });
+  ['showL', 'showR', 'showIq', 'chassisChk', 'win'].forEach((id) => $(id).addEventListener('change', draw));
+  $('pause').addEventListener('change', draw);
+  window.addEventListener('resize', draw);
+
+  // In chassis frame the firmware's per-wheel inversion is undone so forward
+  // reads positive on both wheels. The sign comes from the live parameter
+  // table when the board publishes one, else the compiled defaults.
+  function signOf(k) {
+    if (!$('chassisChk').checked) return 1;
+    let inv = {'2': true, '3': false};
+    if (snap && snap.params && snap.params.values && snap.params.values.length >= 2) inv = {'2': snap.params.values[0] >= 0.5, '3': snap.params.values[1] >= 0.5};
+    else if (snap && snap.geometry) inv = {'2': !!snap.geometry.invert_left, '3': !!snap.geometry.invert_right};
+    return inv[k] ? -1 : 1;
+  }
+
+  const canvas = $('graph');
+  let frozenNow = null;
+  function draw() {
+    const wrap = $('graphWrap');
+    const dpr = window.devicePixelRatio || 1;
+    const W = wrap.clientWidth, H = wrap.clientHeight;
+    if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const win = +$('win').value;
+    if ($('pause').checked) { if (frozenNow == null) frozenNow = Date.now() / 1000; } else frozenNow = null;
+    const now = frozenNow != null ? frozenNow : Date.now() / 1000;
+    const t0 = now - win;
+    const showIq = $('showIq').checked;
+    const padL = 52, padR = 12, padT = 10, padB = 24;
+    const velH = showIq ? (H - padT - padB) * 0.68 : (H - padT - padB);
+    const iqTop = padT + velH + 14, iqH = H - padB - iqTop;
+    const shown = AXES.filter((k) => $(k === '2' ? 'showL' : 'showR').checked);
+
+    // Scale velocity from what is visible, symmetric about zero, never tighter than ±1.
+    let vmax = 1, imax = 1;
+    shown.forEach((k) => buf[k].forEach((p) => { if (p.t < t0) return; const s = signOf(k); vmax = Math.max(vmax, Math.abs(p.measured * s), p.target == null ? 0 : Math.abs(p.target * s)); imax = Math.max(imax, Math.abs(p.iq)); }));
+    vmax *= 1.1; imax *= 1.15;
+    const xOf = (t) => padL + (t - t0) / win * (W - padL - padR);
+    const yV = (v) => padT + velH / 2 - v / vmax * velH / 2;
+    const yI = (i) => iqTop + iqH / 2 - i / imax * iqH / 2;
+
+    // Grid.
+    ctx.font = '11px ui-monospace, Menlo, monospace'; ctx.fillStyle = '#8a94a3'; ctx.strokeStyle = '#2a313b'; ctx.lineWidth = 1;
+    const vstep = niceStep(vmax * 2 / 6);
+    for (let v = -Math.floor(vmax / vstep) * vstep; v <= vmax; v += vstep) {
+      const y = yV(v); ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.strokeStyle = Math.abs(v) < 1e-9 ? '#3a4452' : '#2a313b'; ctx.stroke();
+      ctx.textAlign = 'right'; ctx.fillText(fmt(v, 2), padL - 6, y + 4);
+    }
+    const tstep = win <= 5 ? 1 : win <= 10 ? 1 : win <= 30 ? 5 : 10;
+    for (let s = 0; s <= win; s += tstep) {
+      const x = xOf(now - s); ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.strokeStyle = '#2a313b'; ctx.stroke();
+      ctx.textAlign = 'center'; ctx.fillText(s === 0 ? 'now' : '-' + s + ' s', x, H - 8);
+    }
+    ctx.textAlign = 'left'; ctx.fillText('rad/s', padL + 4, padT + 12);
+    if (showIq) {
+      ctx.beginPath(); ctx.moveTo(padL, yI(0)); ctx.lineTo(W - padR, yI(0)); ctx.strokeStyle = '#3a4452'; ctx.stroke();
+      ctx.fillText('iq A', padL + 4, iqTop + 12);
+      ctx.textAlign = 'right'; ctx.fillText(fmt(imax, 1), padL - 6, iqTop + 10); ctx.fillText(fmt(-imax, 1), padL - 6, iqTop + iqH);
+    }
+
+    // Tuning request markers.
+    marks = marks.filter((m) => m.t > now - KEEP_S);
+    marks.forEach((m) => { if (m.t < t0) return; const x = xOf(m.t); ctx.setLineDash([2, 3]); ctx.strokeStyle = '#35c26d'; ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = '#35c26d'; ctx.textAlign = 'left'; ctx.fillText(m.label, x + 3, padT + 24); });
+
+    // Series.
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    shown.forEach((k) => {
+      const s = signOf(k), pts = buf[k];
+      const line = (get, y, dash, width, color) => {
+        ctx.beginPath(); ctx.setLineDash(dash); ctx.lineWidth = width; ctx.strokeStyle = color;
+        let pen = false, lastT = -1;
+        for (const p of pts) {
+          if (p.t < t0 - 0.2) continue;
+          const v = get(p);
+          if (v == null || (lastT > 0 && p.t - lastT > 0.5)) { pen = false; }
+          if (v == null) { lastT = p.t; continue; }
+          const x = xOf(p.t), yy = y(v);
+          if (!pen) { ctx.moveTo(x, yy); pen = true; } else ctx.lineTo(x, yy);
+          lastT = p.t;
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      line((p) => p.target == null ? null : p.target * s, yV, [6, 4], 1.5, COLOR[k]);
+      line((p) => p.measured * s, yV, [], 2, COLOR[k]);
+      if (showIq) line((p) => p.iq, yI, [], 1.2, k === '2' ? '#f0b429' : '#f59e0b');
+    });
+    ctx.fillStyle = '#8a94a3';
+    paintMetrics();
+  }
+  function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))); const m = raw / p; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p; }
+
+  // ---------------------------------------------------------------- step metrics
+  // The last `count` target changes in a wheel's trace, newest first. Each
+  // one is analysed over the samples up to the next change.
+  function analyze(pts, count = 2) {
+    const p = pts.filter((q) => q.target != null);
+    if (p.length < 20) return [];
+    const out = [];
+    let end = p.length - 1;
+    while (out.length < count && end > 0) {
+      const Tf = p[end].target;
+      let plateau = end;
+      while (plateau > 0 && Math.abs(p[plateau - 1].target - Tf) < 0.02) plateau--;
+      let start = plateau;
+      while (start > 0 && Math.abs(p[start - 1].target - p[start].target) > 1e-4) start--;
+      if (start === 0) break;
+      const one = analyzeOne(p.slice(start, end + 1), Tf);
+      if (one) out.push(one);
+      end = start;   // the sample before this ramp began is the previous plateau's end
+    }
+    return out;
+  }
+  function analyzeOne(run, Tf) {
+    const T0 = run[0].target, stepSize = Tf - T0;
+    if (Math.abs(stepSize) < 0.3) return null;
+    const t0 = run[0].t, sign = Math.sign(stepSize);
+    const frac = (v) => (v - T0) / stepSize;
+    let t10 = null, t90 = null, peak = 0, peakIq = 0, settledAt = null;
+    for (const q of run) {
+      const f = frac(q.measured);
+      if (t10 == null && f >= 0.1) t10 = q.t;
+      if (t90 == null && f >= 0.9) t90 = q.t;
+      peak = Math.max(peak, (q.measured - Tf) * sign);
+      peakIq = Math.max(peakIq, Math.abs(q.iq));
+    }
+    // Settled: first time after which every later sample is within 5 % for 0.5 s.
+    for (let i = 0; i < run.length; i++) {
+      if (Math.abs(run[i].measured - Tf) > 0.05 * Math.abs(stepSize)) { settledAt = null; continue; }
+      if (settledAt == null) settledAt = run[i].t;
+      if (run[i].t - settledAt >= 0.5) break;
+    }
+    const last = run[run.length - 1];
+    const settled = settledAt != null && last.t - settledAt >= 0.5;
+    let err = null;
+    if (settled) { const tail = run.filter((q) => q.t >= last.t - 0.5); err = tail.reduce((a, q) => a + (Tf - q.measured), 0) / tail.length; }
+    return {from: T0, to: Tf, step: stepSize, rise: (t10 != null && t90 != null) ? t90 - t10 : null,
+            overshoot: peak > 0 ? peak / Math.abs(stepSize) : 0, settle: settled ? settledAt - t0 : null, err, peakIq, age: Date.now() / 1000 - t0};
+  }
+  function paintMetrics() {
+    const rows = AXES.flatMap((k) => analyze(buf[k]).map((m) => {
+      const s = signOf(k);
+      return `<tr><td><span style="color:${COLOR[k]}">${NAME[k]}</span> <span class="muted" style="font-size:11px">${m.step * s > 0 ? '▲' : '▼'} ${fmt(m.age, 0)} s ago</span></td>
+        <td class="num">${fmt(m.from * s, 2)} → ${fmt(m.to * s, 2)} rad/s</td>
+        <td class="num">${m.rise == null ? 'not yet' : fmt(m.rise, 2) + ' s'}</td>
+        <td class="num">${fmt(m.overshoot * 100, 1)} %</td>
+        <td class="num">${m.settle == null ? 'not yet' : fmt(m.settle, 2) + ' s'}</td>
+        <td class="num">${m.err == null ? '—' : fmt(m.err * s, 3) + ' rad/s'}</td>
+        <td class="num">${fmt(m.peakIq, 1)} A</td></tr>`;
+    }));
+    $('mrows').innerHTML = rows.length ? rows.join('') : '<tr class="stale"><td colspan="7">no step seen yet: enable drive and press a step button</td></tr>';
+  }
+
+  // ---------------------------------------------------------------- state poll
+  function paint(s) {
+    snap = s;
+    const up = !!(s.link && s.link.up);
+    const ready = up && s.connected;
+    document.body.classList.toggle('offline', !ready);
+    $('conn').className = 'pill ' + (ready ? 'on' : 'off');
+    $('connText').textContent = !up ? 'disconnected' : s.connected ? 'board online' : (s.status_count ? 'MIB lost' : 'searching…');
+    const st = s.board ? s.board.systemState : '';
+    currentState = st;
+    $('stateBadge').textContent = st || '—'; $('stateBadge').dataset.s = st;
+    $('profileBadge').textContent = 'profile ' + (s.board ? s.board.activeProfile : '—');
+    const jp = $('joyPill'); jp.className = 'pill ' + (s.joystick.live ? 'on' : ''); jp.lastChild.textContent = s.joystick.live ? 'stick live' : 'stick released';
+    $('stickV').textContent = s.joystick.live ? `x ${fmt(s.joystick.x, 2)}  y ${fmt(s.joystick.y, 2)}` : 'released';
+    $('pulseV').textContent = s.pulse ? `y ${fmt(s.pulse.y, 2)} · ${fmt(s.pulse.remaining, 1)} s of ${fmt(s.pulse.duration, 1)} s left` : (restoreParams ? 'restoring acceleration limits…' : 'idle');
+    const haveParams = !!(s.params && s.params.values);
+    $('steepChk').disabled = !haveParams;
+    $('steepLbl').style.opacity = haveParams ? '' : '.5';
+    $('steepLbl').title = haveParams ? '' : 'needs the runtime-parameter firmware on this branch';
+    if (!s.joystick.live && stick) { stick = null; document.querySelectorAll('.steps button').forEach((b) => b.classList.remove('sel')); }
+    const L = s.motors['2'], R = s.motors['3'], bL = s.boards['2'], bR = s.boards['3'];
+    $('tgtV').textContent = (L ? fmt(L.velocity, 2) : '—') + ' / ' + (R ? fmt(R.velocity, 2) : '—') + ' rad/s';
+    $('measV').textContent = (bL ? fmt(bL.velocity, 2) : '—') + ' / ' + (bR ? fmt(bR.velocity, 2) : '—') + ' rad/s';
+
+    $('boards').innerHTML = AXES.map(boardCard).join('');
+    AXES.forEach((k) => {
+      const b = s.boards[k];
+      $('live' + k).innerHTML = b ? `kp <b>${fmt(b.speed_kp, 4)}</b> · ki <b>${fmt(b.speed_ki, 4)}</b> · PLL <b>${fmt(b.hall_pll_hz, 1)}</b><br><span style="font-size:11px">console units: ${fmt(b.speed_kp * SI_TO_RPM, 4)} · ${fmt(b.speed_ki * SI_TO_RPM, 4)} A/rpm · ack #${b.tuning_ack}</span>` : '<span class="muted">no board</span>';
+      seed(k, false);
+      const t = s.tuning[k], a = $('ack' + k);
+      if (t && t.pending) {
+        if (t.pending.timed_out) { a.className = 'ack bad'; a.textContent = `#${t.pending.req} not acked in 2 s: resend`; }
+        else { a.className = 'ack wait'; a.textContent = `#${t.pending.req} sent, waiting for ack`; }
+      } else if (t && t.last_req) { a.className = 'ack good'; a.textContent = `#${t.last_req} applied` + (b && b.tuning_ack !== t.last_req ? ` (board acks #${b.tuning_ack})` : ''); }
+    });
+    paintDiff();
+    $('log').innerHTML = (s.events || []).slice(0, 40).map((e) => `<div><span class="t">${e.t}</span><span class="${e.level}">${e.text}</span></div>`).join('');
+  }
+  async function poll() {
+    try { const r = await fetch('/api/state'); paint(await r.json()); }
+    catch (e) { $('conn').className = 'pill off'; $('connText').textContent = 'server unreachable'; }
+  }
+  poll(); setInterval(poll, 200);
+  pollTrace(); setInterval(pollTrace, 100);
+  draw();
+})();
+</script>
+</body>
+</html>

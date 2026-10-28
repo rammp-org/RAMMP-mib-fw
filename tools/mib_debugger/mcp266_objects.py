@@ -89,6 +89,11 @@ def cia402(axis, offset):
           unit="counts/s", note="Cruise speed for profile-position moves."),
         F("profile_accel", "Profile acceleration", "u32", (0x6083 + offset, 0), (0x6083 + offset, 0),
           unit="counts/s^2"),
+        F("profile_decel", "Profile deceleration", "u32", (0x6084 + offset, 0), (0x6084 + offset, 0),
+          unit="counts/s^2"),
+        F("target_position", "Target position", "i32", (0x607A + offset, 0), (0x607A + offset, 0),
+          unit="counts", note="The last profile-position target. Writing it here does not start a "
+          "move; the Actuators page runs the new-set-point handshake."),
         F("sw_limit_min", "Software limit min", "i32", (0x607D + offset, 1), (0x607D + offset, 1), unit="counts"),
         F("sw_limit_max", "Software limit max", "i32", (0x607D + offset, 2), (0x607D + offset, 2), unit="counts"),
     ], verified=True,

@@ -147,7 +147,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         pages = {"/": "index.html", "/index.html": "index.html",
                  "/params": "params.html", "/params.html": "params.html",
-                 "/can": "can.html", "/can.html": "can.html"}
+                 "/can": "can.html", "/can.html": "can.html",
+                 "/tune": "tune.html", "/tune.html": "tune.html",
+                 "/actuators": "actuators.html", "/actuators.html": "actuators.html"}
         if self.path.split("?")[0] in pages:
             try:
                 with open(os.path.join(STATIC_DIR, pages[self.path.split("?")[0]]), "rb") as handle:
@@ -160,6 +162,35 @@ class Handler(BaseHTTPRequestHandler):
             if conn.link:
                 conn.link.note_poll()
             self._send(200, json.dumps(conn.snapshot()))
+            return
+
+        if self.path.startswith("/api/trace.csv"):
+            body = conn.link.trace_csv() if conn.link else ""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="mib_velocity_trace.csv"')
+            self.send_header("Content-Length", str(len(body.encode("utf-8"))))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+            return
+
+        if self.path.startswith("/api/trace"):
+            # The Tuning page's graph pulls new points with a cursor so each
+            # poll carries only what it has not drawn yet.
+            query = self.path.partition("?")[2]
+            cursor = 0
+            for part in query.split("&"):
+                if part.startswith("cursor="):
+                    try:
+                        cursor = int(part[7:])
+                    except ValueError:
+                        cursor = 0
+            if conn.link is None:
+                self._send(200, json.dumps({"cursor": 0, "points": [], "now": 0}))
+            else:
+                self._send(200, json.dumps(conn.link.trace_since(cursor)))
             return
 
         if self.path.startswith("/api/param_table"):
@@ -265,6 +296,25 @@ def dispatch(link, body: dict):
 
     if action == "mcp_action":
         return link.mcp_action(str(body["key"]))
+
+    if action == "act":
+        return link.actuator_command(str(body["name"]), str(body["op"]),
+                                     dict(body.get("args") or {}))
+
+    if action == "act_config":
+        return link.actuators_set_config(list(body.get("actuators") or []))
+
+    if action == "tuning":
+        return link.send_tuning(int(body["axis"]), float(body.get("kp", 0.0)),
+                                float(body.get("ki", 0.0)), float(body.get("pll", 0.0)),
+                                bool(body.get("persist")))
+
+    if action == "pulse":
+        return link.pulse(float(body.get("x", 0.0)), float(body.get("y", 0.0)),
+                          float(body.get("duration", 2.0)))
+
+    if action == "trace_clear":
+        return link.trace_clear()
 
     if action == "motor_sim":
         link.set_motor_sim(bool(body.get("enabled")))

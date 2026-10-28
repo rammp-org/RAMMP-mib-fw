@@ -86,6 +86,8 @@ class FaultCode(IntEnum):
     DRV_FAULT = 6
     UNASSIGNED_AXIS = 7
     SAMPLER = 8
+    HALL = 9
+    STALL = 10
 
 
 class Buttons(IntEnum):
@@ -148,9 +150,20 @@ class MibStatus(IdlStruct, typename="rammp/msg/MibStatus"):
 
 
 # --------------------------------------------------------------------------
-# MIB to motor controller, and back. The debugger watches the commands and can
-# stand in for a PACE RACER board by publishing state.
+# MIB to motor controller, and back. The debugger watches the commands, reads
+# the boards' state, writes their gains, and can stand in for a PACE RACER
+# board by publishing state.
 # --------------------------------------------------------------------------
+
+# RAMMP_MOTOR_API_VERSION from motor_message.hpp. A board reports the version
+# it was built with; tuning needs 2, a negative gain (exactly 0) needs 3.
+MOTOR_API_VERSION = 3
+
+# The speed-loop defaults every PACE RACER profile ships with on halls
+# (RACER-MOTOR-API.md, tuned on the NineBot 2026-09-28). SI on the wire.
+TUNING_DEFAULTS = {"speed_kp": 2.39, "speed_ki": 4.77, "hall_pll_hz": 10.0}
+# The board's own console prints the gains in A/rpm; this converts SI to that.
+SI_TO_PER_RPM = 2.0 * 3.14159265358979323846 / 60.0
 
 @dataclass
 class MotorCommand(IdlStruct, typename="rammp/msg/MotorCommand"):
@@ -169,8 +182,10 @@ class MotorCommand(IdlStruct, typename="rammp/msg/MotorCommand"):
 
 @dataclass
 class MotorState(IdlStruct, typename="rammp/msg/MotorState"):
-    """One axis's state. 80 bytes on the wire, padding 2 bytes before uptime_ms."""
-    api_version: pt.uint8 = 1
+    """One axis's state, motor API version 3. 92 bytes on the wire, padding 2
+    bytes before uptime_ms. Version 2 added tuning_ack and the three gain
+    fields; version 3 kept the layout."""
+    api_version: pt.uint8 = MOTOR_API_VERSION
     axis_id: pt.uint8 = 255
     seq: pt.uint8 = 0
     last_cmd_seq: pt.uint8 = 0
@@ -179,7 +194,7 @@ class MotorState(IdlStruct, typename="rammp/msg/MotorState"):
     fault_code: pt.uint8 = 0
     clear_fault_ack: pt.uint8 = 0
     vbus_measured: pt.uint8 = 0
-    flags: pt.uint8 = 0
+    tuning_ack: pt.uint8 = 0
     cmd_age_ms: pt.uint16 = 0
     drv_status: pt.uint16 = 0
     uptime_ms: pt.uint32 = 0
@@ -195,6 +210,27 @@ class MotorState(IdlStruct, typename="rammp/msg/MotorState"):
     vel_limit_eff: pt.float32 = 0.0
     accel_limit_eff: pt.float32 = 0.0
     temps: pt.array[pt.float32, 4] = field(default_factory=lambda: [0.0] * 4)
+    speed_kp: pt.float32 = 0.0
+    speed_ki: pt.float32 = 0.0
+    hall_pll_hz: pt.float32 = 0.0
+
+
+@dataclass
+class MotorTuning(IdlStruct, typename="rammp/msg/MotorTuning"):
+    """Outer-loop gains for one axis, applied live by the board. 16 bytes.
+
+    The board acts on a NEW tuning_req_id only and echoes it as
+    MotorState.tuning_ack. A field of 0 means "leave as is"; a negative
+    speed_kp or speed_ki sets that gain to exactly 0 (API version 3). With
+    persist set the board also writes the values to NVS.
+    """
+    tuning_req_id: pt.uint8 = 0
+    persist: pt.uint8 = 0
+    reserved0: pt.uint8 = 0
+    reserved1: pt.uint8 = 0
+    speed_kp: pt.float32 = 0.0
+    speed_ki: pt.float32 = 0.0
+    hall_pll_hz: pt.float32 = 0.0
 
 
 # --------------------------------------------------------------------------
@@ -229,6 +265,13 @@ def motor_command_topic(axis_id: int) -> str:
 def motor_state_topic(axis_id: int) -> str:
     """Topic a PACE RACER board publishes its state on."""
     return "rammp/" + AXIS_SEGMENTS[axis_id] + "/motor_state"
+
+
+def motor_tuning_topic(axis_id: int) -> str:
+    """Topic a PACE RACER board takes its speed-loop gains on. The header
+    names it MIB -> board, but any participant on the domain can write it,
+    which is how the debugger tunes without a change to the MIB."""
+    return "rammp/mib/motor_tuning/" + AXIS_SEGMENTS[axis_id]
 
 
 # --------------------------------------------------------------------------

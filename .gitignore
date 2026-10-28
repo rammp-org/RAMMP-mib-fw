@@ -36,5 +36,6 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 
-# MIB debugger virtual environment
+# MIB debugger virtual environment and its saved actuator list
 tools/mib_debugger/.venv/
+tools/mib_debugger/actuators.json

@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Actuators</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --panel-2: #1e242c; --line: #2a313b;
+    --text: #e6e9ee; --muted: #8a94a3; --accent: #4f9cf5;
+    --good: #35c26d; --warn: #f0b429; --bad: #ef5350; --purple: #a78bfa;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; background: var(--panel-2); color: var(--muted); }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.on { color: var(--text); } .pill.on .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .pill.off .dot { background: var(--bad); } .pill.warn .dot { background: var(--warn); }
+  .stop { background: var(--bad); color: #fff; border: 0; border-radius: 8px; font-weight: 800; font-size: 14px; padding: 9px 18px; cursor: pointer; letter-spacing: 1px; box-shadow: 0 2px 0 #9e2a28; }
+  .stop:active { transform: translateY(1px); box-shadow: none; }
+  main { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; padding: 16px 18px; max-width: 1500px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .panel h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .c4 { grid-column: span 4; } .c5 { grid-column: span 5; } .c6 { grid-column: span 6; } .c7 { grid-column: span 7; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  @media (max-width: 1000px) { .c4,.c5,.c6,.c7,.c8 { grid-column: span 12; } }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 7px 12px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #05101f; font-weight: 600; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
+  button.warn { border-color: var(--warn); color: var(--warn); }
+  button.small { padding: 4px 9px; font-size: 12px; }
+  button.jog { font-size: 16px; padding: 10px 22px; font-weight: 700; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .mono { font-family: var(--mono); } .muted { color: var(--muted); }
+  .lbl { font-size: 12px; color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13px; }
+  .kv .k { color: var(--muted); } .kv .v { font-family: var(--mono); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  td.num { text-align: right; font-family: var(--mono); }
+  tr.sel td { background: rgba(79,156,245,.12); }
+  tr.pick { cursor: pointer; }
+  input[type=number], input[type=text], select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px var(--mono); }
+  input[type=number] { width: 110px; } input[type=text] { width: 120px; }
+  input.changed { border-color: var(--warn); }
+  .big { font-family: var(--mono); font-size: 34px; font-weight: 700; line-height: 1.1; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.ok { color: var(--good); border-color: var(--good); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.bad { color: var(--bad); border-color: var(--bad); }
+  .badge.info { color: var(--accent); border-color: var(--accent); }
+  .bar { position: relative; height: 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; margin: 10px 0 4px; overflow: hidden; }
+  .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #2a5f9e, var(--accent)); width: 0; transition: width .2s; }
+  .bar .tgt { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--warn); display: none; }
+  .ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+  .grid2 label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .grid2 input, .grid2 select { width: 100%; }
+  .grid2 label.toggle { flex-direction: row; align-items: center; white-space: nowrap; align-self: end; padding-bottom: 8px; }
+  .result { font-family: var(--mono); font-size: 12px; margin-top: 8px; min-height: 18px; }
+  .result.bad { color: var(--bad); } .result.good { color: var(--good); }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; color: var(--muted); }
+  #log { font-family: var(--mono); font-size: 12px; max-height: 240px; overflow: auto; }
+  #log div { padding: 3px 0; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log .t { color: var(--muted); flex: none; }
+  #log .good { color: var(--good); } #log .warn { color: var(--warn); } #log .bad { color: var(--bad); }
+  a.nav { color: var(--text); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+  a.nav:hover { border-color: var(--accent); }
+  body.offline .gated { opacity: .4; pointer-events: none; }
+  .busy { opacity: .6; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Actuators</h1>
+  <a class="nav" href="/">← Debugger</a>
+  <a class="nav" href="/params">Parameters</a>
+  <a class="nav" href="/can">MCP266 / CAN</a>
+  <a class="nav" href="/tune">PACE tuning</a>
+  <span id="conn" class="pill off"><span class="dot"></span><span id="connText">disconnected</span></span>
+  <span id="bridge" class="pill off"><span class="dot"></span><span id="bridgeText">bridge —</span></span>
+  <span class="spacer"></span>
+  <button class="stop" id="stopBtn" title="Quick-stop every actuator, release the stick and send drive DISABLE">STOP</button>
+</header>
+
+<main>
+  <section class="panel c4 gated">
+    <h2>Joints <span class="spacer"></span><button class="small" id="addBtn">Add</button><button class="small danger" id="removeBtn">Remove</button></h2>
+    <table><thead><tr><th>Name</th><th>Node</th><th class="num">Position</th><th>Drive</th></tr></thead><tbody id="rows"></tbody></table>
+    <div class="note">Pick a row to work on it. Each row is one channel (M1 or M2) of one MCP266 by node id. Positions are encoder counts; the table updates from a light poll, one joint at a time.</div>
+  </section>
+
+  <section class="panel c8 gated">
+    <h2><span id="selTitle">no joint selected</span> <span id="selBadges"></span><span class="spacer"></span>
+      <button class="small" id="readBtn" title="Read position, drive state and the limits the controller holds">Read</button>
+      <button class="small" id="initBtn" title="Clear latched faults and write the range as the controller's clamp and 0x607D limits">Initialize</button>
+      <button class="small" id="clearBtn" title="CiA 402 fault reset plus the Basicmicro E-stop reset; releases a quick stop">Clear faults</button>
+      <button class="small warn" id="haltBtn" title="CiA 402 quick stop: the drive holds position">■ Stop</button>
+      <button class="small danger" id="disableBtn" title="Disable voltage: the axis coasts until the next move">Disable</button></h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      <div>
+        <div class="lbl">Position</div>
+        <div class="big" id="pos">—</div>
+        <div class="bar"><div class="fill" id="fill"></div><div class="tgt" id="tgt"></div></div>
+        <div class="ends"><span id="endMin">min</span><span id="endMax">max</span></div>
+      </div>
+      <div class="kv" id="statusKv"></div>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <button class="jog" id="jogMinus" title="Move one jog step toward min">◀ Jog −</button>
+      <span class="lbl">step</span><input type="number" id="jogStep" value="500" min="1" step="1" style="width:90px">
+      <span class="lbl">counts</span>
+      <button class="jog" id="jogPlus" title="Move one jog step toward max">Jog + ▶</button>
+      <span class="muted" style="font-size:12px;margin-left:8px">Jogs read the encoder first, then move relative to where the joint is now.</span>
+    </div>
+    <div class="row">
+      <span class="lbl">Go to</span><input type="number" id="target" step="1" placeholder="counts">
+      <button class="primary" id="goBtn">Move</button>
+      <button class="small" id="toMin">to min</button>
+      <button class="small" id="toMid">to middle</button>
+      <button class="small" id="toMax">to max</button>
+      <span class="lbl" style="margin-left:10px">profile</span>
+      <input type="number" id="pVel" min="1" step="1" style="width:84px" title="Profile velocity, counts/s">
+      <span class="lbl">counts/s ·</span>
+      <input type="number" id="pAcc" min="1" step="1" style="width:84px" title="Profile acceleration, counts/s²">
+      <span class="lbl">/</span>
+      <input type="number" id="pDec" min="1" step="1" style="width:84px" title="Profile deceleration, counts/s²">
+      <span class="lbl">counts/s²</span>
+    </div>
+    <div class="result" id="moveResult"></div>
+    <div class="note">A move is refused while the clamp is lifted (calibration), and when a limit switch is active in that direction. Every move first reads the controller's clamp back; a controller that has power-cycled holds its factory [0, 0] and is re-initialised before the target goes out. The MCP266 firmware tested honours the velocity and ignores the acceleration fields (the ramp comes from Motion Studio's stored Accel/Decel). Too slow a velocity makes the loop cog.</div>
+  </section>
+
+  <section class="panel c7 gated">
+    <h2>Travel limits <span class="spacer"></span><button class="small" id="limitsBtn">Read from controller</button></h2>
+    <div class="row">
+      <span class="lbl">min</span><input type="number" id="limMin" step="1">
+      <button class="small" id="useMin" title="Copy the current position into min">← current</button>
+      <span class="lbl" style="margin-left:10px">max</span><input type="number" id="limMax" step="1">
+      <button class="small" id="useMax" title="Copy the current position into max">← current</button>
+      <button class="primary" id="applyLimits" title="Store the range and write it to the controller: MinPos/MaxPos in the position PID record and the 0x607D software limits">Write to controller</button>
+    </div>
+    <div class="kv" id="limitsKv" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:12px">
+      <label class="toggle"><input type="checkbox" id="calib"> lift the clamp (calibration: drive to the mechanical ends, jogs only)</label>
+    </div>
+    <div class="row">
+      <button class="small warn" id="eepromBtn" title="WRITENVM on this joint's controller. Permanent; covers both channels of the node.">Save node to EEPROM</button>
+      <span class="muted" style="font-size:12px">The MCP266 reverts to its EEPROM at power-up. Until saved, the limits are re-written at the next move or Initialize.</span>
+    </div>
+    <div class="result" id="limitsResult"></div>
+    <div class="note">To calibrate a joint: lift the clamp, jog to one mechanical end, press ← current on min, jog to the other end, ← current on max, untick the clamp, then Write to controller. The clamp is Basicmicro's MinPos/MaxPos in the position PID record; 0x607D is the CiA 402 software limit. Both are written, and a target outside them is forced to the edge by the controller even if something bypasses this page.</div>
+  </section>
+
+  <section class="panel c5 gated">
+    <h2>Encoder count</h2>
+    <div class="row">
+      <span class="lbl">set to</span><input type="number" id="encValue" step="1" value="0">
+      <button class="small" id="encSet">Set</button>
+      <button class="small" id="encZero">Zero here</button>
+    </div>
+    <div class="result" id="encResult"></div>
+    <div class="note">Writes the controller's count for this channel (command 22/23) with the loop taken down first, so it does not chase its old target. For an incremental encoder this is how the count becomes meaningful after power-up: drive to a known end and install the count that end should read. Read back and checked against the tolerance.</div>
+
+    <h2 style="margin-top:18px">Configuration <span class="spacer"></span><button class="small primary" id="saveCfg">Save</button></h2>
+    <div class="grid2">
+      <label>Name<input type="text" id="cfgName"></label>
+      <label>Node id<input type="number" id="cfgNode" min="1" max="127"></label>
+      <label>Channel<select id="cfgAxis"><option value="m1">M1</option><option value="m2">M2</option></select></label>
+      <label>Tolerance (counts)<input type="number" id="cfgTol" min="0"></label>
+      <label>Jog step (counts)<input type="number" id="cfgJog" min="1"></label>
+      <label class="toggle"><input type="checkbox" id="cfgHw"> limit switches wired</label>
+    </div>
+    <div class="result" id="cfgResult"></div>
+    <div class="note">Saved to <span class="mono">actuators.json</span> beside the tool, together with the range and the profile. The range, jog step and profile above are saved as you apply them.</div>
+  </section>
+
+  <section class="panel c12">
+    <h2>Events</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const post = (body) => fetch('/api/command', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}).then((r) => r.json()).catch((e) => ({ok: false, error: String(e)}));
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  const act = (op, args) => selected ? post({action: 'act', name: selected, op, args: args || {}}) : Promise.resolve({ok: false, error: 'no joint selected'});
+
+  let actuators = [];       // from the snapshot
+  let selected = null;      // name
+  let rr = 0;               // round-robin index for the light poll
+  let cfgDirty = false;
+  const localLog = [];
+  function log(text, level) { localLog.unshift({t: new Date().toTimeString().slice(0, 8), level: level || 'bad', text}); if (localLog.length > 20) localLog.pop(); }
+  try { selected = localStorage.getItem('mib_actuator') || null; } catch (e) { selected = null; }
+
+  const byName = (name) => actuators.find((a) => a.config.name === name);
+  const cur = () => byName(selected);
+
+  function show(el, r, okText) {
+    el.className = 'result ' + (r.ok ? 'good' : 'bad');
+    el.textContent = r.ok ? (okText || 'ok') : (r.error || 'failed');
+  }
+
+  // ------------------------------------------------------------- painting
+  function stateBadge(a) {
+    if (!a) return '';
+    const bits = [];
+    if (!a.online) bits.push('<span class="badge bad">no answer</span>');
+    if (a.calibrating) bits.push('<span class="badge warn">clamp lifted</span>');
+    if (a.initialized) bits.push('<span class="badge ok">limits installed</span>');
+    if (a.limits && !a.limits.matches && !a.calibrating) bits.push('<span class="badge bad">controller clamp differs</span>');
+    return bits.join(' ');
+  }
+
+  function paintList() {
+    $('rows').innerHTML = actuators.map((a) => {
+      const c = a.config, l = a.last;
+      const age = l ? (Date.now() / 1000 - l.t) : null;
+      const pos = l && age < 5 ? l.position : '—';
+      const st = !a.online ? '<span class="badge bad">no answer</span>' : l ? `<span class="badge ${l.state === 'operation enabled' ? 'ok' : l.state === 'fault' ? 'bad' : l.state === 'quick stop active' ? 'warn' : ''}">${esc(l.state)}</span>` : '<span class="muted">—</span>';
+      return `<tr class="pick ${c.name === selected ? 'sel' : ''}" data-name="${esc(c.name)}"><td>${esc(c.name)}${a.calibrating ? ' <span class="badge warn">cal</span>' : ''}</td><td class="mono">${c.node} ${c.axis.toUpperCase()}</td><td class="num">${pos}</td><td>${st}</td></tr>`;
+    }).join('');
+  }
+
+  function paintSelected() {
+    const a = cur();
+    const c = a && a.config;
+    $('selTitle').textContent = a ? `${c.name} · node ${c.node} ${c.axis.toUpperCase()}` : 'no joint selected';
+    $('selBadges').innerHTML = stateBadge(a);
+    const l = a && a.last;
+    const live = l && (Date.now() / 1000 - l.t) < 5;
+    $('pos').textContent = live ? l.position : '—';
+    if (a) {
+      const span = Math.max(1, c.max - c.min);
+      $('fill').style.width = live ? `${Math.max(0, Math.min(100, (l.position - c.min) / span * 100))}%` : '0';
+      const t = a.last_target;
+      $('tgt').style.display = t === null || t === undefined ? 'none' : 'block';
+      if (t !== null && t !== undefined) $('tgt').style.left = `${Math.max(0, Math.min(100, (t - c.min) / span * 100))}%`;
+      $('endMin').textContent = `min ${c.min}`; $('endMax').textContent = `max ${c.max}`;
+    }
+    const kv = [];
+    if (l) {
+      kv.push(['Drive state', l.state], ['Statusword', '0x' + l.statusword.toString(16).toUpperCase().padStart(4, '0')],
+              ['Target reached', l.reached ? 'yes' : 'no'], ['Limit switch', l.limit ? '<span style="color:var(--warn)">ACTIVE</span>' : 'no'],
+              ['Last target', a.last_target === null || a.last_target === undefined ? '—' : a.last_target],
+              ['Read', `${Math.max(0, Date.now() / 1000 - l.t).toFixed(1)} s ago`]);
+    } else if (a) {
+      kv.push(['Drive state', a.online ? 'not read yet' : 'no answer from the controller']);
+    }
+    if (a && a.error) kv.push(['Last error', `<span style="color:var(--bad)">${esc(a.error)}</span>`]);
+    $('statusKv').innerHTML = kv.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+
+    const lim = a && a.limits;
+    const lk = [];
+    if (lim) {
+      lk.push(['Controller clamp', `[${lim.clamp[0]}, ${lim.clamp[1]}] ${lim.matches ? '<span class="badge ok">matches</span>' : '<span class="badge bad">differs from ' + `[${lim.expected[0]}, ${lim.expected[1]}]` + '</span>'}`],
+              ['0x607D limits', `[${lim.sw[0]}, ${lim.sw[1]}]`],
+              ['Read', `${Math.max(0, Date.now() / 1000 - lim.t).toFixed(0)} s ago`]);
+    } else if (a) {
+      lk.push(['Controller clamp', 'not read yet']);
+    }
+    $('limitsKv').innerHTML = lk.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+    if (a && document.activeElement !== $('calib')) $('calib').checked = !!a.calibrating;
+  }
+
+  function fillConfig(force) {
+    const a = cur(); if (!a) return;
+    const c = a.config;
+    const set = (id, v) => { const el = $(id); if (force || (document.activeElement !== el && !el.dataset.touched)) { el.value = v; el.classList.remove('changed'); delete el.dataset.touched; } };
+    set('jogStep', c.jog_step); set('pVel', c.velocity); set('pAcc', c.accel); set('pDec', c.decel);
+    set('limMin', c.min); set('limMax', c.max);
+    set('cfgName', c.name); set('cfgNode', c.node); set('cfgAxis', c.axis); set('cfgTol', c.tolerance); set('cfgJog', c.jog_step);
+    if (force || document.activeElement !== $('cfgHw')) $('cfgHw').checked = !!c.hardware_limits;
+    if (force) { cfgDirty = false; $('cfgResult').textContent = ''; }
+  }
+
+  function select(name) {
+    selected = name;
+    try { localStorage.setItem('mib_actuator', name || ''); } catch (e) {}
+    paintList(); fillConfig(true); paintSelected();
+    if (name) act('status', {force: true}).then(() => act('limits'));
+  }
+
+  // --------------------------------------------------------------- config
+  function configFromForm() {
+    const a = cur(); if (!a) return null;
+    return Object.assign({}, a.config, {
+      name: $('cfgName').value.trim(), node: parseInt($('cfgNode').value, 10), axis: $('cfgAxis').value,
+      tolerance: parseInt($('cfgTol').value, 10), jog_step: parseInt($('cfgJog').value, 10) || parseInt($('jogStep').value, 10),
+      velocity: parseInt($('pVel').value, 10), accel: parseInt($('pAcc').value, 10), decel: parseInt($('pDec').value, 10),
+      hardware_limits: $('cfgHw').checked,
+    });
+  }
+  async function saveList(list, newSelected) {
+    const r = await post({action: 'act_config', actuators: list});
+    show($('cfgResult'), r, 'saved');
+    if (r.ok) { cfgDirty = false; if (newSelected !== undefined) selected = newSelected; ['cfgName','cfgNode','cfgAxis','cfgTol','cfgJog','jogStep','pVel','pAcc','pDec'].forEach((id) => { delete $(id).dataset.touched; $(id).classList.remove('changed'); }); try { localStorage.setItem('mib_actuator', selected || ''); } catch (e) {} }
+    return r.ok;
+  }
+  // Profile and jog step are config too; saving them quietly on change keeps a move using what the inputs show.
+  async function saveProfileIfTouched() {
+    const a = cur(); if (!a) return true;
+    const touched = ['pVel','pAcc','pDec','jogStep'].some((id) => $(id).dataset.touched);
+    if (!touched) return true;
+    const c = Object.assign({}, a.config, {velocity: parseInt($('pVel').value, 10), accel: parseInt($('pAcc').value, 10), decel: parseInt($('pDec').value, 10), jog_step: parseInt($('jogStep').value, 10)});
+    if ([c.velocity, c.accel, c.decel, c.jog_step].some((v) => !(v > 0))) { log('profile values must be positive'); return false; }
+    const list = actuators.map((x) => x.config.name === a.config.name ? c : x.config);
+    const r = await post({action: 'act_config', actuators: list});
+    if (!r.ok) { log(r.error); return false; }
+    ['pVel','pAcc','pDec','jogStep'].forEach((id) => { delete $(id).dataset.touched; $(id).classList.remove('changed'); });
+    $('cfgJog').value = c.jog_step;
+    return true;
+  }
+
+  $('saveCfg').addEventListener('click', async () => {
+    const a = cur(); if (!a) return;
+    const c = configFromForm();
+    const list = actuators.map((x) => x.config.name === a.config.name ? c : x.config);
+    await saveList(list, c.name);
+  });
+  $('addBtn').addEventListener('click', async () => {
+    let n = actuators.length + 1; let name = `Leg ${n}`;
+    while (byName(name)) name = `Leg ${++n}`;
+    const last = actuators[actuators.length - 1];
+    const c = Object.assign({}, last ? last.config : {}, {name, node: last ? last.config.node : 10, axis: last && last.config.axis === 'm1' ? 'm2' : 'm1'});
+    await saveList(actuators.map((x) => x.config).concat([c]), name);
+  });
+  $('removeBtn').addEventListener('click', async () => {
+    const a = cur(); if (!a) return;
+    if (!confirm(`Remove ${a.config.name} from the list?`)) return;
+    const list = actuators.filter((x) => x !== a).map((x) => x.config);
+    await saveList(list, list.length ? list[0].name : null);
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.matches('#cfgName,#cfgNode,#cfgAxis,#cfgTol,#cfgJog,#jogStep,#pVel,#pAcc,#pDec,#limMin,#limMax')) { e.target.dataset.touched = '1'; e.target.classList.add('changed'); }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.target.matches('#cfgName,#cfgNode,#cfgTol,#cfgJog')) $('saveCfg').click();
+    else if (e.target.matches('#target')) $('goBtn').click();
+    else if (e.target.matches('#limMin,#limMax')) $('applyLimits').click();
+    else if (e.target.matches('#encValue')) $('encSet').click();
+  });
+
+  // --------------------------------------------------------------- actions
+  $('rows').addEventListener('click', (e) => { const tr = e.target.closest('tr[data-name]'); if (tr) select(tr.dataset.name); });
+  $('stopBtn').addEventListener('click', () => post({action: 'stop'}));
+  $('readBtn').addEventListener('click', async () => { await act('status', {force: true}); await act('limits'); });
+  $('initBtn').addEventListener('click', async () => show($('limitsResult'), await act('initialize'), 'initialised: limits installed'));
+  $('clearBtn').addEventListener('click', async () => show($('moveResult'), await act('clear_faults'), 'faults cleared'));
+  $('haltBtn').addEventListener('click', async () => show($('moveResult'), await act('stop'), 'quick stop sent'));
+  $('disableBtn').addEventListener('click', async () => show($('moveResult'), await act('disable'), 'voltage disabled'));
+
+  async function jog(direction) {
+    if (!(await saveProfileIfTouched())) return;
+    const r = await act('jog', {direction});
+    show($('moveResult'), r, r.ok ? `jogging to ${r.target}` : '');
+  }
+  $('jogMinus').addEventListener('click', () => jog(-1));
+  $('jogPlus').addEventListener('click', () => jog(1));
+  async function moveTo(target) {
+    if (!Number.isFinite(target)) { show($('moveResult'), {ok: false, error: 'enter a target in counts'}); return; }
+    if (!(await saveProfileIfTouched())) return;
+    const r = await act('move', {target});
+    show($('moveResult'), r, r.ok ? `moving to ${r.target}` : '');
+  }
+  $('goBtn').addEventListener('click', () => moveTo(parseInt($('target').value, 10)));
+  $('toMin').addEventListener('click', () => { const a = cur(); if (a) { $('target').value = a.config.min; moveTo(a.config.min); } });
+  $('toMax').addEventListener('click', () => { const a = cur(); if (a) { $('target').value = a.config.max; moveTo(a.config.max); } });
+  $('toMid').addEventListener('click', () => { const a = cur(); if (a) { const m = Math.round((a.config.min + a.config.max) / 2); $('target').value = m; moveTo(m); } });
+
+  $('limitsBtn').addEventListener('click', async () => show($('limitsResult'), await act('limits'), 'read'));
+  $('useMin').addEventListener('click', () => { const a = cur(); if (a && a.last) { $('limMin').value = a.last.position; $('limMin').dataset.touched = '1'; $('limMin').classList.add('changed'); } });
+  $('useMax').addEventListener('click', () => { const a = cur(); if (a && a.last) { $('limMax').value = a.last.position; $('limMax').dataset.touched = '1'; $('limMax').classList.add('changed'); } });
+  $('applyLimits').addEventListener('click', async () => {
+    const min = parseInt($('limMin').value, 10), max = parseInt($('limMax').value, 10);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) { show($('limitsResult'), {ok: false, error: 'enter min and max in counts'}); return; }
+    const r = await act('set_range', {min, max});
+    show($('limitsResult'), r, r.ok ? (r.applied ? `range [${min}, ${max}] written to the controller` : `range [${min}, ${max}] stored; written when the clamp is restored`) : '');
+    if (r.ok) ['limMin','limMax'].forEach((id) => { delete $(id).dataset.touched; $(id).classList.remove('changed'); });
+  });
+  $('calib').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    if (on && !confirm('Lift the clamp? Nothing then limits travel but the current limit and any switches. Only jogs are accepted until it is restored.')) { e.target.checked = false; return; }
+    show($('limitsResult'), await act('calibrate', {enabled: on}), on ? 'clamp lifted' : 'clamp restored');
+  });
+  $('eepromBtn').addEventListener('click', async () => {
+    const a = cur(); if (!a) return;
+    if (!confirm(`Save node ${a.config.node}'s settings to EEPROM? This is permanent and covers both channels, including the PID gains and limits in force now.`)) return;
+    show($('limitsResult'), await act('save_eeprom'), 'saved to EEPROM');
+  });
+  $('encSet').addEventListener('click', async () => {
+    const counts = parseInt($('encValue').value, 10);
+    if (!Number.isFinite(counts)) { show($('encResult'), {ok: false, error: 'enter a count'}); return; }
+    if (!confirm(`Set the encoder count of ${selected} to ${counts}? The position loop is taken down first.`)) return;
+    const r = await act('set_encoder', {counts});
+    show($('encResult'), r, r.ok ? `count is now ${r.position}` : '');
+  });
+  $('encZero').addEventListener('click', () => { $('encValue').value = 0; $('encSet').click(); });
+
+  // --------------------------------------------------------------- polling
+  async function pollState() {
+    try {
+      const s = await (await fetch('/api/state')).json();
+      const up = !!(s.link && s.link.up);
+      const st = s.can && s.can.status;
+      document.body.classList.toggle('offline', !(up && s.connected));
+      $('conn').className = 'pill ' + (up && s.connected ? 'on' : 'off');
+      $('connText').textContent = !up ? 'disconnected' : s.connected ? 'board online' : 'searching…';
+      $('bridge').className = 'pill ' + (!st ? 'off' : st.initialized ? (st.bus_state === 'active' ? 'on' : 'warn') : 'off');
+      $('bridgeText').textContent = !st ? 'bridge: no status' : !st.initialized ? 'bridge DOWN' : `bridge ${st.bus_state}`;
+      actuators = s.actuators || [];
+      if (selected && !byName(selected)) selected = null;
+      if (!selected && actuators.length) select(actuators[0].config.name);
+      paintList(); fillConfig(false); paintSelected();
+      const events = [...localLog, ...(s.events || [])].slice(0, 40);
+      $('log').innerHTML = events.map((e) => `<div><span class="t">${e.t}</span><span class="${e.level}">${esc(e.text)}</span></div>`).join('');
+    } catch (e) { $('conn').className = 'pill off'; $('connText').textContent = 'server unreachable'; }
+  }
+  let polling = false;
+  async function pollStatus() {
+    if (polling || document.body.classList.contains('offline') || !actuators.length) return;
+    polling = true;
+    try {
+      if (selected) await act('status');
+      const others = actuators.filter((a) => a.config.name !== selected);
+      if (others.length) { const a = others[rr++ % others.length]; await post({action: 'act', name: a.config.name, op: 'status', args: {}}); }
+    } finally { polling = false; }
+  }
+  pollState(); setInterval(pollState, 250); setInterval(pollStatus, 500);
+})();
+</script>
+</body>
+</html>

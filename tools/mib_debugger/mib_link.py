@@ -17,6 +17,7 @@ import time
 from collections import deque
 from typing import Dict, List, Optional
 
+import actuator_ctl
 import canopen_sdo
 import mcp266_objects
 import mib_messages as msg
@@ -40,6 +41,15 @@ CLIENT_WATCHDOG_S = 1.5
 
 DRIVE_AXES = (2, 3)  # DRIVE_LEFT, DRIVE_RIGHT
 
+# Velocity trace for the Tuning page: one point per MotorState received, so
+# 20 Hz per board. 6000 points is two drive boards for two and a half minutes.
+TRACE_DEPTH = 6000
+# A MotorCommand older than this no longer counts as the target the board is
+# tracking; the trace records no target rather than a stale one.
+COMMAND_STALE_S = 0.5
+# A MotorState older than this means the board has gone quiet.
+BOARD_TIMEOUT_S = 1.0
+
 # Copied from components/MIBConfig/include/MIBconfig.hpp. The page uses these
 # to turn the raw motor-shaft commands back into chassis motion: the left
 # motor is mirrored, so the firmware negates it and a forward command reads as
@@ -55,6 +65,10 @@ ALL_AXES = (0, 1, 2, 3)
 # espp's examples assume the MCP266 answers on this CANopen node id.
 DEFAULT_CAN_NODE = 10
 CAN_MONITOR_DEPTH = 400
+
+# The Actuators page's list of joints (node, channel, range, profile) is kept
+# here between runs; the defaults in actuator_ctl apply when it is missing.
+ACTUATOR_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "actuators.json")
 
 
 def build_cyclonedds_uri(interface=None, local=False):
@@ -106,6 +120,10 @@ def empty_snapshot() -> dict:
         "status_count": 0,
         "board": None,
         "motors": {str(a): None for a in ALL_AXES},
+        "boards": {str(a): None for a in ALL_AXES},
+        "tuning": {str(a): {"last_req": 0, "pending": None} for a in DRIVE_AXES},
+        "trace_cursor": 0,
+        "pulse": None,
         "joystick": {"x": 0.0, "y": 0.0, "twist": 0.0, "live": False},
         "drive_profile": "NORMAL",
         "motor_sim": False,
@@ -141,6 +159,19 @@ class MibLink:
         self._status_count = 0
         self._motor_commands: Dict[int, dict] = {}
 
+        # Latest MotorState from each PACE RACER board, the velocity trace the
+        # Tuning page graphs, and the per-axis tuning request bookkeeping.
+        self._motor_states: Dict[int, dict] = {}
+        self._trace = deque(maxlen=TRACE_DEPTH)
+        self._trace_n = 0
+        self._tuning_req: Dict[int, int] = {axis: 0 for axis in ALL_AXES}
+        self._tuning_pending: Dict[int, Optional[dict]] = {axis: None for axis in ALL_AXES}
+
+        # A timed pulse: the stick is latched at a value and released by a
+        # timer, so the pulse length does not depend on the operator.
+        self._pulse_timer: Optional[threading.Timer] = None
+        self._pulse: Optional[dict] = None
+
         # Runtime parameter table as last reported by the board.
         self._params: Optional[msg.ParamState] = None
         self._params_time: float = 0.0
@@ -160,8 +191,17 @@ class MibLink:
         self._can_frame_count = 0
         self._can_waiters: List[dict] = []
         self._can_tx_seq = 0
+        # One SDO client per node id, so the CAN page and the actuators can
+        # address different controllers; one lock per node serialises the
+        # multi-SDO sequences (a move, a clamp read-modify-write) on it.
+        self._can_clients: Dict[int, canopen_sdo.CanopenClient] = {}
+        self._node_locks: Dict[int, threading.RLock] = {}
         self._can_node = DEFAULT_CAN_NODE
-        self._can_client = canopen_sdo.CanopenClient(self, node_id=self._can_node)
+        self._can_client = self.client_for(self._can_node)
+
+        # The positioned joints of the Actuators page.
+        self._actuators = [actuator_ctl.Actuator(self, cfg)
+                           for cfg in actuator_ctl.load_configs(ACTUATOR_CONFIG_PATH)]
 
         self._events = deque(maxlen=300)
         self._started_at = time.time()
@@ -237,6 +277,15 @@ class MibLink:
             self._writers[("motor_state", axis)] = writer(
                 msg.motor_state_topic(axis), msg.MotorState
             )
+            # The boards' own state reports, and the gains topic they take.
+            # Both are the motor API's MIB-side endpoints; the debugger joins
+            # the same domain so it can read and write them directly.
+            self._readers[("motor_state", axis)] = reader(
+                msg.motor_state_topic(axis), msg.MotorState
+            )
+            self._writers[("motor_tuning", axis)] = writer(
+                msg.motor_tuning_topic(axis), msg.MotorTuning
+            )
 
         self._running = True
         self._spawn(self._receive_loop, "mib-rx")
@@ -281,6 +330,7 @@ class MibLink:
             try:
                 self._drain_status()
                 self._drain_motor_commands()
+                self._drain_motor_states()
                 self._drain_params()
                 self._drain_can()
             except Exception as exc:  # keep the thread alive through transients
@@ -402,6 +452,79 @@ class MibLink:
                     "time": time.time(),
                 }
 
+    def _drain_motor_states(self) -> None:
+        now = time.time()
+        for axis in ALL_AXES:
+            samples = valid_samples(self._readers[("motor_state", axis)], msg.MotorState, count=20)
+            if not samples:
+                continue
+            with self._lock:
+                previous = self._motor_states.get(axis)
+                command = self._motor_commands.get(axis)
+                target = None
+                if command is not None and now - command["time"] < COMMAND_STALE_S:
+                    target = command["velocity"]
+                for sample in samples:
+                    self._trace_n += 1
+                    self._trace.append({
+                        "n": self._trace_n, "t": now, "axis": axis,
+                        "target": target,
+                        "measured": round(float(sample.velocity), 4),
+                        "iq": round(float(sample.iq), 3),
+                        "state": int(sample.state),
+                    })
+                latest = samples[-1]
+                entry = {
+                    "api_version": latest.api_version,
+                    "fw_version": f"{(latest.fw_version >> 24) & 0xFF}.{(latest.fw_version >> 16) & 0xFF}.{latest.fw_version & 0xFFFF}",
+                    "seq": latest.seq,
+                    "last_cmd_seq": latest.last_cmd_seq,
+                    "state": msg.BoardState(latest.state).name if latest.state in msg.BoardState.__members__.values() else str(latest.state),
+                    "mode": msg.ControlMode(latest.mode).name if latest.mode in msg.ControlMode.__members__.values() else str(latest.mode),
+                    "fault": msg.FaultCode(latest.fault_code).name if latest.fault_code in msg.FaultCode.__members__.values() else str(latest.fault_code),
+                    "cmd_age_ms": latest.cmd_age_ms,
+                    "clear_fault_ack": latest.clear_fault_ack,
+                    "tuning_ack": latest.tuning_ack,
+                    "velocity": round(float(latest.velocity), 4),
+                    "position": round(float(latest.position), 3),
+                    "iq": round(float(latest.iq), 3),
+                    "torque_est": round(float(latest.torque_est), 3),
+                    "vbus": round(float(latest.vbus), 2),
+                    "vbus_measured": bool(latest.vbus_measured),
+                    "ibus_est": round(float(latest.ibus_est), 2),
+                    "temps": [round(float(t), 1) for t in latest.temps],
+                    "torque_limit_eff": round(float(latest.torque_limit_eff), 2),
+                    "vel_limit_eff": round(float(latest.vel_limit_eff), 2),
+                    "accel_limit_eff": round(float(latest.accel_limit_eff), 2),
+                    "drv_status": latest.drv_status,
+                    "speed_kp": round(float(latest.speed_kp), 5),
+                    "speed_ki": round(float(latest.speed_ki), 5),
+                    "hall_pll_hz": round(float(latest.hall_pll_hz), 3),
+                    "time": now,
+                }
+                self._motor_states[axis] = entry
+                pending = self._tuning_pending[axis]
+                acked = pending is not None and latest.tuning_ack == pending["req"]
+                if acked:
+                    self._tuning_pending[axis] = None
+            label = msg.AXIS_LABELS[axis]
+            if previous is None:
+                self.log(f"{label} board online: api v{entry['api_version']} fw {entry['fw_version']} "
+                         f"{entry['state']} kp={entry['speed_kp']:g} ki={entry['speed_ki']:g} "
+                         f"pll={entry['hall_pll_hz']:g}", "good")
+            elif previous["state"] != entry["state"] or previous["fault"] != entry["fault"]:
+                level = "bad" if entry["state"] == "FAULT" else "info"
+                fault = f" ({entry['fault']})" if entry["fault"] != "NONE" else ""
+                self.log(f"{label} board {previous['state']} -> {entry['state']}{fault}", level)
+            if acked:
+                self.log(f"{label} board applied tuning #{pending['req']}: kp={entry['speed_kp']:g} "
+                         f"ki={entry['speed_ki']:g} pll={entry['hall_pll_hz']:g}"
+                         + (" (saved to NVS)" if pending["persist"] else ""), "good")
+            elif previous is not None and (previous["speed_kp"], previous["speed_ki"], previous["hall_pll_hz"]) != \
+                    (entry["speed_kp"], entry["speed_ki"], entry["hall_pll_hz"]):
+                self.log(f"{label} gains changed: kp={entry['speed_kp']:g} ki={entry['speed_ki']:g} "
+                         f"pll={entry['hall_pll_hz']:g}", "info")
+
     # ------------------------------------------------------------- tx thread
 
     def _transmit_loop(self) -> None:
@@ -479,6 +602,9 @@ class MibLink:
                 velocity=velocity,
                 vbus=48.0,
                 temps=[30.0, 30.5, 31.0, 29.5],
+                speed_kp=msg.TUNING_DEFAULTS["speed_kp"],
+                speed_ki=msg.TUNING_DEFAULTS["speed_ki"],
+                hall_pll_hz=msg.TUNING_DEFAULTS["hall_pll_hz"],
             )
             self._writers[("motor_state", axis)].write(state)
 
@@ -493,6 +619,8 @@ class MibLink:
             )
 
     def set_joystick_live(self, live: bool) -> None:
+        if not live:
+            self._cancel_pulse()
         with self._lock:
             self._joystick_live = bool(live)
             # Engaging counts as client activity, so the watchdog measures
@@ -502,6 +630,44 @@ class MibLink:
                 self._joystick = msg.XYTwist(0.0, 0.0, 0.0, 0)
         self.log("Joystick output " + ("engaged" if live else "released"),
                  "warn" if live else "info")
+
+    def pulse(self, x: float, y: float, duration: float) -> dict:
+        """Latch the stick at (x, y) for `duration` seconds, then release it.
+
+        The release runs on a timer thread, and STOP, Disconnect or a new
+        pulse cancel it. The page's polling keeps the client watchdog fed.
+        """
+        duration = float(duration)
+        if not 0.05 <= duration <= 30.0:
+            raise ValueError("pulse duration must be between 0.05 and 30 s")
+        with self._lock:
+            if self._pulse_timer is not None:
+                self._pulse_timer.cancel()
+            self.set_joystick(x, y, 0.0)
+            self._joystick_live = True
+            self._last_poll = time.time()
+            self._pulse = {"x": float(x), "y": float(y), "start": time.time(),
+                           "until": time.time() + duration, "duration": duration}
+            self._pulse_timer = threading.Timer(duration, self._end_pulse)
+            self._pulse_timer.daemon = True
+            self._pulse_timer.start()
+        self.log(f"Pulse: stick x={float(x):.2f} y={float(y):.2f} for {duration:g} s", "warn")
+        return {"ok": True, "until": self._pulse["until"]}
+
+    def _end_pulse(self) -> None:
+        with self._lock:
+            self._pulse_timer = None
+            self._pulse = None
+        self.set_joystick(0.0, 0.0, 0.0)
+        self.set_joystick_live(False)
+        self.log("Pulse ended: stick back to zero", "info")
+
+    def _cancel_pulse(self) -> None:
+        with self._lock:
+            timer, self._pulse_timer = self._pulse_timer, None
+            self._pulse = None
+        if timer is not None:
+            timer.cancel()
 
     def send_drive_command(self, enable: bool, profile: Optional[int] = None) -> None:
         with self._lock:
@@ -539,13 +705,31 @@ class MibLink:
 
     # ------------------------------------------------------- CAN commands
 
+    def client_for(self, node: int) -> canopen_sdo.CanopenClient:
+        node = int(node)
+        with self._lock:
+            client = self._can_clients.get(node)
+            if client is None:
+                client = canopen_sdo.CanopenClient(self, node_id=node)
+                self._can_clients[node] = client
+            return client
+
+    def node_lock(self, node: int) -> threading.RLock:
+        node = int(node)
+        with self._lock:
+            lock = self._node_locks.get(node)
+            if lock is None:
+                lock = threading.RLock()
+                self._node_locks[node] = lock
+            return lock
+
     def can_set_node(self, node: int) -> dict:
         node = int(node)
         if not 1 <= node <= 127:
             raise ValueError("node id must be 1..127")
         with self._lock:
             self._can_node = node
-            self._can_client.node_id = node
+            self._can_client = self.client_for(node)
         self.log(f"CANopen node id set to {node}", "info")
         return {"ok": True, "node": node}
 
@@ -642,6 +826,136 @@ class MibLink:
             self.log(f"{action['label']}: accepted", "warn" if action["danger"] else "good")
         return result
 
+    # ------------------------------------------------------------ actuators
+
+    def actuators_config_changed(self) -> None:
+        """Persist the actuator list after a range or profile change."""
+        try:
+            actuator_ctl.save_configs(ACTUATOR_CONFIG_PATH, [a.config for a in self._actuators])
+        except OSError as exc:
+            self.log(f"Could not save {ACTUATOR_CONFIG_PATH}: {exc}", "bad")
+
+    def actuators_set_config(self, entries: list) -> dict:
+        """Replace the actuator list. Runtime state (calibration mode, last
+        target) follows an entry whose name is unchanged."""
+        configs = [actuator_ctl.normalise_config(e) for e in entries]
+        names = [c["name"] for c in configs]
+        if len(set(names)) != len(names):
+            raise ValueError("actuator names must be unique")
+        with self._lock:
+            old = {a.name: a for a in self._actuators}
+            new = []
+            for cfg in configs:
+                act = old.get(cfg["name"])
+                if act is None:
+                    act = actuator_ctl.Actuator(self, cfg)
+                else:
+                    changed = act.config["node"] != cfg["node"] or act.config["axis"] != cfg["axis"]
+                    act.config = cfg
+                    if changed:
+                        act.initialized = False
+                        act.last = act.last_limits = act.last_target = None
+                new.append(act)
+            self._actuators = new
+        self.actuators_config_changed()
+        self.log(f"Actuator list saved: {', '.join(names) if names else 'empty'}", "info")
+        return {"ok": True}
+
+    def _actuator(self, name: str) -> actuator_ctl.Actuator:
+        for act in self._actuators:
+            if act.name == name:
+                return act
+        raise ValueError(f"no actuator named {name!r}")
+
+    def actuator_command(self, name: str, op: str, args: dict) -> dict:
+        """One operation on one actuator; errors come back as {ok: False}."""
+        act = self._actuator(name)
+        ops = {
+            "status": lambda: {"ok": True, "status": act.status(force=bool(args.get("force")))},
+            "limits": lambda: {"ok": True, "limits": act.limits()},
+            "initialize": act.initialize,
+            "move": lambda: act.move_absolute(int(args["target"])),
+            "jog": lambda: act.jog(int(args.get("direction", 1))),
+            "stop": act.stop,
+            "disable": act.disable,
+            "clear_faults": act.clear_faults,
+            "set_range": lambda: act.set_range(int(args["min"]), int(args["max"])),
+            "calibrate": lambda: act.set_calibration_mode(bool(args.get("enabled"))),
+            "set_encoder": lambda: act.set_encoder(int(args["counts"])),
+            "save_eeprom": act.save_eeprom,
+        }
+        if op not in ops:
+            raise ValueError(f"unknown actuator op {op!r}")
+        try:
+            return ops[op]()
+        except actuator_ctl.ActuatorError as exc:
+            if op != "status":
+                self.log(str(exc), "bad")
+            return {"ok": False, "error": str(exc)}
+
+    def send_tuning(self, axis: int, kp: float, ki: float, pll_hz: float,
+                    persist: bool = False) -> dict:
+        """Send one MotorTuning request to a drive board.
+
+        0 leaves a gain as it is, a negative kp or ki sets it to exactly 0
+        (API v3). The board acts on a new request id and echoes it in
+        MotorState.tuning_ack, which _drain_motor_states watches for.
+        """
+        if axis not in DRIVE_AXES:
+            raise ValueError(f"axis {axis} is not a drive wheel")
+        kp, ki, pll_hz = float(kp), float(ki), float(pll_hz)
+        if pll_hz < 0:
+            raise ValueError("hall_pll_hz must be >= 0 (0 = leave as is)")
+        label = msg.AXIS_LABELS[axis]
+        with self._lock:
+            nxt = (self._tuning_req[axis] + 1) & 0xFF
+            if nxt == 0:
+                nxt = 1   # 0 reads as "none yet" in the ack
+            self._tuning_req[axis] = nxt
+            self._tuning_pending[axis] = {"req": nxt, "persist": bool(persist), "time": time.time(),
+                                          "kp": kp, "ki": ki, "pll": pll_hz}
+            board = self._motor_states.get(axis)
+        self._writers[("motor_tuning", axis)].write(msg.MotorTuning(
+            tuning_req_id=nxt, persist=1 if persist else 0,
+            speed_kp=kp, speed_ki=ki, hall_pll_hz=pll_hz))
+
+        def word(v):
+            return "unchanged" if v == 0 else ("exactly 0" if v < 0 else f"{v:g}")
+        self.log(f"{label}: sent tuning #{nxt} kp={word(kp)} ki={word(ki)} "
+                 f"pll={'unchanged' if pll_hz == 0 else f'{pll_hz:g}'}"
+                 + (" persist=1 (writes NVS)" if persist else ""), "warn" if persist else "info")
+        warning = None
+        if board is None:
+            warning = f"{label}: no MotorState seen yet, so the board may not be on the network"
+        elif (kp < 0 or ki < 0) and board["api_version"] < 3:
+            warning = f"{label}: board API v{board['api_version']} ignores a negative gain; needs v3"
+        if warning:
+            self.log(warning, "warn")
+        return {"ok": True, "req": nxt, "warning": warning}
+
+    def trace_since(self, cursor: int, axes=DRIVE_AXES) -> dict:
+        """Trace points newer than `cursor` (a point's n), oldest first."""
+        with self._lock:
+            points = [p for p in self._trace if p["n"] > cursor and p["axis"] in axes]
+            latest = self._trace_n
+        return {"cursor": latest, "points": points, "now": time.time()}
+
+    def trace_clear(self) -> dict:
+        with self._lock:
+            self._trace.clear()
+        return {"ok": True}
+
+    def trace_csv(self) -> str:
+        with self._lock:
+            points = list(self._trace)
+        t0 = points[0]["t"] if points else 0.0
+        lines = ["t_s,axis,label,target_rad_s,measured_rad_s,iq_a,state"]
+        for p in points:
+            target = "" if p["target"] is None else f"{p['target']:.4f}"
+            lines.append(f"{p['t'] - t0:.3f},{p['axis']},{msg.AXIS_SEGMENTS[p['axis']]},"
+                         f"{target},{p['measured']:.4f},{p['iq']:.3f},{msg.BoardState(p['state']).name}")
+        return "\n".join(lines) + "\n"
+
     def set_motor_sim(self, enabled: bool) -> None:
         with self._lock:
             self._motor_sim = bool(enabled)
@@ -651,12 +965,22 @@ class MibLink:
 
     def stop_everything(self) -> None:
         """Release the joystick and ask the board to disable driving."""
+        self._cancel_pulse()
+        self.set_joystick(0.0, 0.0, 0.0)
         self.set_joystick_live(False)
         try:
             self.send_drive_command(False)
         except Exception as exc:
             self.log(f"Could not send disable: {exc}", "bad")
         self.log("STOP: joystick released and drive disable sent", "bad")
+        # Quick-stop every actuator this session has talked to. Untouched
+        # ones are skipped: an absent node would only add SDO timeouts here.
+        for act in list(self._actuators):
+            if act.touched and act.online():
+                try:
+                    act.stop()
+                except actuator_ctl.ActuatorError as exc:
+                    self.log(str(exc), "bad")
 
     # ------------------------------------------------------------- snapshot
 
@@ -692,6 +1016,26 @@ class MibLink:
                     copy = dict(entry)
                     copy["age"] = round(now - copy.pop("time"), 2)
                     motors[str(axis)] = copy
+
+            boards = {}
+            for axis in ALL_AXES:
+                entry = self._motor_states.get(axis)
+                if entry is None:
+                    boards[str(axis)] = None
+                else:
+                    copy = dict(entry)
+                    age = now - copy.pop("time")
+                    copy["age"] = round(age, 2)
+                    copy["online"] = age < BOARD_TIMEOUT_S
+                    boards[str(axis)] = copy
+            tuning = {}
+            for axis in DRIVE_AXES:
+                pending = self._tuning_pending[axis]
+                if pending is not None and now - pending["time"] > 2.0:
+                    # Best effort: nothing will ack it now. Leave it visible
+                    # as timed out rather than pending forever.
+                    pending = dict(pending, timed_out=True)
+                tuning[str(axis)] = {"last_req": self._tuning_req[axis], "pending": pending}
 
             params = None
             if self._params is not None:
@@ -730,10 +1074,20 @@ class MibLink:
                     ],
                 }
 
+            actuators = [act.to_json() for act in self._actuators]
+
             return {
                 "connected": connected,
                 "params": params,
                 "can": can,
+                "actuators": actuators,
+                "boards": boards,
+                "tuning": tuning,
+                "pulse": None if self._pulse is None else {
+                    "x": self._pulse["x"], "y": self._pulse["y"],
+                    "duration": self._pulse["duration"],
+                    "remaining": round(max(0.0, self._pulse["until"] - now), 2)},
+                "trace_cursor": self._trace_n,
                 "status_age": round(status_age, 2) if status_age is not None else None,
                 "status_count": self._status_count,
                 "board": board,

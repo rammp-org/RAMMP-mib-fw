@@ -4,13 +4,15 @@ A walkthrough of the bench tool, from an empty laptop to programming an MCP266
 motor controller over CAN. The [README](README.md) is the reference; this is
 the order to do things in the first time.
 
-The tool has three pages, linked from every header:
+The tool has five pages, linked from every header:
 
 | Page | URL | What it is for |
 |---|---|---|
 | Debugger | `/` | Connect, watch the board's state, drive it, watch what it sends to the wheels |
 | Parameters | `/params` | Change geometry and profile limits on the running board without a reflash |
 | MCP266 / CAN | `/can` | Read and write the MCP266 motor controllers' settings over CAN |
+| PACE tuning | `/tune` | Tune the PACE RACER drive boards' speed loop and watch target against measured velocity |
+| Actuators | `/actuators` | Jog the seat actuators, move them to absolute counts, and set their travel limits on the MCP266 |
 
 Every page shares the header: a connection pill, the board's state badge, and
 a red **STOP** button. STOP releases the stick and sends drive DISABLE from
@@ -46,7 +48,7 @@ You do not need the board to learn the pages. In a second terminal:
 ```
 
 That starts a stand-in for the firmware on loopback: same topics, same state
-machine, same guards, plus a fake MCP266 on the CAN page. In the browser choose
+machine, same guards, plus two fake MCP266s for the CAN and Actuators pages. In the browser choose
 **Simulator** as the target and press **Connect**. The header pill turns green
 within a second or two and the state badge shows **IDLE**.
 
@@ -245,7 +247,117 @@ Two limits from espp's testing of the MCP266 over CANopen: only profile
 position mode produces motion (the velocity and duty commands are accepted but
 inert), and this page does not drive the motors. It configures them.
 
-## 8. Stopping
+## 8. Tune the PACE RACER speed loop
+
+Open **PACE tuning →**. This page talks to the two drive boards directly over
+the same Ethernet, so it works with the MIB firmware you already have as long
+as the MIB is driving. Wheels off the ground.
+
+### See both boards
+
+The **Drive boards** cards fill in as soon as a board's MotorState arrives,
+armed or not. Check three things: the API version is 3 (2 works, but a gain
+cannot be switched off), the command age is under 100 ms once drive is
+enabled (the MIB is streaming to it), and the state is ARMED while driving.
+A card that stays "no MotorState" means the board is off, has no axis set on
+its console, or the switch is not passing its multicast to the laptop.
+
+### Take a baseline
+
+1. Pick **NORMAL** and press **Enable drive**. Both cards show ARMED.
+2. Set the pulse to 50 % for 2 s, leave **square it** ticked, and press
+   **⎍ Run pulse**. The stick latches, the chassis drives forward for two
+   seconds, and the server lets go: the dashed target goes up, holds, and
+   comes back to zero, and the solid measured line shows how each wheel
+   followed. The countdown is under the buttons.
+3. Read the **Last step response** table. It has two rows per wheel, the
+   rising edge (▲) and the falling edge (▼): rise time, overshoot, settle
+   time, steady error and peak current.
+
+The step buttons do the same without the timer: **▲ 50 %** latches the stick
+until **■ Stop**. Without "square it" the MIB's planner ramps the target at
+the profile's acceleration limit, which is the chair's normal feel; with it
+the ramp is as steep as the firmware allows, which is the harder test for the
+loop. Repeat a pulse or two until the numbers are steady; that is the
+baseline. Set the window to 30 s so a whole pulse fits.
+
+### Change a gain and compare
+
+The inputs show what each board is running. With **same values for both
+wheels** ticked, typing in the left row fills the right.
+
+1. Halve **ki** (the integrator is what bounces after a step) and press
+   **Apply**. The request shows "sent, waiting for ack" and then "applied";
+   the Events log prints the gains the board confirms, and a dotted green
+   marker goes on the graph at that moment.
+2. Run the same pulse again and compare the response left of the marker with
+   the response right of it.
+3. Then halve **kp**, then move the **PLL** toward 5 Hz for smoother feedback
+   or toward 20 Hz if the loop hunts slowly.
+
+Enter 0 for ki to switch the integrator off entirely; the wheel then settles
+short of the target, which the steady error column shows. Press **⟲ from
+board** on a row to discard what you typed and reload the board's values.
+**Export CSV** saves the buffered trace for comparing runs later.
+
+### Keep it
+
+The board loses the gains at its next power cycle. **Save in force to NVS**
+writes them; it asks for a second click because it is permanent. Each wheel
+is its own board, so untick "same for both" if they need to differ.
+
+## 9. Move the seat actuators
+
+Open **Actuators →**. Each row in **Joints** is one channel of one MCP266:
+pick the row to work on. The defaults are four legs on nodes 10 and 11; edit
+the name, node id and channel under **Configuration** and press **Save**, and
+the list is kept in `actuators.json` beside the tool.
+
+Do this with nothing in the actuator's way the first time, and with the
+chair's power switch in reach. Nothing here moves until you press a button,
+and a move needs the drive in profile position mode with a non-zero position
+P gain; the page seeds a coarse gain if the controller has none, but the real
+gain is tuned on the CAN page under Position PID.
+
+### Find the ends
+
+1. Press **Read**. The position is the encoder count, the drive state is the
+   CiA 402 state, and **Travel limits** shows the clamp the controller holds.
+   A fresh controller shows `[0, 0]`, the factory clamp that forces every
+   target to zero.
+2. Tick **lift the clamp**. The clamp is widened so the joint can be driven
+   past the range you have not measured yet; only jogs are accepted.
+3. Press **Jog +** and **Jog −**. Each jog reads the encoder and moves one
+   step (the step input, in counts) from where the joint is. Watch the count
+   and the direction: if + runs the wrong way, the sign belongs in the
+   kinematics layer, not here, so note it.
+4. At one mechanical end press **← current** next to min; at the other, next
+   to max. For an incremental encoder set the count first: at a known end,
+   **Encoder count → Set** installs the count that end should read (the loop
+   is taken down first so it does not chase its old target).
+5. Untick **lift the clamp**, then **Write to controller**. The range is
+   written as the MinPos/MaxPos clamp and the 0x607D software limits, read
+   back, and shown with a "matches" badge.
+6. **Save node to EEPROM** if the limits should survive a power cycle. It is
+   permanent and covers both channels of that node. Without it the page
+   re-writes the limits at the next move, so nothing is lost either way.
+
+### Move
+
+**Move** sends an absolute count, clamped to the range, with the profile
+velocity in the inputs beside it. **to min**, **to middle** and **to max** are
+shortcuts. The bar under the position shows where the joint is in its range
+and a marker where the last target was. **■ Stop** is a quick stop (the drive
+holds position) and the next move releases it; **Disable** drops the power
+stage so the joint can be pushed by hand. If a limit switch is wired, the
+statusword reports it, the page refuses another move in that direction, and
+restarts the drive before a move away.
+
+Every move reads the clamp back first. If the controller has power-cycled
+since the limits were written, the Events log says "it has reset;
+re-initialising" and the limits go in again before the target does.
+
+## 10. Stopping
 
 Press **STOP**, then **Disconnect**, then Ctrl-C in the terminal. Each step
 sends drive DISABLE on its own, so the order only matters for tidiness.
