@@ -11,10 +11,12 @@ the OS default multicast route decided, which on a laptop with Wi-Fi beside
 a wired link to the boards is the Wi-Fi. The patch has `Domain` hand the
 transport the participant's own address and the transport pin joins
 (`add_multicast_group`) and egress (`multicast_interface` on the socket
-configs) to it. Harmless on an ESP32 with one interface. Verified to build
-on the host; the live check against the chair is pending, and until a wheel
-carries it, SETUP.md's "A laptop with more than one network" has the two
-workarounds (Wi-Fi off, or a route for 239.255.0.0/16).
+configs) to it. Harmless on an ESP32 with one interface. Verified against
+the chair from a Mac with Wi-Fi up: with the pip wheel the participant's
+announcements never appear on the chair's link; with the patch they do and
+the boards' endpoint announcements come back. Until a wheel carries it,
+SETUP.md's "A laptop with more than one network" has the two workarounds
+(Wi-Fi off, or a route for 239.255.0.0/16).
 
 ## CycloneDDS interop
 

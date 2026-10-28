@@ -126,8 +126,8 @@ Events panel on Connect. Two ways out, either is enough:
 
 The proper fix is in espp: the transport should join and send on the
 interface it was given. `interop/espp-rtps-multicast-interface.patch` does
-that, for upstreaming; until a wheel carries it, use one of the two steps
-above.
+that and was verified against the chair; until a released wheel carries it,
+use one of the two steps above.
 
 ## Checking the link
 
