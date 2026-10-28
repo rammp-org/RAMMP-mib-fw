@@ -72,9 +72,31 @@ turns green once status samples arrive. If it does not, `./doctor.sh`
 (`doctor.cmd` on Windows) runs the connection checks one by one and names the
 failing one; see [SETUP.md](SETUP.md).
 
-With Wi-Fi up beside the board's adapter, discovery multicast leaves on the
-Wi-Fi and nothing connects: turn Wi-Fi off, or route 239.255.0.0/16 over the
-adapter as SETUP.md shows. The Events panel says so on Connect.
+**With Wi-Fi up beside the board's adapter, nothing connects** until you tell
+the laptop to send DDS discovery multicast over the adapter. The RTPS stack
+joins the discovery group on the OS default interface, which is whichever
+service is on top of the network Service Order, normally Wi-Fi. The doctor
+and the Events panel both say so. Route only the DDS multicast range over the
+adapter (replace `en9` / `eno2` with the interface the doctor names):
+
+```
+sudo route -n add -net 239.255.0.0/16 -interface en9      # macOS
+sudo ip route add 239.255.0.0/16 dev eno2                 # Linux
+```
+
+To undo it, for example before a ROS 2 system on the Wi-Fi needs multicast:
+
+```
+sudo route -n delete -net 239.255.0.0/16                  # macOS
+sudo ip route del 239.255.0.0/16                          # Linux
+```
+
+The route does not survive a reboot. Moving the adapter above Wi-Fi in the
+Service Order would also work, but the MIB's DHCP hands out itself as the
+router, so that makes the chair the default route for all traffic and the
+internet stops while the cable is in; the route above changes only
+multicast. Turning Wi-Fi off is the other option. On Windows the wired
+adapter already outranks Wi-Fi for multicast, so nothing is needed there.
 
 The tool used CycloneDDS until October 2026. espp's stack could not complete
 endpoint discovery with it (four protocol corners, `BRANCH_NOTES.md` finding
