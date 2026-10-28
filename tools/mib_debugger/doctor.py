@@ -206,7 +206,8 @@ def step_dds(selector, local, seconds, trace_path):
         f" (state {msg.MibSystemState(last_status.systemState).name})" if ok else
         ": none. The MIB offers the topic but never sent to this machine, so it never "
         "learned this machine's reader. That is the endpoint-discovery handshake, not "
-        "the network: see BRANCH_NOTES.md finding 10 and SETUP.md."))
+        "the network: the boards need the espp patch in interop/ (BRANCH_NOTES.md "
+        "finding 10)."))
     if mib_pub and not ok:
         print("   hint: run again with --trace to see what the MIB answered.")
     del readers, r_part, r_pub, r_sub, sub, dp

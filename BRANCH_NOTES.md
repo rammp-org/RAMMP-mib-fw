@@ -158,23 +158,68 @@ main: PRs 24 and 35 fixed the turn direction there, so the branch's
   status topic would be the fifth). Readers have more headroom: three
   best-effort and two reliable against caps of five each.
 
-### 10. espp rtps sends a base-0 pre-emptive ACKNACK that CycloneDDS rejects
+### 10. espp's RTPS stack cannot complete endpoint discovery with CycloneDDS
 
-**Status: informational, upstream (espp) (2026-10-28).**
+**Status: root-caused and fixed on a host build of espp (2026-10-28); the fix
+is not yet in the firmware. Patch and test harness in
+`tools/mib_debugger/interop/`.** This is why the debugger stays on
+"searching" against the chair and why every CycloneDDS peer prints
+`malformed packet received from vendor 13.37`.
 
-- `StatefulReader::sendPreemptiveAckNack` in espp's rtps component sends a
-  SequenceNumberSet with base {0, 0} and no bits to each newly discovered
-  SEDP writer. CycloneDDS validates the base as a sequence number (must be
-  at least 1) and only patches a base-0 pre-emptive ACKNACK for eProsima and
-  RTI vendor ids, so from vendor 13.37 it is logged as "malformed packet
-  received ... state parse:shortmsg" and dropped. Every espp participant on
-  the chair does it on every SPDP round, so a CycloneDDS peer sees a burst of
-  warnings per round.
-- Harmless in practice: discovery completes through the regular ACKNACKs
-  (base = expected sequence number, at least 1) that follow the laptop's SEDP
-  heartbeats. A one-line change upstream, base {0, 1} instead of {0, 0},
-  would keep the meaning (nothing received yet) and silence it; FastDDS
-  accepts both, which is why espp's own interop matrix never saw it.
+espp's rtps component (`components/rtps`, a de-vendored embeddedRTPS) was
+only ever tested against FastDDS and ROS 2. CycloneDDS, which the debugger
+uses, exercises four things FastDDS does not, and each one on its own is
+enough to stop every sample. Reproduced on a Mac with espp's own
+`pc/tests/rtps_interop_pub` and `rtps_interop_sub` host programs against a
+CycloneDDS peer, with the ESP boards out of the loop entirely:
+
+1. **Heartbeats addressed to the participant are dropped.** CycloneDDS sends
+   HEARTBEAT (and GAP) with `readerId = ENTITYID_UNKNOWN`, which RTPS allows.
+   `MessageReceiver::processHeartbeatSubmessage` looked the reader up by that
+   id, found none, and discarded it. The board therefore never answered a
+   heartbeat, and since CycloneDDS delivers discovery data only on request,
+   the board never learned the laptop's readers. Fix: resolve the reader
+   through the writer it is matched to, as the DATA path already does.
+2. **The pre-emptive ACKNACK has sequence-number base 0.** CycloneDDS
+   validates the base (must be at least 1) and discards it as malformed; it
+   patches a base of 0 only for eProsima and RTI vendor ids. That is the
+   terminal noise. Fix: base 1.
+3. **ACKNACKs carry no INFO_DST and echo the heartbeat's reader id.**
+   CycloneDDS resolves the writer by (destination prefix, writerId) and keys
+   its reader table by the ACKNACK's reader id; without INFO_DST the prefix
+   is null and with reader id 0 the entry is "not a connection", so even a
+   well-formed ACKNACK did nothing. Fix: precede every ACKNACK with INFO_DST
+   naming the writer's participant, and put the reader's own entity id in it.
+4. **A received endpoint announcement without a locator keeps a placeholder
+   address.** `TopicData`'s default constructor fills `unicastLocator` with
+   `192.168.0.42:7411`, an embeddedRTPS leftover. CycloneDDS omits
+   `PID_UNICAST_LOCATOR` from SEDP and relies on the participant's default
+   unicast locator; the placeholder passed as valid, so once matched, every
+   sample for a CycloneDDS reader went to 192.168.0.42. Fix: reset the
+   locators before parsing and fall back to the remote participant's default
+   unicast locator from SPDP (`SEDPAgent`).
+
+With the four changes, the host harness passes espp writer to CycloneDDS
+reader and CycloneDDS writer to espp reader, reliable and best-effort, with
+no malformed-packet lines. Nothing changes on the wire for FastDDS peers:
+INFO_DST before ACKNACK and base 1 are what FastDDS itself sends, and the
+other two paths only run for input FastDDS never produces.
+
+- **Where:** espp `components/rtps/src/messages/MessageReceiver.cpp`,
+  `src/entities/StatefulReader.cpp`, `src/discovery/SEDPAgent.cpp`,
+  `src/discovery/TopicData.cpp`. Same code in every espp/rtps release from
+  1.3.5 to 1.3.10, so the chair never worked with CycloneDDS; what changed
+  recently is only that the chair now has several boards and a laptop that
+  looks at the terminal.
+- **Getting it onto the boards:** the MIB and both PACE RACER boards pull
+  `espp/rtps` from the component registry, so the fix has to come either
+  from an espp release (PR to esp-cpp/espp from the fork) or from an
+  `override_path` in each firmware's `main/idf_component.yml` pointing at a
+  patched checkout. The PACE boards must be reflashed too: a board that
+  never learns the laptop's readers sends it nothing.
+- **How to verify:** `./doctor.sh --trace` must show MibStatus samples and
+  "the MIB acknowledged this machine's endpoint discovery" OK, and the
+  terminal must stay free of `malformed packet` lines.
 
 ## Firmware changes on this branch (not for main)
 

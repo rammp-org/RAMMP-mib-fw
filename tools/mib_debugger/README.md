@@ -75,6 +75,19 @@ CycloneDDS the adapter's address; `run.cmd` replaces `run.sh`. Allow Python
 through Windows Firewall on both private and public networks when asked.
 [SETUP.md](SETUP.md) has the details.
 
+If the terminal prints lines like
+
+```
+recvUC: malformed packet received from vendor 13.37 length 48 state parse:shortmsg
+```
+
+the boards' firmware predates the CycloneDDS interop fix. Vendor 13.37 is
+espp's RTPS stack on the MIB and the PACE RACER boards; its discovery
+handshake has four defects that only show against CycloneDDS, and with them
+the tool stays on "searching" for ever. The fix is an espp patch in
+`interop/`, needed on every board on the chair; `BRANCH_NOTES.md` finding 10
+has the analysis and `./doctor.sh --trace` shows which step is failing.
+
 ## Running without the board
 
 A stand-in for the firmware lets you exercise the whole tool on a laptop. In one

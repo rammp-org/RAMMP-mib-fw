@@ -141,10 +141,12 @@ discovery writers.
 - **Managed switch with IGMP snooping and no querier.** The laptop's
   multicast reaches the boards but theirs never comes back. A dumb switch or
   a direct cable to the MIB avoids it.
-- **Lines reading `malformed packet received from vendor 13.37`** in the
-  terminal are noise, not the cause: CycloneDDS rejecting a pre-emptive
-  ACKNACK the boards' RTPS stack sends with a sequence-number base of 0.
-  Discovery completes on the next heartbeat regardless.
+- **Lines reading `malformed packet received from vendor 13.37`** mean the
+  boards run an espp RTPS stack without the CycloneDDS interop fix
+  (`interop/espp-rtps-cyclonedds-interop.patch`, `BRANCH_NOTES.md` finding
+  10). With that stack the tool never gets a sample; the doctor's step 3
+  shows the MIB's topics with zero samples and `--trace` shows the MIB never
+  acknowledging this machine's endpoint discovery.
 - **The MIB's boot log** over USB (`idf.py monitor`) shows whether its DDS
   endpoints were created; "BEST_EFFORT writer capacity reached" means a
   firmware build without the `CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=8`
