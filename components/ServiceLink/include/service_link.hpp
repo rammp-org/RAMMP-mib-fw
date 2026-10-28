@@ -1,0 +1,121 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
+#include "base_component.hpp"
+#include "dispatcher_worker.hpp"
+#include "stream_frame.hpp"
+#include "task.hpp"
+#include "telemetry.hpp"
+#include "usb_device.hpp"
+
+namespace mib {
+
+/// @brief The MIB's service link: one framed protocol (espp stream_frame, routed by an
+/// espp::DispatcherWorker) served on up to two transports at once.
+///
+/// - WebUSB on the ESP32-P4's USB 2.0 HS port. Chrome offers the landing page (the
+///   control panel) when it is plugged in. On the ESP32-P4-ETH this port is J3, the
+///   4-pin header; the board's USB-C is a CH343 USB-UART bridge, not native USB.
+/// - The console UART (UART0, the USB-C through the CH343), for Web Serial. Frames are
+///   written between log lines; the panel separates the two by the frame magic and CRC.
+///
+/// Both transports carry the same modules:
+///   3    telemetry  espp::Telemetry: named float channels, device timestamps
+///   0x10 console    device -> host stdout (USB only: on the UART the logs are the stream)
+///   0x20 system     reset, info
+///   0xFF discovery  what the device serves
+/// plus whatever the application adds with register_module().
+///
+/// Modelled on the PACE RACER's DemoLink (pace-racer-fw atos-drive/main/demo_link.hpp),
+/// without OTA and the core dump: the MIB flashes over the CH343 as before.
+class ServiceLink : public espp::BaseComponent {
+public:
+  /// Sends one encoded frame back on the transport a request arrived on.
+  using reply_fn = std::function<void(std::span<const uint8_t>)>;
+  /// An application module: the frame, and how to answer on its transport.
+  using handler_fn = std::function<void(const espp::stream_frame::Frame &, const reply_fn &)>;
+
+  static constexpr uint8_t kConsoleModule = 0x10;
+  static constexpr uint8_t kConsoleLog = 0x82; ///< device -> host: UTF-8 stdout chunk
+  static constexpr uint8_t kSystemModule = 0x20;
+  static constexpr uint8_t kSystemReset = 0x01;     ///< host -> device: reboot
+  static constexpr uint8_t kSystemInfo = 0x02;      ///< host -> device: JSON info
+  static constexpr uint8_t kSystemOk = 0x81;        ///< device -> host: [u8 request type]
+  static constexpr uint8_t kSystemInfoReply = 0x82; ///< device -> host: UTF-8 JSON
+
+  struct Config {
+    std::string product{"RAMMP MIB"};  ///< USB product string and discovery name.
+    std::string firmware{""};          ///< Reported by discovery and info.
+    std::vector<std::string> channels; ///< Telemetry channel names, in emit() order.
+    bool usb{true};                    ///< Serve WebUSB on the HS port.
+    bool uart{true};                   ///< Serve on the console UART.
+    std::string landing_page_url{""};  ///< WebUSB landing page, without a scheme.
+    int uart_telemetry_divider{5};     ///< Emit every Nth sample on the UART.
+    espp::Logger::Verbosity log_level{espp::Logger::Verbosity::INFO};
+  };
+
+  explicit ServiceLink(const Config &config);
+  ~ServiceLink();
+
+  ServiceLink(const ServiceLink &) = delete;
+  ServiceLink &operator=(const ServiceLink &) = delete;
+
+  /// Bring the transports up and register the built-in modules. Call once, after every
+  /// register_module(). Returns false if no transport came up.
+  bool start();
+
+  /// Serve `module_id` on every transport. Handlers run on that transport's worker task.
+  void register_module(uint8_t module_id, handler_fn handler, std::string name,
+                       std::string description);
+
+  /// One telemetry sample, values in Config::channels order. Best-effort: a transport
+  /// with no host streaming, or no room in its FIFO, drops it.
+  void emit(std::span<const float> values);
+
+  /// True while some host has asked for telemetry.
+  bool streaming() const;
+
+  /// Extra fields for the system module's info reply, as `"key":value` JSON members.
+  void set_info_extra(std::function<std::string()> extra) { info_extra_ = std::move(extra); }
+
+private:
+  struct Transport {
+    std::string name;
+    reply_fn send;
+    std::unique_ptr<espp::Telemetry> telemetry;
+    std::unique_ptr<espp::DispatcherWorker> worker;
+  };
+
+  Transport &add_transport(std::string name, reply_fn send, reply_fn send_best_effort);
+  void handle_system(const espp::stream_frame::Frame &frame, const reply_fn &reply);
+  bool start_usb();
+  bool start_uart();
+  void route_stdout_to_usb();
+  void uart_send(std::span<const uint8_t> frame);
+  void usb_send_best_effort(std::span<const uint8_t> frame);
+
+  Config config_;
+  std::unique_ptr<espp::UsbDevice> usb_;
+  std::vector<std::unique_ptr<Transport>> transports_;
+  struct Module {
+    uint8_t id;
+    handler_fn handler;
+    std::string name;
+    std::string description;
+  };
+  std::vector<Module> modules_;
+  std::function<std::string()> info_extra_;
+  std::unique_ptr<espp::Task> uart_rx_task_;
+  std::atomic<uint32_t> emit_count_{0};
+  Transport *usb_transport_{nullptr};
+  Transport *uart_transport_{nullptr};
+};
+
+} // namespace mib

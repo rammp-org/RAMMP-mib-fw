@@ -11,3 +11,8 @@ dependencies:
   estop_core:
     git: https://github.com/rammp-org/rammp-estop-core.git
     version: v0.3.0
+  # The shared messages come from the external/rammp-rtps submodule. estop_core asks
+  # for its own pinned copy from git; without this override the component manager's
+  # copy is the one compiled and the submodule is silently ignored.
+  rammp_rtps_messages:
+    override_path: ../external/rammp-rtps/components/rammp_rtps_messages

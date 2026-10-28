@@ -28,6 +28,14 @@ This repository contains the firmware for the RAMMP MIB (MEBot Interface Board),
 - [ ] Read MT6701 and carriage (TBD) encoders
 - [ ] Read load cell data
 
+### Control panel
+
+[`tools/mib_panel`](tools/mib_panel/) is a browser control panel for the MIB: status,
+live plots, PACE RACER speed-loop tuning and auto-tune, motor test drives, driving,
+seat targets and sensor data. It connects over WebUSB on the P4's HS USB port (J3;
+the board's USB-C is a CH343 serial bridge) or over Web Serial on the USB-C, or runs
+against a simulated MIB. See its README for wiring and hosting.
+
 ### Automated Setup
 
 After setting this as the template:

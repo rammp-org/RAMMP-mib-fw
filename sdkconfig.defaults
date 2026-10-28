@@ -31,3 +31,22 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_LV_MEM_SIZE=65536
 CONFIG_LV_MEM_SIZE_KILOBYTES=0
 CONFIG_LV_DISABLE_ASSERT_HANDLER_INCLUDE_WARNING=y
+
+# Control panel service link (components/ServiceLink). TinyUSB serves one WebUSB
+# vendor interface on the P4's USB 2.0 HS port (J3 on the ESP32-P4-ETH). The USB-C
+# is a CH343 UART bridge and keeps the console and flashing.
+CONFIG_TINYUSB_VENDOR_COUNT=1
+CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
+CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
+
+# RTPS endpoints: four PACE RACER axes, each with command + tuning writers and a
+# state reader, on top of the joystick, status and e-stop endpoints.
+CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
+CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
+CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
+CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=20
+CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
+
+# 1.5 MB factory app (IDF's "single app, large" table): TinyUSB and the service link
+# left the default 1 MB partition 3 % free. Still fits the 2 MB flash setting.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

@@ -1,0 +1,43 @@
+name: Control panel (GitHub Pages)
+
+# Publishes tools/mib_panel at https://rammp-org.github.io/RAMMP-mib-fw/, the page
+# Chrome offers when the MIB's WebUSB port is plugged in (MIBconfig.hpp,
+# service_landing_page_url). Needs Settings > Pages > Source: GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/mib_panel/**'
+      - '.github/workflows/control_panel_pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+
+    - name: Upload the panel
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: tools/mib_panel
+
+    - name: Deploy
+      id: deployment
+      uses: actions/deploy-pages@v4

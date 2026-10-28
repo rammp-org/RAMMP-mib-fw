@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "bsp.hpp"
 #include "base_component.hpp"
@@ -10,6 +13,7 @@
 #include "estop/estop.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
+#include "service_link.hpp"
 #include "task.hpp"
 
 /// @brief Top-level MIB application: owns the system state machine and RTPS endpoints.
@@ -50,6 +54,45 @@ private:
   /// \note Runs on the state task.
   void run_state_step();
 
+  /// One PACE RACER axis as the MIB sees it: its endpoints, its last state, and any
+  /// control panel override or pending tuning.
+  struct AxisLink {
+    std::unique_ptr<espp::Publisher<rammp::MotorCommand>> command_publisher;
+    std::unique_ptr<espp::Publisher<rammp::MotorTuning>> tuning_publisher;
+    std::unique_ptr<espp::Subscriber<rammp::MotorState>> state_subscriber;
+    rammp::MotorState state{};                              ///< Last MotorState received.
+    std::chrono::steady_clock::time_point state_time{};     ///< When it arrived.
+    bool state_seen{false};                                 ///< A MotorState has ever arrived.
+    rammp::MotorCommand override_command{};                 ///< The panel's command.
+    std::chrono::steady_clock::time_point override_until{}; ///< Override lapses here.
+    rammp::MotorTuning tuning{};                            ///< Last tuning requested.
+    std::chrono::steady_clock::time_point tuning_until{};   ///< Resend it until here.
+    uint8_t clear_fault_req{0};                             ///< Carried in every command.
+    rammp::MotorCommand last_command{};                     ///< What the MIB last sent.
+  };
+
+  /// Bring up the service link (WebUSB + UART) the control panel talks to.
+  /// \note Runs before INIT, so the panel can connect without an Ethernet link.
+  void start_service_link();
+
+  /// Handle one frame of the control module (see mib_panel_protocol.hpp).
+  /// \note Runs on a service-link worker task.
+  void handle_panel_frame(const espp::stream_frame::Frame &frame,
+                          const mib::ServiceLink::reply_fn &reply);
+
+  /// The MIB's state for the panel's status view, as a JSON object.
+  std::string status_json();
+
+  /// Emit one telemetry sample on the service link.
+  /// \note Runs on the telemetry task.
+  void emit_telemetry();
+
+  /// Apply a normalized stick sample to the drive, if driving is enabled.
+  void apply_stick(float x, float y);
+
+  /// True while the panel overrides at least one axis.
+  bool any_override_active() const;
+
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
@@ -58,12 +101,14 @@ private:
   /// Handle a seat control command.
   /// \param command The requested seat axis and target position.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
-  void handle_seat_control_command(const rammp::SeatCommand &command);
+  /// \return False if the command was refused.
+  bool handle_seat_control_command(const rammp::SeatCommand &command);
 
   /// Handle a drive enable or disable command.
   /// \param command The requested drive state and response profile.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
-  void handle_drive_command(const rammp::DriveCommand &command);
+  /// \return False if the command was refused.
+  bool handle_drive_command(const rammp::DriveCommand &command);
 
   /// Handle a motor controller status report.
   void handle_motor_status();
@@ -97,8 +142,15 @@ private:
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
+  std::array<AxisLink, rammp::kAxisCount> axes_{}; ///< Every PACE RACER axis, in table order.
+  mutable std::mutex axes_mutex_;                  ///< Protects axes_ state and overrides.
+  std::atomic<bool> endpoints_ready_{false};       ///< initialize_pubsub() succeeded.
+  uint8_t tuning_req_{0};                          ///< Last MotorTuning::tuning_req_id.
+  float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.
+  float panel_stick_y_{0.0f};
+  std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
+  std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
+  std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
