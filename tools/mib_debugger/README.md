@@ -72,6 +72,10 @@ turns green once status samples arrive. If it does not, `./doctor.sh`
 (`doctor.cmd` on Windows) runs the connection checks one by one and names the
 failing one; see [SETUP.md](SETUP.md).
 
+With Wi-Fi up beside the board's adapter, discovery multicast leaves on the
+Wi-Fi and nothing connects: turn Wi-Fi off, or route 239.255.0.0/16 over the
+adapter as SETUP.md shows. The Events panel says so on Connect.
+
 The tool used CycloneDDS until October 2026. espp's stack could not complete
 endpoint discovery with it (four protocol corners, `BRANCH_NOTES.md` finding
 10), so the tool now runs espp's own stack and the boards need no change. The

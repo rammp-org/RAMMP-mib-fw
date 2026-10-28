@@ -1,0 +1,92 @@
+diff --git a/components/rtps/include/rtps/communication/EsppTransport.hpp b/components/rtps/include/rtps/communication/EsppTransport.hpp
+index 70bc2bf..f4677e9 100644
+--- a/components/rtps/include/rtps/communication/EsppTransport.hpp
++++ b/components/rtps/include/rtps/communication/EsppTransport.hpp
+@@ -63,6 +63,13 @@ public:
+   EsppTransport(RxCallback callback, void *args);
+   ~EsppTransport() = default;
+ 
++  /// The local IPv4 address whose interface carries this transport's
++  /// multicast: joins and egress are pinned to it. Call before the first
++  /// ensureReceivePort(); unset, the OS default multicast route decides,
++  /// which on a multi-homed host (Wi-Fi beside a wired link to the boards)
++  /// is usually the wrong interface. Harmless on single-interface targets.
++  void setInterfaceAddress(const Ip4AddressBytes &address);
++
+   /// Ensure a receive channel exists for the port. Unicast ports are bound
+   /// with address/port reuse DISABLED so an in-use port fails loudly (the
+   /// Domain then probes the next participant id); multicast ports keep reuse
+@@ -144,6 +151,8 @@ private:
+ 
+   Channel *findChannel(Ip4Port_t port);
+   const Channel *findChannel(Ip4Port_t port) const;
++  /// Dotted form of the pinned interface address, or "" for the OS default.
++  std::string m_interfaceAddress{};
+   /// Destroy a retired socket once the reactor's removal has fully completed
+   /// (invoked by the removal-completion callback; may run on the releasing
+   /// caller, a pool worker, or the reactor loop). No-op if stop() already
+diff --git a/components/rtps/src/communication/EsppTransport.cpp b/components/rtps/src/communication/EsppTransport.cpp
+index 11eaf8e..eec06db 100644
+--- a/components/rtps/src/communication/EsppTransport.cpp
++++ b/components/rtps/src/communication/EsppTransport.cpp
+@@ -74,6 +74,11 @@ bool isMulticastAddress(const rtps::Ip4AddressBytes &addr) {
+ 
+ } // namespace
+ 
++void EsppTransport::setInterfaceAddress(const Ip4AddressBytes &address) {
++  const bool any = address[0] == 0 && address[1] == 0 && address[2] == 0 && address[3] == 0;
++  m_interfaceAddress = any ? std::string{} : ip4ToString(address);
++}
++
+ EsppTransport::EsppTransport(RxCallback callback, void *args)
+     : espp::BaseComponent("RtpsTransport", espp::Logger::Verbosity::WARN)
+     , m_rxCallback(callback)
+@@ -135,6 +140,7 @@ bool EsppTransport::startReceiver(Channel &channel, Ip4Port_t receivePort,
+   // preserving RTPS's per-locator ordering.
+   espp::UdpSocket::ReceiveConfig receive_config;
+   receive_config.port = receivePort;
++  receive_config.multicast_interface = m_interfaceAddress;
+   // Priority band for this channel's receive dispatch (metatraffic channels
+   // run above user channels by default - see Domain) and optional DSCP marking
+   // for traffic sent from this socket (dedicated endpoint ports).
+@@ -207,7 +213,7 @@ EsppTransport::Channel *EsppTransport::createChannel(Ip4Port_t receivePort, bool
+     }
+ 
+     for (const auto &group : m_multicastGroups) {
+-      (void)channel.socket->add_multicast_group(group);
++      (void)channel.socket->add_multicast_group(group, m_interfaceAddress);
+     }
+     return &channel;
+   }
+@@ -472,7 +478,7 @@ bool EsppTransport::joinMultiCastGroup(const Ip4AddressBytes &addr) const {
+       continue;
+     }
+     has_active_channels = true;
+-    any_joined = channel.socket->add_multicast_group(group) || any_joined;
++    any_joined = channel.socket->add_multicast_group(group, m_interfaceAddress) || any_joined;
+   }
+ 
+   if (!has_active_channels) {
+@@ -514,6 +520,7 @@ void EsppTransport::sendPacket(PacketInfo &info) {
+   send_config.ip_address = ip4ToString(destination);
+   send_config.port = info.destPort;
+   send_config.is_multicast_endpoint = isMulticastAddress(info.destAddr);
++  send_config.multicast_interface = m_interfaceAddress;
+ 
+   (void)channel->socket->send(info.payload, send_config);
+ }
+diff --git a/components/rtps/src/entities/Domain.cpp b/components/rtps/src/entities/Domain.cpp
+index f56e8db..76c9bbc 100644
+--- a/components/rtps/src/entities/Domain.cpp
++++ b/components/rtps/src/entities/Domain.cpp
+@@ -66,6 +66,10 @@ Domain::Domain(rtps::EsppTransport &transport, const rtps::Ip4AddressBytes &loca
+ 
+ bool Domain::initializeTransport() {
+   assert(m_transport != nullptr);
++  // Pin multicast joins and egress to the interface that holds our address,
++  // not to the OS default multicast route (a different NIC on a host with
++  // Wi-Fi beside a wired link to the boards).
++  m_transport->setInterfaceAddress(m_localIpAddress);
+   // Metatraffic (SPDP discovery multicast) is registered at the configured
+   // metatraffic band (High by default) so discovery dispatch overtakes queued
+   // user-traffic handling; user multicast runs at the user-traffic band.

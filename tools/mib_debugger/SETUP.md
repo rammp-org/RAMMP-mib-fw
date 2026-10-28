@@ -100,6 +100,35 @@ entry for the `.venv` interpreter and tick Public.
 Git Bash users can keep using the `.sh` scripts; they find the venv's
 `Scripts` folder on their own.
 
+## A laptop with more than one network
+
+This is the common case: Wi-Fi up, and the chair on a USB Ethernet adapter.
+The RTPS stack in the `espp` wheel joins the discovery multicast group on
+the operating system's default multicast interface, which is the Wi-Fi, so
+its announcements never reach the boards and theirs never reach it. The
+doctor's step 3 reports "discovery multicast leaves through en0, not en9"
+(or wlo1 and eno2 on Linux), and the debugger logs the same warning in its
+Events panel on Connect. Two ways out, either is enough:
+
+- **Turn Wi-Fi off** while working on the chair. The adapter is then the
+  only interface and everything lands on it.
+- **Route the DDS multicast range over the adapter**, which keeps Wi-Fi:
+
+  ```
+  sudo route -n add -net 239.255.0.0/16 -interface en9     # macOS
+  sudo ip route add 239.255.0.0/16 dev eno2                # Linux
+  ```
+
+  The doctor prints the exact command with your interface name. Remove it
+  afterwards (`sudo route -n delete -net 239.255.0.0/16` or `sudo ip route
+  del 239.255.0.0/16`) if another DDS or ROS 2 system on the Wi-Fi should get
+  multicast again. On Windows, turning Wi-Fi off is the practical option.
+
+The proper fix is in espp: the transport should join and send on the
+interface it was given. `interop/espp-rtps-multicast-interface.patch` does
+that, for upstreaming; until a wheel carries it, use one of the two steps
+above.
+
 ## Checking the link
 
 1. Plug in, wait for the lease. On macOS or Linux `ifconfig` (or `ip addr`)
@@ -128,6 +157,9 @@ arrive.
 - **Wrong interface.** With Wi-Fi up as well, pick the board's interface
   explicitly, Disconnect, Connect. The stack binds its interface when the
   participant is created.
+- **Wi-Fi up beside the adapter.** Discovery multicast goes out on the
+  wrong interface; see "A laptop with more than one network" above. The
+  doctor's step 3 names the interface it leaves on.
 - **Firewall.** Inbound UDP blocked on the board's interface; see the platform
   notes above.
 - **Managed switch with IGMP snooping and no querier.** The laptop's

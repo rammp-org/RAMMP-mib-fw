@@ -1,4 +1,22 @@
-# espp RTPS and CycloneDDS interop
+# espp RTPS: interop and multi-homed-host patches
+
+Two patches against espp's `components/rtps`, both from bench work on the
+chair in October 2026, kept here for upstreaming to esp-cpp/espp.
+
+## Multicast on the configured interface
+
+`espp-rtps-multicast-interface.patch`: the host transport joined the
+discovery multicast group and sent to it without naming an interface, so
+the OS default multicast route decided, which on a laptop with Wi-Fi beside
+a wired link to the boards is the Wi-Fi. The patch has `Domain` hand the
+transport the participant's own address and the transport pin joins
+(`add_multicast_group`) and egress (`multicast_interface` on the socket
+configs) to it. Harmless on an ESP32 with one interface. Verified to build
+on the host; the live check against the chair is pending, and until a wheel
+carries it, SETUP.md's "A laptop with more than one network" has the two
+workarounds (Wi-Fi off, or a route for 239.255.0.0/16).
+
+## CycloneDDS interop
 
 `espp-rtps-cyclonedds-interop.patch` is the fix for `BRANCH_NOTES.md` finding
 10: four defects in espp's `components/rtps` that stop every sample between

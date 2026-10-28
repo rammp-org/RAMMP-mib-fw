@@ -92,6 +92,44 @@ def list_interfaces():
     return found
 
 
+RTPS_MULTICAST_GROUP = "239.255.0.1"
+
+
+def multicast_egress_interface():
+    """Name of the interface the OS uses for RTPS discovery multicast, or None.
+
+    espp's transport joins the discovery group without naming an interface,
+    so the kernel's default multicast route decides where announcements go
+    and arrive. With Wi-Fi up beside the chair's adapter that is normally
+    Wi-Fi, and discovery never meets the boards."""
+    if sys.platform == "darwin":
+        out = _run(["route", "-n", "get", RTPS_MULTICAST_GROUP])
+        m = re.search(r"interface:\s*(\S+)", out)
+        return m.group(1) if m else None
+    if sys.platform.startswith("linux"):
+        out = _run(["ip", "route", "get", RTPS_MULTICAST_GROUP])
+        m = re.search(r"\bdev\s+(\S+)", out)
+        return m.group(1) if m else None
+    return None
+
+
+def multicast_route_advice(wanted_name):
+    """Text telling the user how to make `wanted_name` carry discovery
+    multicast, or None when it already does (or cannot be told)."""
+    current = multicast_egress_interface()
+    if current is None or current == wanted_name:
+        return None
+    if sys.platform == "darwin":
+        fix = f"sudo route -n add -net 239.255.0.0/16 -interface {wanted_name}"
+        undo = "sudo route -n delete -net 239.255.0.0/16"
+    else:
+        fix = f"sudo ip route add 239.255.0.0/16 dev {wanted_name}"
+        undo = "sudo ip route del 239.255.0.0/16"
+    return (f"Discovery multicast leaves through {current}, not {wanted_name}. Either turn "
+            f"the other network off or route the DDS group over the board's link:  {fix}   "
+            f"(undo later with:  {undo})")
+
+
 def interface_address(chosen):
     """The IPv4 address for the interface the user picked, by name or address.
 
@@ -152,6 +190,11 @@ class Connection:
                     f"No interface holds a {MIB_SUBNET_PREFIX}x address; using the first "
                     "non-loopback interface. Plug the board in or pick an interface.",
                     "warn")
+            elif self.mode == "board":
+                advice = multicast_route_advice(chosen if not re.match(r"^\d+\.", chosen) else next(
+                    (e["name"] for e in list_interfaces() if e["address"] == chosen), chosen))
+                if advice:
+                    link.log(advice, "bad")
             self.link = link
             return {"ok": True, "interface": chosen}
 

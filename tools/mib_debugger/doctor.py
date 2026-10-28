@@ -14,10 +14,11 @@ The steps:
    announces themselves. The MIB and the PACE RACER boards show up as vendor
    13.37 (espp's RTPS stack). Nothing from 192.168.4.x means the boards'
    multicast is not reaching this machine: switch, firewall, wrong interface.
-3. RTPS: join the domain the way the debugger does, with espp's own stack,
-   count how many of this machine's readers found a remote writer, and count
-   the samples that arrive on the MIB's status topics and the boards' state
-   topics.
+3. RTPS: check which interface the OS sends discovery multicast on (the stack
+   joins the group on the default one, so Wi-Fi beside the chair's adapter
+   wins unless a route says otherwise), then join the domain the way the
+   debugger does, count how many readers found a remote writer, and count the
+   samples that arrive on the MIB's status topics and the boards' state topics.
 """
 
 import argparse
@@ -133,8 +134,16 @@ def step_multicast(address, seconds):
 
 # ------------------------------------------------------------------ step 3
 
-def step_rtps(address, local, seconds):
+def step_rtps(address, local, seconds, name=None):
     banner(f"3. RTPS participant on {'loopback' if local else address} for {seconds:.0f} s")
+    if not local and name:
+        egress = app.multicast_egress_interface()
+        if egress is not None:
+            if not verdict(egress == name, f"discovery multicast leaves through {egress}"
+                           + ("" if egress == name else f", not {name}")):
+                print("   " + app.multicast_route_advice(name))
+                print("   (the stack joins the discovery group on the OS default interface; "
+                      "step 2 joined it on the chosen one, which is why step 2 passed)")
     import rtps_io
     participant = rtps_io.Participant(interface_address="127.0.0.1" if local else address,
                                       log_level="error")
@@ -188,7 +197,7 @@ def main():
         return 1
     if not args.local:
         step_multicast(address, args.seconds)
-    ok = step_rtps(address, args.local, args.seconds)
+    ok = step_rtps(address, args.local, args.seconds, name)
     banner("Result")
     print("   connected: the debugger will work on this interface." if ok else
           "   not connected: see the first FAIL above.")
