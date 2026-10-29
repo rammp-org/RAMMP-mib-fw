@@ -10,19 +10,30 @@
 
 using namespace std::chrono_literals;
 
-// The endpoint pool in sdkconfig.defaults: per board a command writer and a state
-// reader, plus status, Motors, estop-core's writer and SPDP; and the joystick's four
-// inputs, estop-core's reader and SPDP. A row added to the axis table needs these raised.
-static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= rammp::kAxisCount + 4,
+// The RTPS endpoint pool in sdkconfig.defaults: one MotorCommand writer and one MotorState
+// reader per axis-table board, plus the fixed endpoints below. A row added to the axis
+// table needs the limits raised; these checks fail the build until they are.
+namespace {
+/// Fixed writers: MibStatus, Motors, estop-core's EStop and SPDP.
+constexpr size_t kFixedWriters = 4;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
+/// estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 6;
+/// SEDP's publication and subscription endpoints: in the per-participant limits only.
+constexpr size_t kSedpEndpoints = 2;
+} // namespace
+
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= rammp::kAxisCount + kFixedWriters,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= rammp::kAxisCount + 6,
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= rammp::kAxisCount + kFixedReaders,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= rammp::kAxisCount + 6,
+static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= rammp::kAxisCount + kFixedReaders,
               "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
-// Per participant, SEDP's two of each come on top.
-static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >= rammp::kAxisCount + 6,
+static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >=
+                  rammp::kAxisCount + kFixedWriters + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= rammp::kAxisCount + 8,
+static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >=
+                  rammp::kAxisCount + kFixedReaders + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
 
 MibSystem::MibSystem()
@@ -73,9 +84,9 @@ void MibSystem::start() {
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
         publish_motor_commands();
-        if (std::chrono::steady_clock::now() - motors_published_ >=
-            mib::config::motors_report_interval) {
-          publish_motors();
+        if (std::chrono::steady_clock::now() - last_motor_state_publish_timestamp_ >=
+            mib::config::motor_states_publish_interval) {
+          publish_motor_states();
         }
 
         std::unique_lock<std::mutex> lock(mutex);
@@ -177,7 +188,7 @@ bool MibSystem::initialize_pubsub() {
     }
   }
 
-  motors_publisher_ = std::make_unique<espp::Publisher<rammp::Motors>>(
+  motor_states_publisher_ = std::make_unique<espp::Publisher<rammp::Motors>>(
       mib_.rtps_participant(),
       espp::Publisher<rammp::Motors>::Config{.topic = rammp::kMibMotors.name,
                                              .type_name = rammp::kMibMotors.type,
@@ -189,7 +200,7 @@ bool MibSystem::initialize_pubsub() {
           .type_name = rammp::kJoystickMotorJog.type,
           .reliability = Reliability::BEST_EFFORT,
           .on_message = [this](const rammp::MotorJog &jog) { handle_motor_jog(jog); }});
-  if (!motors_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
+  if (!motor_states_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
     logger_.error("Failed to create the motor debug endpoints");
     return false;
   }
@@ -435,11 +446,11 @@ void MibSystem::publish_motor_commands() {
   }
 }
 
-void MibSystem::publish_motors() {
+void MibSystem::publish_motor_states() {
   const auto now = std::chrono::steady_clock::now();
-  motors_published_ = now;
+  last_motor_state_publish_timestamp_ = now;
   rammp::Motors message{};
-  message.seq = ++motors_sequence_;
+  message.seq = ++motor_states_sequence_;
   message.motors.reserve(rammp::kAxisCount);
   {
     std::lock_guard<std::mutex> lock(motor_state_mutex_);
@@ -462,7 +473,7 @@ void MibSystem::publish_motors() {
       });
     }
   }
-  if (!motors_publisher_->publish(message)) {
+  if (!motor_states_publisher_->publish(message)) {
     logger_.warn("Failed to publish Motors");
   }
 }

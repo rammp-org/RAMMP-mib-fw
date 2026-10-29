@@ -17,7 +17,7 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
 
 /// @brief Motor debug list (rammp::Motors) publication period.
-inline constexpr auto motors_report_interval = std::chrono::milliseconds{200};
+inline constexpr auto motor_states_publish_interval = std::chrono::milliseconds{200};
 
 /// @brief A board whose last MotorState is older than this is reported offline.
 inline constexpr auto motor_state_timeout = std::chrono::milliseconds{500};

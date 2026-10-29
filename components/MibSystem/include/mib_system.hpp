@@ -95,7 +95,7 @@ private:
 
   /// Publish the motor debug list: every board with its latest state.
   /// \note Runs on the motor command task.
-  void publish_motors();
+  void publish_motor_states();
 
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
@@ -113,8 +113,9 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
-  uint8_t motors_sequence_{0};                 ///< Sequence number for Motors samples.
-  std::chrono::steady_clock::time_point motors_published_{}; ///< Last Motors sample.
+  uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
+  /// When publish_motor_states() last sent a Motors sample (epoch = never).
+  std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
   /// Latest state of each kAxes board, and when it arrived (epoch = never).
   std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
   std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
@@ -131,7 +132,7 @@ private:
   /// One state input per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Subscriber<rammp::MotorState>>, rammp::kAxisCount>
       motor_state_subscribers_;
-  std::unique_ptr<espp::Publisher<rammp::Motors>> motors_publisher_; ///< Motor debug list.
+  std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_; ///< Motor debug list.
   std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
