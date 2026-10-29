@@ -41,7 +41,7 @@ private:
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
     AUTONOMOUS,    ///< The Jetson drives the base; any joystick input ends it (back to IDLE).
     SHARED,        ///< Shared control; the joystick commands nothing, even when touched.
-    ESTOP,         ///< Emergency stop; everything halts, then back to IDLE.
+    ESTOP,         ///< Emergency stop: the e-stop latch is active, drive stopped; IDLE once it clears.
     ERROR,         ///< Initialization or runtime failure; not operational.
   };
 
@@ -74,12 +74,13 @@ private:
   /// \note Runs on the state task.
   void run_state_step();
 
-  /// Enter ESTOP from the current state. Stops the drive and (re)starts the
-  /// mib::config::estop_hold_duration timer; ESTOP then returns to IDLE.
-  /// \note Entry point for the robot-wide e-stop (estop-core, PR #36). Ignored in INIT
-  ///       (no e-stop can arrive yet, and the blocking INIT step would overwrite the
-  ///       state) and in ERROR (bring-up failed; not operational). Safe to call from an
-  ///       RTPS receive thread.
+  /// Enter ESTOP from the current state and stop the drive. ESTOP holds for
+  /// mib::config::estop_hold_duration, then asks the e-stop latch to clear (repeated every
+  /// mib::config::estop_clear_retry while the latch refuses), and returns to IDLE once the
+  /// latch has cleared. Called by run_state_step() while latch_.is_active().
+  /// \note Ignored in INIT (the blocking INIT step would overwrite the state; INIT enters
+  ///       ESTOP itself for the boot latch, without the hold) and in ERROR (bring-up
+  ///       failed; not operational).
   void enter_estop();
 
   /// Jetson control requests. The RTPS messages (AutonomousRequest, AutonomousStop,
@@ -115,8 +116,9 @@ private:
   ///       calls this yet. Only valid from IDLE.
   void enter_calibrate();
 
-  /// Leave ESTOP for IDLE once the hold time has elapsed. Nothing is resumed: driving must
-  /// be re-enabled and the Jetson must request control again.
+  /// Leave ESTOP for IDLE once the e-stop latch has cleared. Until then, after the hold,
+  /// ask the latch to clear every mib::config::estop_clear_retry. Nothing is resumed:
+  /// driving must be re-enabled and the Jetson must request control again.
   /// \note Runs on the state task.
   void run_estop_step();
 
@@ -158,9 +160,8 @@ private:
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
   estop::Latch latch_;                         ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
-  std::chrono::steady_clock::time_point estop_entered_at_{}; ///< When ESTOP was last entered.
-  mutable std::mutex estop_mutex_;             ///< Protects estop_entered_at_.
-  std::atomic<bool> estop_error_{false};       ///< ERROR came from the e-stop: left once it clears.
+  std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
+  std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.

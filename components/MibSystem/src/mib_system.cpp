@@ -34,7 +34,7 @@ void MibSystem::start() {
     std::this_thread::sleep_for(10ms);
   }
 
-  if (state_.load() == SystemState::ERROR && !estop_error_.load()) {
+  if (state_.load() == SystemState::ERROR) {
     return;
   }
 
@@ -408,8 +408,8 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   rammp::MotorCommand command{};
   command.seq = ++motor_command_sequence_;
-  // The e-stop puts state_ in ERROR; latch_.is_active() is a backstop until #37:
-  // state_ has two writers, so an RTPS ENABLE can overwrite ERROR for one state step.
+  // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
+  // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool drive = state_.load() == SystemState::DRIVE_ENABLED && !latch_.is_active();
   command.requested_state = drive ? rammp::RequestedState::ARMED
                                   : rammp::RequestedState::DISARMED;
@@ -440,12 +440,9 @@ void MibSystem::publish_motor_commands() {
 }
 
 void MibSystem::run_state_step() {
-  // E-stop: ERROR while the latch is active, then IDLE once it clears (drive must be re-enabled).
-  const auto state = state_.load();
-  if (latch_.is_active() && state != SystemState::INIT && state != SystemState::ERROR) {
-    estop_error_.store(true);
-    drive_controller_.stop();
-    state_.store(SystemState::ERROR);
+  // E-stop: the latch has no callback, so check it every step. ESTOP while it is active.
+  if (latch_.is_active() && state_.load() != SystemState::ESTOP) {
+    enter_estop(); // ignored in INIT (it enters ESTOP itself for the boot latch) and in ERROR
   }
   switch (state_.load()) {
   case SystemState::INIT:
@@ -475,7 +472,12 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
-    state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
+    if (!initialize_pubsub()) {
+      state_.store(SystemState::ERROR);
+      return;
+    }
+    // The latch starts latched ("boot"): straight to ESTOP, with no hold, until it clears.
+    state_.store(latch_.is_active() ? SystemState::ESTOP : SystemState::IDLE);
     break;
   case SystemState::IDLE:
     logger_.debug("System state: IDLE - running idle placeholder");
@@ -498,11 +500,6 @@ void MibSystem::run_state_step() {
     run_estop_step();
     break;
   case SystemState::ERROR:
-    if (estop_error_.load() && !latch_.is_active()) {
-      estop_error_.store(false);
-      state_.store(SystemState::IDLE);
-      break;
-    }
     logger_.error("System state: ERROR - running error placeholder");
     break;
   }
@@ -516,12 +513,9 @@ void MibSystem::enter_estop() {
   }
 
   drive_controller_.stop();
-  {
-    std::lock_guard<std::mutex> lock(estop_mutex_);
-    estop_entered_at_ = std::chrono::steady_clock::now();
-  }
+  estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
   state_.store(SystemState::ESTOP);
-  logger_.warn("E-stop: entering ESTOP, back to IDLE after {} ms",
+  logger_.warn("E-stop: entering ESTOP, asking the latch to clear after {} ms",
                std::chrono::duration_cast<std::chrono::milliseconds>(
                    mib::config::estop_hold_duration)
                    .count());
@@ -538,12 +532,23 @@ void MibSystem::enter_calibrate() {
 }
 
 void MibSystem::run_estop_step() {
-  {
-    std::lock_guard<std::mutex> lock(estop_mutex_);
-    if (std::chrono::steady_clock::now() - estop_entered_at_ < mib::config::estop_hold_duration) {
-      return;
-    }
+  if (!latch_.is_active()) {
+    state_.store(SystemState::IDLE);
+    logger_.info("E-stop: latch cleared - back to IDLE (drive must be re-enabled)");
+    return;
   }
-  state_.store(SystemState::IDLE);
-  logger_.info("E-stop hold elapsed - back to IDLE");
+  const auto now = std::chrono::steady_clock::now();
+  if (now < estop_hold_until_) {
+    return;
+  }
+  // Hold elapsed: ask the latch to clear. The latch refuses while a node's switch is held
+  // or a watched node has not been heard (the boot latch, before the joystick is discovered),
+  // so keep asking; the state leaves ESTOP once the latch has cleared.
+  if (latch_.status().clear_attempt_running ||
+      now - estop_last_clear_attempt_ < mib::config::estop_clear_retry) {
+    return;
+  }
+  estop_last_clear_attempt_ = now;
+  latch_.start_clear_attempt();
+  logger_.info("E-stop: hold elapsed, asking the latch to clear");
 }
