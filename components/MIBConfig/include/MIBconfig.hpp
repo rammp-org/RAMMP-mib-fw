@@ -51,6 +51,13 @@ inline constexpr auto tuning_resend_timeout = std::chrono::milliseconds{2000};
 /// @brief A MotorState older than this marks the axis offline.
 inline constexpr auto motor_state_timeout = std::chrono::milliseconds{500};
 
+/// @brief How long ESTOP holds before the MIB asks the e-stop latch to clear.
+inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
+
+/// @brief How often that clear is re-requested while the latch refuses it (a switch still
+/// held, or the joystick not heard yet). Matches the latch's clear window.
+inline constexpr auto estop_clear_retry = std::chrono::seconds{1};
+
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;
 

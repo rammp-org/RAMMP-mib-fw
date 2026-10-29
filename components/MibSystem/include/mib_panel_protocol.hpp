@@ -24,8 +24,8 @@
 ///   0x04 CLEAR_FAULT    [axis u8]                 a new clear_fault_req_id. Reply OK.
 ///   0x05 DRIVE          [request u8][profile u8]  rammp::DriveCommand. Reply OK / ERROR.
 ///   0x06 STICK          [x f32][y f32]            drive input in place of the HMI's stick,
-///        same meaning as XYTwist x / y, until 300 ms after the last. No reply unless
-///        refused.
+///        same meaning as XYTwist x / y, until 300 ms after the last. In AUTONOMOUS a
+///        touch ends autonomy, as the HMI's stick does. No reply unless refused.
 ///   0x07 SEAT           [axis u8][target f32]     rammp::SeatCommand. Reply OK / ERROR.
 ///   0x08 ESTOP          [action u8]               1 = engage, 2 = start a clear attempt.
 ///   0x09 STATUS                                    Reply STATUS_REPLY, UTF-8 JSON.

@@ -69,7 +69,9 @@ environment deploys from `main` only).
   the chair doesn't keep creeping one way.
 - **Drive**: enable or disable drive with a profile (the HMI's
   `DriveCommand`) and drive from a pad. The pad replaces the HMI's stick
-  while held; let go and the MIB brakes to a stop within 300 ms.
+  while held; let go and the MIB brakes to a stop within 300 ms. In
+  AUTONOMOUS, touching the pad ends autonomy (back to IDLE) as the HMI's
+  stick does.
 - **Seat actuators**: targets for the four seat axes (rammp-rtps seat table).
   The MIB accepts and reports them; it has no actuator driver yet.
 - **Sensors and data**: every telemetry channel, with live values, plots of
@@ -123,7 +125,10 @@ ethernet-capable image goes over USB too (`tools/provision.py` in pace-racer-fw)
 **Bench mode is on for now:** `estop_watch_hmi = false` in `MIBconfig.hpp`. The e-stop
 latch doesn't watch the HMI as a deadman, and the MIB clears its boot latch by itself,
 so it reaches IDLE with no HMI. The panel's E-STOP button and an HMI's e-stop button
-still latch it; "Hold to clear" or the HMI clears it. Set it back to `true` for the chair.
+still latch it, which puts the MIB in ESTOP. After a 3 s hold the MIB asks the latch to
+clear, and keeps asking while a switch is held, so a panel E-STOP is a 3 s stop; drive
+then has to be re-enabled. "Hold to clear" clears it sooner. Set it back to `true` for
+the chair.
 
 Panel motor commands are overrides the MIB applies only while it is IDLE with
 the e-stop clear, only for 300 ms after the last one (the panel resends every

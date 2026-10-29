@@ -87,10 +87,11 @@ class SimMib {
           if (this.state !== 1 && this.state !== 3) return this.err(f.type, 'refused: see the log');
           if (this.axes.some(a => now < a.overrideUntil)) return this.err(f.type, 'refused: see the log');
           this.profile = p[1]; this.state = 3; this.log(`I RAMMP_MIB: Drive enabled with profile=${p[1]}`);
-        } else { if (this.state !== 3) return this.err(f.type, 'refused: see the log'); this.state = 1; this.log('I RAMMP_MIB: Drive disabled'); }
+        } else { if (this.state !== 3 && this.state !== 4 && this.state !== 5) return this.err(f.type, 'refused: see the log'); this.state = 1; this.log('I RAMMP_MIB: Drive disabled'); }
         return this.ok(f.type);
       }
       case MIBP.STICK:
+        if (this.state === 4) { if (F(0) !== 0 || F(4) !== 0) { this.state = 1; this.log('I RAMMP_MIB: Autonomy ended (joystick touched in AUTONOMOUS) - back to IDLE'); } return; }
         if (this.state !== 3) return this.err(f.type, 'drive is not enabled');
         this.stick = { x: Math.max(-1, Math.min(1, F(0))), y: Math.max(-1, Math.min(1, F(4))), until: now + 0.3 }; return;
       case MIBP.SEAT:
@@ -132,7 +133,7 @@ class SimMib {
     this.send(M_TM, TM.SCHEMA, cat(...parts));
   }
   statusJson() {
-    const now = this.now(), st = this.state === 1 && this.estop.latched ? 4 : this.state;
+    const now = this.now(), st = this.state === 1 && this.estop.latched ? 6 : this.state;
     return {
       state: MIB_STATE[st], profile: this.profile, ethernet: true, ip: '192.168.4.1', rtps: this.state !== 0,
       estop: { latched: this.estop.latched, clearing: this.estop.clearing, cause: this.estop.cause, releases: this.estop.releases },
@@ -150,7 +151,6 @@ class SimMib {
   // The MIB's 20 Hz command task.
   publishMotorCommands() {
     const now = this.now(), st = this.state, drive = st === 3 && !this.estop.latched, idle = st === 1 && !this.estop.latched;
-    if (st === 1 && this.estop.latched) { /* firmware: ERROR while latched */ }
     // planner: stick -> chassis velocity with the profile's limits
     const prof = [{ v: 0.35, w: 1.0, a: 0.5, aw: 1.0 }, { v: 0.75, w: 2.0, a: 1.0, aw: 2.0 }, { v: 1.0, w: 3.14, a: 2.0, aw: 4.0 }][this.profile];
     const live = now < this.stick.until, sx = live ? this.stick.x : this.hmi.x, sy = live ? this.stick.y : this.hmi.y;
@@ -188,9 +188,11 @@ class SimMib {
   step() {
     const now = this.now(); if (!this.lastStep) this.lastStep = now; let dtAll = Math.min(0.05, now - this.lastStep); this.lastStep = now;
     const J = 0.06, Kt = 0.9, drag = 0.35, visc = 0.02, h = 0.001;
-    if (this.state === 3 && this.estop.latched) this.state = 4;
-    if (this.state === 4 && !this.estop.latched) this.state = 1;
-    if (this.state === 1 && this.estop.latched) this.state = 4;
+    // ESTOP (6) while latched; after a 3 s hold it asks the latch to clear, as run_estop_step()
+    // does. The boot latch has no hold and, with no HMI here, waits for the panel's clear.
+    if ((this.state === 1 || this.state === 3 || this.state === 4 || this.state === 5) && this.estop.latched) { this.state = 6; this.estopHoldUntil = now + 3; }
+    if (this.state === 6 && !this.estop.latched) this.state = 1;
+    if (this.state === 6 && this.estop.cause !== 'boot' && now >= this.estopHoldUntil && !this.estop.clearing) { this.estop.clearing = true; setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
     while (dtAll > 1e-6) {
       const dt = Math.min(h, dtAll); dtAll -= dt;
       for (const a of this.axes) {
@@ -235,7 +237,7 @@ class SimMib {
   emitTelemetry() {
     if (this.baud !== 115200 && this.now() - (this.lastRx || 0) > 3) this.baud = 115200;
     if (!this.streaming) return;
-    const now = this.now(), st = (this.state === 1 && this.estop.latched) ? 4 : this.state, live = now < this.stick.until;
+    const now = this.now(), st = (this.state === 1 && this.estop.latched) ? 6 : this.state, live = now < this.stick.until;
     const v = [st, this.estop.latched ? 1 : 0, this.profile, live ? this.stick.x : 0, live ? this.stick.y : 0, 41 + Math.sin(now / 30), ...this.seat];
     for (const a of this.axes) {
       const s = a.reported, on = a.online && s && now - a.reportedT < 0.5;

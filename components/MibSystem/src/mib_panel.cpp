@@ -179,8 +179,11 @@ void MibSystem::make_safe_for_ota() {
     panel_stick_until_ = {};
   }
   drive_controller_.stop();
-  if (state_.load() == SystemState::DRIVE_ENABLED) {
+  const auto state = state_.load();
+  if (state == SystemState::DRIVE_ENABLED) {
     state_.store(SystemState::IDLE);
+  } else if (state == SystemState::AUTONOMOUS || state == SystemState::SHARED) {
+    leave_autonomy("firmware update");
   }
   logger_.warn("Firmware update: drive disabled, overrides dropped, motors commanded DISARMED");
 }
@@ -302,19 +305,25 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
   case P::kStick: {
     if (!need(8))
       return;
+    const float x = std::clamp(get_f32(p, 0), -1.0f, 1.0f);
+    const float y = std::clamp(get_f32(p, 4), -1.0f, 1.0f);
+    const rammp::XYTwist sample{.x = x, .y = y, .twist = 0.0f, .buttons = rammp::Buttons::NONE};
+    if (state_.load() == SystemState::AUTONOMOUS) {
+      // As the HMI joystick: a touch ends autonomy (back to IDLE), and does not drive.
+      apply_stick(sample);
+      return;
+    }
     if (state_.load() != SystemState::DRIVE_ENABLED) {
       reply_error(reply, f.type, "drive is not enabled");
       return;
     }
-    const float x = std::clamp(get_f32(p, 0), -1.0f, 1.0f);
-    const float y = std::clamp(get_f32(p, 4), -1.0f, 1.0f);
     {
       std::lock_guard<std::mutex> lock(joystick_mutex_);
       panel_stick_x_ = x;
       panel_stick_y_ = y;
       panel_stick_until_ = std::chrono::steady_clock::now() + mib::config::service_override_timeout;
     }
-    apply_stick(x, y);
+    apply_stick(sample);
     return;
   }
   case P::kSeat: {
@@ -371,6 +380,15 @@ std::string MibSystem::status_json() {
     break;
   case SystemState::DRIVE_ENABLED:
     state = "DRIVE_ENABLED";
+    break;
+  case SystemState::AUTONOMOUS:
+    state = "AUTONOMOUS";
+    break;
+  case SystemState::SHARED:
+    state = "SHARED";
+    break;
+  case SystemState::ESTOP:
+    state = "ESTOP";
     break;
   case SystemState::ERROR:
     state = "ERROR";

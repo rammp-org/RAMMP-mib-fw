@@ -172,11 +172,12 @@ function onMibError(type, why) {
 }
 
 // ---------------------------------------------------------------- status rendering
-const stateCls = s => ({ IDLE: 'good', DRIVE_ENABLED: 'live', INIT: 'warning', CALIBRATE: 'warning', ERROR: 'critical' }[s] || '');
+const stateCls = s => ({ IDLE: 'good', DRIVE_ENABLED: 'live', AUTONOMOUS: 'live', SHARED: 'live', INIT: 'warning', CALIBRATE: 'warning', ESTOP: 'critical', ERROR: 'critical' }[s] || '');
+const stateLabel = { DRIVE_ENABLED: 'Driving', IDLE: 'Ready', AUTONOMOUS: 'Jetson driving', SHARED: 'Shared control', CALIBRATE: 'Calibrating', ESTOP: 'E-stop', ERROR: 'Error' };
 function renderStatus() {
   const s = status; if (!s) return;
   $('tState').textContent = s.state.replace('_ENABLED', '');
-  $('tStateSub').innerHTML = `<span class="ax-status ${stateCls(s.state)}">${s.state === 'DRIVE_ENABLED' ? 'Driving' : s.state === 'IDLE' ? 'Ready' : s.state === 'ERROR' ? (s.estop.latched ? 'E-stop' : 'Error') : 'Starting'}</span>${s.panel_stick ? ' <span class="ax-muted">panel stick</span>' : ''}`;
+  $('tStateSub').innerHTML = `<span class="ax-status ${stateCls(s.state)}">${stateLabel[s.state] || 'Starting'}</span>${s.panel_stick ? ' <span class="ax-muted">panel stick</span>' : ''}`;
   $('tEstop').textContent = s.estop.latched ? 'LATCHED' : 'CLEAR';
   $('tEstop').style.color = s.estop.latched ? css('critical') : '';
   $('tEstopSub').innerHTML = s.estop.latched ? `<span class="ax-status critical">Cause: ${s.estop.cause}</span>${s.estop.clearing ? ' <span class="ax-spin"></span> clearing' : ''}` : `<span class="ax-status good">Clear</span> <span class="ax-muted">${s.estop.releases} releases</span>`;
@@ -189,8 +190,8 @@ function renderStatus() {
   $('tMotorsSub').innerHTML = faults.length ? `<span class="ax-status critical">${faults.map(a => a.label + ' ' + a.fault).join(', ')}</span>` : online.length ? `<span class="ax-status good">${online.map(a => a.label).join(', ')}</span>` : '<span class="ax-status warning">None reporting</span>';
   renderAxesTable(s); renderTuneInForce(s); renderSeatReported(s);
   $('drEnable').disabled = !link || !(s.state === 'IDLE' || s.state === 'DRIVE_ENABLED');
-  $('drDisable').disabled = !link || s.state !== 'DRIVE_ENABLED';
-  $('padHint').textContent = s.state === 'DRIVE_ENABLED' ? 'Hold and drag on the pad. Up is forward, right is a right turn. Let go to stop.' : 'Enable drive, then hold and drag on the pad.';
+  $('drDisable').disabled = !link || !['DRIVE_ENABLED', 'AUTONOMOUS', 'SHARED'].includes(s.state);
+  $('padHint').textContent = s.state === 'DRIVE_ENABLED' ? 'Hold and drag on the pad. Up is forward, right is a right turn. Let go to stop.' : s.state === 'AUTONOMOUS' ? 'The Jetson is driving. Touch the pad to take control back (drive then needs re-enabling).' : 'Enable drive, then hold and drag on the pad.';
 }
 function renderAxesTable(s) {
   const tb = $('axesTable').querySelector('tbody');
@@ -495,7 +496,7 @@ function padRelease() {
   if (link) link.stick(0, 0).catch(() => {});
 }
 $('pad').addEventListener('pointerdown', e => {
-  if (!link || !status || status.state !== 'DRIVE_ENABLED') { toast('Enable drive first', 'err'); return; }
+  if (!link || !status || !['DRIVE_ENABLED', 'AUTONOMOUS'].includes(status.state)) { toast('Enable drive first', 'err'); return; }
   e.preventDefault(); $('pad').setPointerCapture(e.pointerId); padState.down = true; $('pad').classList.add('live'); padMove(e); padSend();
   padState.timer = setInterval(padSend, 50);
 });
