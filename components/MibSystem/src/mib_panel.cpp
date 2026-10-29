@@ -132,6 +132,7 @@ void MibSystem::start_service_link() {
       .uart = mib::config::service_uart_enabled,
       .landing_page_url = mib::config::service_landing_page_url,
       .uart_telemetry_divider = mib::config::service_uart_telemetry_divider,
+      .tcp_port = mib::config::service_tcp_port,
   });
   service_->register_module(
       mib::panel::kModule,

@@ -13,6 +13,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_vfs.h"
+#include "lwip/sockets.h"
 #include "sdkconfig.h"
 
 using namespace std::chrono_literals;
@@ -54,7 +55,7 @@ const char *reset_reason_name(esp_reset_reason_t reason) {
 // Modelled on DemoLink's VFS device. A write made by the USB stack from inside a write
 // would recurse, so each task breaks the loop with a thread-local flag.
 constexpr char kVfsPath[] = "/dev/mibcon";
-std::function<void(std::span<const uint8_t>)> s_usb_log;
+std::function<void(std::span<const uint8_t>)> s_log_tee;
 int s_uart_fd = -1;
 
 int vfs_open(const char *, int, int) { return 0; }
@@ -68,10 +69,10 @@ ssize_t vfs_write(int, const void *data, size_t size) {
   static thread_local bool in_write = false;
   if (s_uart_fd >= 0)
     ::write(s_uart_fd, data, size);
-  if (in_write || !s_usb_log)
+  if (in_write || !s_log_tee)
     return static_cast<ssize_t>(size);
   in_write = true;
-  s_usb_log(std::span<const uint8_t>(static_cast<const uint8_t *>(data), size));
+  s_log_tee(std::span<const uint8_t>(static_cast<const uint8_t *>(data), size));
   in_write = false;
   return static_cast<ssize_t>(size);
 }
@@ -80,9 +81,18 @@ ssize_t vfs_write(int, const void *data, size_t size) {
 
 ServiceLink::ServiceLink(const Config &config)
     : BaseComponent("ServiceLink", config.log_level)
-    , config_(config) {}
+    , config_(config) {
+  transports_.reserve(3); // the TCP transport is added later, while other tasks read these
+}
 
-ServiceLink::~ServiceLink() { s_usb_log = nullptr; }
+ServiceLink::~ServiceLink() {
+  s_log_tee = nullptr;
+  if (tcp_task_)
+    tcp_task_->stop();
+  tcp_close_client();
+  if (tcp_listen_fd_ >= 0)
+    ::close(tcp_listen_fd_);
+}
 
 void ServiceLink::register_module(uint8_t module_id, handler_fn handler, std::string name,
                                   std::string description) {
@@ -185,7 +195,7 @@ bool ServiceLink::start_usb() {
     usb_.reset();
     return false;
   }
-  route_stdout_to_usb();
+  route_stdout();
   return true;
 }
 
@@ -196,19 +206,33 @@ void ServiceLink::usb_send_best_effort(std::span<const uint8_t> f) {
     usb_->write_vendor(f);
 }
 
-void ServiceLink::route_stdout_to_usb() {
+// Logs as console-module LOG frames to the hosts that stream: an unsolicited stream
+// confuses other hosts. Called from inside stdout writes, on any task: never blocks.
+void ServiceLink::tee_log(std::span<const uint8_t> bytes) {
+  if (usb_transport_ && usb_transport_->telemetry->streaming() && usb_->is_vendor_connected() &&
+      usb_->vendor_write_available() >= bytes.size() + 13)
+    usb_->write_vendor(espp::stream_frame::build_frame(true, kConsoleModule, kConsoleLog, bytes));
+  auto *tcp = tcp_transport_.load();
+  if (tcp && tcp->telemetry->streaming() && tcp_client_fd_ >= 0) {
+    auto frame = espp::stream_frame::build_frame(true, kConsoleModule, kConsoleLog, bytes);
+    std::lock_guard<std::mutex> lock(tcp_log_mutex_);
+    if (tcp_log_bytes_ + frame.size() <= 16 * 1024) { // else drop: logging must not stall
+      tcp_log_bytes_ += frame.size();
+      tcp_log_.push_back(std::move(frame));
+    }
+  }
+}
+
+void ServiceLink::route_stdout() {
+  if (stdout_routed_)
+    return;
+  stdout_routed_ = true;
   if (kConsoleUart >= 0) {
     char uart[16];
     std::snprintf(uart, sizeof(uart), "/dev/uart/%d", kConsoleUart);
     s_uart_fd = ::open(uart, O_WRONLY);
   }
-  s_usb_log = [this](std::span<const uint8_t> bytes) {
-    // Only while a panel streams telemetry: an unsolicited stream confuses other hosts.
-    if (!usb_transport_ || !usb_transport_->telemetry->streaming())
-      return;
-    if (usb_->is_vendor_connected() && usb_->vendor_write_available() >= bytes.size() + 13)
-      usb_->write_vendor(espp::stream_frame::build_frame(true, kConsoleModule, kConsoleLog, bytes));
-  };
+  s_log_tee = [this](std::span<const uint8_t> bytes) { tee_log(bytes); };
   esp_vfs_t vfs = {};
   vfs.flags = ESP_VFS_FLAG_DEFAULT;
 #pragma GCC diagnostic push
@@ -298,6 +322,130 @@ void ServiceLink::uart_send(std::span<const uint8_t> f) {
   uart_write_bytes(static_cast<uart_port_t>(kConsoleUart), f.data(), f.size());
 }
 
+// ---- TCP ------------------------------------------------------------------------------
+// Modelled on the PACE RACER's EthLink: one select() loop over the listen socket and the
+// client; a newcomer replaces the client (a stale session from a closed tab must not lock
+// the panel out). Frames go out whole under one mutex with a send timeout; a socket that
+// cannot take a frame in time is shut down, since a partial frame would corrupt the stream.
+
+bool ServiceLink::start_tcp() {
+  if (config_.tcp_port == 0 || tcp_transport_)
+    return false;
+  tcp_listen_fd_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (tcp_listen_fd_ < 0) {
+    logger_.error("TCP socket() failed: {}", errno);
+    return false;
+  }
+  int one = 1;
+  ::setsockopt(tcp_listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(config_.tcp_port);
+  if (::bind(tcp_listen_fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0 ||
+      ::listen(tcp_listen_fd_, 1) < 0) {
+    logger_.error("TCP bind/listen on :{} failed: {}", config_.tcp_port, errno);
+    ::close(tcp_listen_fd_);
+    tcp_listen_fd_ = -1;
+    return false;
+  }
+  auto &t = add_transport(
+      "tcp", [this](std::span<const uint8_t> f) { tcp_send(f); },
+      [this](std::span<const uint8_t> f) { tcp_send(f); });
+  tcp_transport_ = &t;
+  route_stdout();
+  tcp_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &, std::condition_variable &) -> bool {
+        tcp_serve();
+        return false;
+      },
+      .task_config = {.name = "svc_tcp", .stack_size_bytes = 4 * 1024, .priority = 3},
+  });
+  tcp_task_->start();
+  logger_.info("Service stream on tcp :{} (panel over Ethernet: tools/mib_panel/eth_bridge.py)",
+               config_.tcp_port);
+  return true;
+}
+
+void ServiceLink::tcp_serve() {
+  fd_set rd;
+  FD_ZERO(&rd);
+  FD_SET(tcp_listen_fd_, &rd);
+  int maxfd = tcp_listen_fd_;
+  const int client = tcp_client_fd_;
+  if (client >= 0) {
+    FD_SET(client, &rd);
+    maxfd = std::max(maxfd, client);
+  }
+  timeval tv{.tv_sec = 0, .tv_usec = 20000};
+  if (::select(maxfd + 1, &rd, nullptr, nullptr, &tv) > 0) {
+    if (FD_ISSET(tcp_listen_fd_, &rd)) {
+      sockaddr_in peer{};
+      socklen_t len = sizeof(peer);
+      const int fd = ::accept(tcp_listen_fd_, reinterpret_cast<sockaddr *>(&peer), &len);
+      if (fd >= 0) {
+        tcp_close_client();
+        int one = 1;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        ::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+        timeval snd{.tv_sec = 0, .tv_usec = 300000};
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
+        tcp_transport_.load()->worker->request_reset(); // a new byte stream
+        tcp_client_fd_ = fd;
+        char ip[16];
+        inet_ntoa_r(peer.sin_addr, ip, sizeof(ip));
+        logger_.info("Panel connected over TCP from {}", ip);
+      }
+    }
+    if (client >= 0 && client == tcp_client_fd_ && FD_ISSET(client, &rd)) {
+      uint8_t buf[512];
+      const int n = ::recv(client, buf, sizeof(buf), 0);
+      if (n > 0) {
+        tcp_transport_.load()->worker->push(std::span<const uint8_t>(buf, static_cast<size_t>(n)));
+      } else {
+        logger_.info("Panel disconnected from TCP");
+        tcp_close_client();
+      }
+    }
+  }
+  // Queued log frames, sent here so a log line never waits on the socket.
+  std::deque<std::vector<uint8_t>> logs;
+  {
+    std::lock_guard<std::mutex> lock(tcp_log_mutex_);
+    logs.swap(tcp_log_);
+    tcp_log_bytes_ = 0;
+  }
+  for (const auto &f : logs)
+    tcp_send(f);
+}
+
+void ServiceLink::tcp_send(std::span<const uint8_t> f) {
+  std::lock_guard<std::mutex> lock(tcp_tx_mutex_);
+  const int fd = tcp_client_fd_;
+  if (fd < 0)
+    return;
+  size_t sent = 0;
+  while (sent < f.size()) {
+    const int n = ::send(fd, f.data() + sent, f.size() - sent, 0);
+    if (n <= 0) {
+      ::shutdown(fd, SHUT_RDWR); // the select loop sees EOF and closes the client
+      return;
+    }
+    sent += static_cast<size_t>(n);
+  }
+}
+
+void ServiceLink::tcp_close_client() {
+  {
+    std::lock_guard<std::mutex> lock(tcp_tx_mutex_);
+    const int fd = tcp_client_fd_.exchange(-1);
+    if (fd >= 0)
+      ::close(fd);
+  }
+  if (auto *t = tcp_transport_.load())
+    t->telemetry->set_streaming(false); // the next panel asks again
+}
+
 // ---- telemetry ------------------------------------------------------------------------
 
 void ServiceLink::emit(std::span<const float> values) {
@@ -310,13 +458,15 @@ void ServiceLink::emit(std::span<const float> values) {
       uart_baud_ >= 460800 ? 1 : static_cast<uint32_t>(std::max(1, config_.uart_telemetry_divider));
   if (uart_transport_ && uart_transport_->telemetry->streaming() && n % divider == 0)
     uart_transport_->telemetry->emit(values, now_us);
+  if (auto *tcp = tcp_transport_.load(); tcp && tcp->telemetry->streaming())
+    tcp->telemetry->emit(values, now_us);
 }
 
 bool ServiceLink::streaming() const {
-  for (const auto &t : transports_)
-    if (t->telemetry->streaming())
-      return true;
-  return false;
+  const auto *tcp = tcp_transport_.load();
+  return (usb_transport_ && usb_transport_->telemetry->streaming()) ||
+         (uart_transport_ && uart_transport_->telemetry->streaming()) ||
+         (tcp && tcp->telemetry->streaming());
 }
 
 // ---- system module --------------------------------------------------------------------
@@ -350,10 +500,11 @@ void ServiceLink::handle_system(const espp::stream_frame::Frame &f, const reply_
     const auto *app = esp_app_get_description();
     std::string json = fmt::format(
         "{{\"product\":\"{}\",\"project\":\"{}\",\"version\":\"{}\",\"built\":\"{} {}\","
-        "\"idf\":\"{}\",\"reset_reason\":\"{}\",\"uptime_s\":{},\"usb\":{},\"uart\":{}",
+        "\"idf\":\"{}\",\"reset_reason\":\"{}\",\"uptime_s\":{},\"usb\":{},\"uart\":{},\"tcp\":{}",
         config_.product, app->project_name, app->version, app->date, app->time, app->idf_ver,
         reset_reason_name(esp_reset_reason()), esp_timer_get_time() / 1000000,
-        usb_transport_ ? "true" : "false", uart_transport_ ? "true" : "false");
+        usb_transport_ ? "true" : "false", uart_transport_ ? "true" : "false",
+        tcp_transport_.load() ? "true" : "false");
     if (info_extra_) {
       const auto extra = info_extra_();
       if (!extra.empty())

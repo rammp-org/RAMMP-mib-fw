@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <span>
@@ -18,8 +19,11 @@
 namespace mib {
 
 /// @brief The MIB's service link: one framed protocol (espp stream_frame, routed by an
-/// espp::DispatcherWorker) served on up to two transports at once.
+/// espp::DispatcherWorker) served on up to three transports at once.
 ///
+/// - TCP on the MIB's Ethernet (port 5555 by default), one client at a time: the same
+///   service stream as the PACE RACER's EthLink (atos-drive/main/eth_link.hpp). A browser
+///   reaches it through tools/mib_panel/eth_bridge.py, which relays a WebSocket to it.
 /// - WebUSB on the ESP32-P4's USB 2.0 HS port. Chrome offers the landing page (the
 ///   control panel) when it is plugged in. On the ESP32-P4-ETH this port is J3, the
 ///   4-pin header; the board's USB-C is a CH343 USB-UART bridge, not native USB.
@@ -28,7 +32,7 @@ namespace mib {
 ///
 /// Both transports carry the same modules:
 ///   3    telemetry  espp::Telemetry: named float channels, device timestamps
-///   0x10 console    device -> host stdout (USB only: on the UART the logs are the stream)
+///   0x10 console    device -> host stdout (USB and TCP; on the UART the logs are the stream)
 ///   0x20 system     reset, info
 ///   0xFF discovery  what the device serves
 /// plus whatever the application adds with register_module().
@@ -61,6 +65,7 @@ public:
     bool uart{true};                   ///< Serve on the console UART.
     std::string landing_page_url{""};  ///< WebUSB landing page, without a scheme.
     int uart_telemetry_divider{5};     ///< Emit every Nth sample on the UART.
+    uint16_t tcp_port{5555};           ///< TCP service port; 0 disables. See start_tcp().
     espp::Logger::Verbosity log_level{espp::Logger::Verbosity::INFO};
   };
 
@@ -73,6 +78,10 @@ public:
   /// Bring the transports up and register the built-in modules. Call once, after every
   /// register_module(). Returns false if no transport came up.
   bool start();
+
+  /// Open the TCP service port. Call once the TCP/IP stack is up (after the BSP brings
+  /// Ethernet up); a link or lease is not needed to listen. Call after start().
+  bool start_tcp();
 
   /// Serve `module_id` on every transport. Handlers run on that transport's worker task.
   void register_module(uint8_t module_id, handler_fn handler, std::string name,
@@ -102,7 +111,11 @@ private:
   void announce();
   bool start_usb();
   bool start_uart();
-  void route_stdout_to_usb();
+  void route_stdout();
+  void tee_log(std::span<const uint8_t> bytes);
+  void tcp_serve();
+  void tcp_send(std::span<const uint8_t> frame);
+  void tcp_close_client();
   void uart_send(std::span<const uint8_t> frame);
   void usb_send_best_effort(std::span<const uint8_t> frame);
 
@@ -125,6 +138,15 @@ private:
   int64_t last_announce_us_{0};             ///< Last console line with the panel URL.
   Transport *usb_transport_{nullptr};
   Transport *uart_transport_{nullptr};
+  std::atomic<Transport *> tcp_transport_{nullptr};
+  bool stdout_routed_{false};
+  int tcp_listen_fd_{-1};
+  std::atomic<int> tcp_client_fd_{-1};
+  std::mutex tcp_tx_mutex_;                  ///< One frame at a time onto the socket.
+  std::mutex tcp_log_mutex_;                 ///< Guards tcp_log_.
+  std::deque<std::vector<uint8_t>> tcp_log_; ///< LOG frames for the TCP task to send.
+  size_t tcp_log_bytes_{0};
+  std::unique_ptr<espp::Task> tcp_task_;
 };
 
 } // namespace mib

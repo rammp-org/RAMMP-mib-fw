@@ -153,6 +153,26 @@ class SerialTransport {
   }
 }
 
+// Ethernet: the MIB's tcp :5555 service stream through tools/mib_panel/eth_bridge.py, which
+// relays a WebSocket (a page cannot open TCP). `bridge` is the bridge's ws:// base.
+class WsTransport {
+  constructor(bridge, target) { this.bridge = bridge; this.target = target; this.kind = 'eth'; this.ws = null; this.onData = null; this.onClose = null; }
+  async open() {
+    const url = `${this.bridge.replace(/\/$/, '')}/ws?target=${encodeURIComponent(this.target)}`;
+    await new Promise((res, rej) => {
+      const ws = new WebSocket(url); ws.binaryType = 'arraybuffer';
+      ws.onopen = () => { this.ws = ws; res(); };
+      ws.onerror = () => rej(new Error(`no MIB at ${this.target} through the bridge at ${this.bridge}. Is tools/mib_panel/eth_bridge.py running, and is this laptop on the chair's network?`));
+      ws.onmessage = ev => this.onData && this.onData(new Uint8Array(ev.data));
+      ws.onclose = () => { const was = this.ws; this.ws = null; if (was && this.onClose) this.onClose(); };
+    });
+  }
+  name() { return `Ethernet ${this.target} (bridge ${this.bridge.replace(/^ws:\/\//, '')})`; }
+  async send(bytes) { if (!this.ws) throw new Error('link closed'); this.ws.send(bytes); }
+  async readLoop(onData) { this.onData = onData; await new Promise(res => { this.onClose = res; if (!this.ws) res(); }); }
+  async close() { const ws = this.ws; this.ws = null; if (ws) ws.close(); if (this.onClose) this.onClose(); }
+}
+
 // In-page MIB (mib_sim.js): the same frames, no hardware.
 class SimTransport {
   constructor() { this.kind = 'sim'; this.sim = null; this.onData = null; }

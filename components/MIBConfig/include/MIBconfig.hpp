@@ -26,6 +26,10 @@ inline constexpr bool service_usb_enabled = true;
 /// @brief Serve the control panel over the console UART (the USB-C, through the CH343).
 inline constexpr bool service_uart_enabled = true;
 
+/// @brief Serve the control panel over Ethernet on this TCP port (0 = off): the panel
+/// reaches it through tools/mib_panel/eth_bridge.py.
+inline constexpr std::uint16_t service_tcp_port = 5555;
+
 /// @brief Telemetry is decimated to every Nth sample while the UART runs at its 115200-baud
 /// default. The panel raises the rate to 921600 while connected, and then gets every one.
 inline constexpr int service_uart_telemetry_divider = 5;

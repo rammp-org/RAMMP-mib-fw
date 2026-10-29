@@ -104,13 +104,15 @@ function setConnected(on, label) {
   $('mLink').textContent = label || (on ? 'Live' : 'Disconnected');
   $('connectBtn').textContent = on ? 'Disconnect' : 'Connect';
   for (const id of ['resetBtn', 'estopBtn', 'clearBtn', 'tuApply', 'tuLoad', 'tdHold', 'tdRev', 'stRun', 'atStart', 'drEnable', 'drDisable', 'csvBtn']) $(id).disabled = !on;
-  $('transport').disabled = on;
+  $('transport').disabled = on; $('ethTarget').disabled = on; $('ethBridge').disabled = on;
   document.querySelectorAll('#seatGrid button').forEach(b => { b.disabled = !on; });
 }
 $('connectBtn').onclick = async () => {
   if (link) return disconnect();
   const kind = $('transport').value;
-  const t = kind === 'usb' ? new UsbTransport() : kind === 'serial' ? new SerialTransport() : new SimTransport();
+  localStorage.setItem('mib.transport', kind); localStorage.setItem('mib.ethTarget', $('ethTarget').value.trim()); localStorage.setItem('mib.ethBridge', $('ethBridge').value.trim());
+  const t = kind === 'eth' ? new WsTransport($('ethBridge').value.trim(), $('ethTarget').value.trim())
+    : kind === 'usb' ? new UsbTransport() : kind === 'serial' ? new SerialTransport() : new SimTransport();
   axBusy($('connectBtn'), true, 'Connecting');
   try {
     const l = new MibLink(t, {
@@ -555,6 +557,19 @@ const tuneCharts = [
   new LiveChart($('cTuIq'), [{ ch: () => `${tuSeg()}.iq`, label: 'i_q', color: c()[2] }], 'Current i_q, A'),
 ];
 
+// Link choice: remembered; Ethernet by default. Served by eth_bridge.py, the page uses its own origin.
+$('transport').value = localStorage.getItem('mib.transport') || 'eth';
+$('ethTarget').value = localStorage.getItem('mib.ethTarget') || '192.168.4.1';
+$('ethBridge').value = localStorage.getItem('mib.ethBridge') || 'ws://localhost:8765';
+const showEth = () => { const on = $('transport').value === 'eth'; $('ethTarget').style.display = $('ethBridge').style.display = on ? '' : 'none'; };
+$('transport').onchange = showEth; showEth();
+if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) fetch('bridge.json').then(r => r.ok ? r.json() : null).then(j => {
+  if (!j || !j.bridge) return;
+  $('ethBridge').value = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`; $('ethBridge').style.display = 'none';
+  if (!localStorage.getItem('mib.ethTarget')) $('ethTarget').value = j.default_target;
+  sys(`served by eth_bridge.py: Ethernet goes through ${location.host}`);
+}).catch(() => {});
+
 setConnected(false);
 chartLoop();
-sys('panel ready. Web Serial: the MIB\'s USB-C. WebUSB: its J3 header. Or try the simulator.');
+sys('panel ready. Ethernet: run tools/mib_panel/eth_bridge.py and plug into the chair network. Web Serial: the MIB\'s USB-C. Or try the simulator.');

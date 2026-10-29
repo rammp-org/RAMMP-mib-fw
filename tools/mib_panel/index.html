@@ -107,10 +107,13 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     </div>
     <div class="ctl">
       <select class="ax-input" id="transport" style="width:auto">
+        <option value="eth">Ethernet (eth_bridge.py)</option>
         <option value="serial">Web Serial (USB-C)</option>
         <option value="usb">WebUSB (J3 header)</option>
         <option value="sim">Simulated MIB</option>
       </select>
+      <input class="ax-input" id="ethTarget" value="192.168.4.1" title="The MIB's address" style="width:130px">
+      <input class="ax-input" id="ethBridge" value="ws://localhost:8765" title="eth_bridge.py's address" style="width:180px">
       <button class="ax-btn primary" id="connectBtn" data-fx="ripple">Connect</button>
       <button class="ax-btn" id="resetBtn" disabled>Reset MIB</button>
       <button class="estop-btn" id="estopBtn" disabled title="Latch the robot-wide e-stop">E-STOP</button>

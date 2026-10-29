@@ -50,3 +50,7 @@ CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
 # 1.5 MB factory app (IDF's "single app, large" table): TinyUSB and the service link
 # left the default 1 MB partition 3 % free. Still fits the 2 MB flash setting.
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# The panel's TCP service port (a listener and one client) beside the RTPS sockets;
+# the PACE RACER raised the same limit for its EthLink.
+CONFIG_LWIP_MAX_SOCKETS=16

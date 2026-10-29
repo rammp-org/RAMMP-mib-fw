@@ -429,6 +429,11 @@ void MibSystem::run_state_step() {
       return;
     }
 
+    // The TCP/IP stack is up: open the panel's Ethernet port (it listens without a link).
+    if (service_) {
+      service_->start_tcp();
+    }
+
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");
     while (!mib_.ethernet_connected()) {
