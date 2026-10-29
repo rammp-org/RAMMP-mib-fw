@@ -6,11 +6,12 @@
 #include <memory>
 #include <mutex>
 
-#include "bsp.hpp"
 #include "base_component.hpp"
+#include "bsp.hpp"
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
 #include "messages.hpp"
+#include "ros2_interface.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
 
@@ -58,6 +59,11 @@ private:
   /// \param sample The received normalized stick position, buttons, and drive mode.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_joystick_message(const rammp::XYTwist &sample);
+
+  /// Handle one XYTwist from a ROS 2 node (mib::ros2::kXYTwist). Logged, never driven on.
+  /// \param sample The received stick position and buttons.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_ros2_joystick_message(const rammp::XYTwist &sample);
 
   /// Handle a seat control command.
   /// \param command The requested seat axis and target position.
@@ -110,7 +116,9 @@ private:
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
   rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
-  mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
+  rammp::XYTwist latest_ros2_joystick_{};      ///< Most recent ROS 2 XYTwist, for the log.
+  std::chrono::steady_clock::time_point latest_ros2_joystick_time_{}; ///< When (epoch = never).
+  mutable std::mutex joystick_mutex_;          ///< Protects both latest joystick samples.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
@@ -126,6 +134,8 @@ private:
   mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
   bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  /// The status for ROS 2 nodes (mib::ros2::kMibState).
+  std::unique_ptr<espp::Publisher<mib::ros2::MibState>> ros2_state_publisher_;
   /// One command output per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>
       motor_publishers_;
@@ -135,6 +145,8 @@ private:
   std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_; ///< Motor debug list.
   std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
+  /// XYTwist from ROS 2 nodes (mib::ros2::kXYTwist), logged only.
+  std::unique_ptr<espp::Subscriber<rammp::XYTwist>> ros2_joystick_subscriber_;
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.

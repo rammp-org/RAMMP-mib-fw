@@ -14,11 +14,11 @@ using namespace std::chrono_literals;
 // reader per axis-table board, plus the fixed endpoints below. A row added to the axis
 // table needs the limits raised; these checks fail the build until they are.
 namespace {
-/// Fixed writers: MibStatus, Motors, estop-core's EStop and SPDP.
-constexpr size_t kFixedWriters = 4;
-/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// estop-core's EStop and SPDP.
-constexpr size_t kFixedReaders = 6;
+/// Fixed writers: MibStatus, the ROS 2 MibState, Motors, estop-core's EStop and SPDP.
+constexpr size_t kFixedWriters = 5;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog, the
+/// ROS 2 XYTwist, estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 7;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 } // namespace
@@ -124,6 +124,20 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
+  ros2_joystick_subscriber_ = std::make_unique<espp::Subscriber<rammp::XYTwist>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::XYTwist>::Config{.topic = mib::ros2::kXYTwist.name,
+                                               .type_name = mib::ros2::kXYTwist.type,
+                                               .reliability = Reliability::BEST_EFFORT,
+                                               .on_message = [this](const rammp::XYTwist &sample) {
+                                                 handle_ros2_joystick_message(sample);
+                                               }});
+
+  if (!ros2_joystick_subscriber_->is_valid()) {
+    logger_.error("Failed to create the ROS 2 joystick subscriber");
+    return false;
+  }
+
   seat_command_subscriber_ = std::make_unique<espp::Subscriber<rammp::SeatCommand>>(
       mib_.rtps_participant(),
       espp::Subscriber<rammp::SeatCommand>::Config{
@@ -163,6 +177,17 @@ bool MibSystem::initialize_pubsub() {
 
   if (!status_publisher_->is_valid()) {
     logger_.error("Failed to create MIB status publisher");
+    return false;
+  }
+
+  ros2_state_publisher_ = std::make_unique<espp::Publisher<mib::ros2::MibState>>(
+      mib_.rtps_participant(),
+      espp::Publisher<mib::ros2::MibState>::Config{.topic = mib::ros2::kMibState.name,
+                                                   .type_name = mib::ros2::kMibState.type,
+                                                   .reliability = Reliability::BEST_EFFORT});
+
+  if (!ros2_state_publisher_->is_valid()) {
+    logger_.error("Failed to create the ROS 2 MibState publisher");
     return false;
   }
 
@@ -229,6 +254,13 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
     drive_controller_.stop();
     break;
   }
+}
+
+void MibSystem::handle_ros2_joystick_message(const rammp::XYTwist &sample) {
+  // Logged only: ROS 2 drives the base through arbitration, never through the stick path.
+  std::lock_guard<std::mutex> lock(joystick_mutex_);
+  latest_ros2_joystick_ = sample;
+  latest_ros2_joystick_time_ = std::chrono::steady_clock::now();
 }
 
 void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
@@ -340,6 +372,12 @@ void MibSystem::publish_system_state() {
   if (!status_publisher_->publish(status)) {
     logger_.warn("Failed to publish MIB status");
   }
+
+  const mib::ros2::MibState ros2_state{.system_state = mib::ros2::to_mib_state(status.systemState),
+                                       .error_message = status.error_message};
+  if (!ros2_state_publisher_->publish(ros2_state)) {
+    logger_.warn("Failed to publish the ROS 2 MibState");
+  }
 }
 
 void MibSystem::publish_seat_state() {
@@ -348,9 +386,13 @@ void MibSystem::publish_seat_state() {
 
 void MibSystem::log_drive_status() {
   rammp::XYTwist joystick{};
+  rammp::XYTwist ros2_joystick{};
+  std::chrono::steady_clock::time_point ros2_joystick_time{};
   {
     std::lock_guard<std::mutex> lock(joystick_mutex_);
     joystick = latest_joystick_;
+    ros2_joystick = latest_ros2_joystick_;
+    ros2_joystick_time = latest_ros2_joystick_time_;
   }
 
   const auto current_state = state_.load();
@@ -385,6 +427,13 @@ void MibSystem::log_drive_status() {
   logger_.info("Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} rad/s",
                state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
                right_rad_per_second);
+  if (ros2_joystick_time != std::chrono::steady_clock::time_point{}) {
+    const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - ros2_joystick_time);
+    logger_.info("ROS 2 joystick (not driven on): x={} y={} twist={} buttons={}, {} ms ago",
+                 ros2_joystick.x, ros2_joystick.y, ros2_joystick.twist,
+                 static_cast<uint32_t>(ros2_joystick.buttons), age.count());
+  }
 }
 
 void MibSystem::publish_motor_commands() {
