@@ -50,29 +50,37 @@ match those two endpoints. The struct layouts are unchanged;
 
 ## What had to be fixed in the MIB's RTPS stack
 
-espp `rtps` is only validated against Fast DDS. Cyclone DDS is stricter and
-behaves differently in two places, which made the MIB's topics visible on the
-Jetson while no data ever arrived. Both fixes live in a patched copy of the
-component under `external/espp__rtps` (selected by `override_path` in
-`main/idf_component.yml`); `external/espp__rtps/PATCHES.md` has the details.
+espp `rtps` (a de-vendored embeddedRTPS) is only validated against Fast DDS.
+Cyclone DDS exercises four things Fast DDS does not, and each one alone stops
+every sample: the MIB's topics were visible on the Jetson while `echo` stayed
+silent and `pub` never reached the MIB. All four are fixed in a patched copy of
+the component under `external/espp__rtps` (selected by `override_path` in
+`main/idf_component.yml`); `external/espp__rtps/PATCHES.md` has the details and
+the diff. The patch was root-caused and verified on a host build of espp
+against a Cyclone peer on the `feature/21-mib-debugger` branch
+(`tools/mib_debugger/interop/`, `BRANCH_NOTES.md` finding 10).
 
-1. **Pre-emptive ACKNACK with sequence base 0.** The RTPS spec requires base
-   >= 1. Cyclone forgives base 0 only from eProsima and RTI vendor ids; from
-   embeddedRTPS (vendor 13.37) it dropped the message as malformed, printing
-   `recvUC: malformed packet received from vendor 13.37 ...` on the Jetson and
-   leaving discovery half done. Fixed to base 1.
-2. **No fallback to the participant's default locator.** Cyclone does not put a
-   per-endpoint unicast locator into its endpoint announcements (Fast DDS does).
-   The MIB built its reader/writer proxies from that per-endpoint locator only,
-   so a Cyclone subscriber matched and every sample went to an invalid address.
-   Fixed to fall back to the announcing participant's default unicast locator,
-   preferring the one on the MIB's own `/24`.
+1. **Heartbeats and gaps addressed to the participant were dropped.** Cyclone
+   sends HEARTBEAT/GAP with `readerId = ENTITYID_UNKNOWN`; the receiver found
+   no reader by that id and discarded them, so the MIB never requested, and
+   never received, the Jetson's endpoint announcements.
+2. **Pre-emptive ACKNACK with sequence base 0.** The spec requires base >= 1;
+   Cyclone forgives 0 only for eProsima/RTI vendor ids and drops it from
+   embeddedRTPS (vendor 13.37), printing `recvUC: malformed packet received
+   from vendor 13.37 ...` on the Jetson.
+3. **ACKNACKs without INFO_DST, echoing reader id 0.** Cyclone could not tell
+   which writer or reader they were for and ignored them.
+4. **Placeholder unicast locator.** Cyclone omits the per-endpoint locator from
+   SEDP and relies on the participant's default locator; the MIB kept a
+   `192.168.0.42:7411` placeholder instead and sent every sample there.
 
-That second point is also why the Jetson's Cyclone configuration matters: if
-Cyclone advertises only the `192.168.1.x` address, the MIB has nothing
-reachable to fall back to. The MIB then logs
-`Dropping UDP send ... to 192.168.1.11 ... 'Not enough space'` for every packet
-it tries to send there.
+Point 4 is also why the Jetson's Cyclone configuration matters: if Cyclone
+advertises only the `192.168.1.x` address, the MIB has nothing reachable to
+fall back to and logs `Dropping UDP send ... to 192.168.1.11 ... 'Not enough
+space'` for every packet.
+
+Every board on the chair that a Cyclone peer must talk to needs the patched
+component: the MIB and both PACE RACER boards.
 
 ## Jetson setup (done once)
 
@@ -121,6 +129,21 @@ long-lived process that keeps the configuration it was started with, so
 `ros2 topic list` can look right while a fresh `echo` or `pub` in a badly
 configured shell does not.
 
+## Per-terminal checklist (Jetson)
+
+Needed in every new shell unless the lines are in `~/.zshrc`:
+
+```bash
+source /opt/ros/humble/setup.zsh          # 1. ROS 2
+source ~/rammp_ws/install/setup.zsh       # 2. rammp_msgs (echo/pub need it to decode)
+echo $CYCLONEDDS_URI                      # 3. expect file:///home/snorlax/cyclonedds.xml (from ~/.zshrc)
+ros2 daemon stop                          # 4. only after changing cyclonedds.xml / CYCLONEDDS_URI / RMW
+```
+
+If every `ros2` command hangs, the daemon is wedged: `pkill -9 -f _ros2_daemon`,
+then `ros2 topic list --no-daemon`. If that also hangs, check `eno1` still has
+its `192.168.4.x` address (reflashing the MIB drops the PoE link briefly).
+
 ## Running it
 
 MIB, from the repo root:
@@ -160,17 +183,22 @@ sample in every state, drive does not have to be enabled).
 | Jetson has no `192.168.4.x` address | wired interface not on DHCP, or link down (PoE power / cable) |
 | `ros2 topic list` empty | stale daemon (`ros2 daemon stop`), Cyclone on the wrong interface (`echo $CYCLONEDDS_URI`), or multicast blocked (firewall UDP 7400-7500, IGMP snooping on a managed PoE switch) |
 | `The message type 'rammp_msgs/msg/MibStatus' is invalid` | `~/rammp_ws/install/setup.zsh` not sourced in this shell |
-| Topic listed, `echo` silent | missing `--qos-reliability best_effort`; or MIB flashed without the `external/espp__rtps` patches |
+| Topic listed, `echo` silent | missing `--qos-reliability best_effort`; or MIB flashed without the `external/espp__rtps` patch |
 | MIB logs `Dropping UDP send ... to 192.168.1.x` | the node's Cyclone advertised only the off-link address: `CYCLONEDDS_URI` not exported in that shell |
-| Jetson logs `malformed packet received from vendor 13.37` | MIB flashed without the `external/espp__rtps` patches |
+| Jetson logs `malformed packet received from vendor 13.37` | MIB flashed without the `external/espp__rtps` patch |
+| every `ros2` command hangs | wedged daemon: `pkill -9 -f _ros2_daemon`, then `ros2 topic list --no-daemon` |
 
 ## Known limits and follow-ups
 
-- Only best-effort topics have been exercised. RELIABLE topics between the MIB
-  and Cyclone are untested.
-- The two RTPS fixes are local patches; they should be sent upstream to
+- The patched firmware has not yet been verified end to end against the Jetson
+  (the host harness on `feature/21-mib-debugger` passes). First thing to do
+  after flashing: `echo` must stream `MibStatus`, `pub` must move `y` in the
+  MIB's `Drive status:` line, and neither console may show `malformed packet`
+  or `Dropping UDP send` lines.
+- The four RTPS fixes are local patches; they should be sent upstream to
   esp-cpp/espp (`components/rtps`) so `external/espp__rtps` and the
-  `override_path` can be removed.
+  `override_path` can be removed. The PACE RACER firmware needs the same
+  override until then.
 - For the real integration, the ROS 2 names belong in `external/rammp-rtps`
   (topics `rt/rammp/...`, types `rammp_msgs::msg::dds_::<Type>_`, with the
   `.msg` files alongside the headers) so the joystick, PACE RACER and Jetson all
