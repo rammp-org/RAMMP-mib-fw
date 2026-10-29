@@ -81,6 +81,11 @@ environment deploys from `main` only).
 
 ## Safety
 
+**Bench mode is on for now:** `estop_watch_hmi = false` in `MIBconfig.hpp`. The e-stop
+latch doesn't watch the HMI as a deadman, and the MIB clears its boot latch by itself,
+so it reaches IDLE with no HMI. The panel's E-STOP button and an HMI's e-stop button
+still latch it; "Hold to clear" or the HMI clears it. Set it back to `true` for the chair.
+
 Panel motor commands are overrides the MIB applies only while it is IDLE with
 the e-stop clear, only for 300 ms after the last one (the panel resends every
 50 ms while a button is held), and capped at 8 rad/s and 20 N·m

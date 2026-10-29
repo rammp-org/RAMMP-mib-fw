@@ -67,6 +67,14 @@ inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
 /// GPIO_NUM_NC: no button wired, so only MibSystem calling latch_.start_clear_attempt() clears it.
 inline constexpr gpio_num_t estop_clear_gpio = GPIO_NUM_NC;
 
+/// @brief Bench testing without the HMI: false.
+/// true: the latch watches the HMI as a deadman (estop-core's default): a silent HMI latches
+/// the e-stop, and a clear needs the HMI heard. false: nothing is watched, and the MIB starts
+/// a clear attempt once at boot, so it reaches IDLE on its own. Any node that sends ENGAGED
+/// (an HMI's e-stop button, the control panel's E-STOP) still latches it either way; clear
+/// it from the HMI or the panel's "Hold to clear". Set back to true for the chair.
+inline constexpr bool estop_watch_hmi = false;
+
 /// @brief Differential-drive geometry and motor direction configuration.
 struct DifferentialDriveConfig {
   float wheel_diameter_m;

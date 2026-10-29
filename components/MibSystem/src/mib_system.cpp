@@ -3,16 +3,51 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <span>
+#include <string_view>
 #include <thread>
 
 #include "MIBconfig.hpp"
 
 using namespace std::chrono_literals;
 
+// The RTPS endpoint pool in sdkconfig.defaults (the same checks as #45): a MotorCommand and a
+// MotorTuning writer and a MotorState reader per axis-table board, plus the fixed endpoints
+// below. A row added to the axis table needs the limits raised; these fail the build until
+// they are. An sdkconfig made before the limits were raised keeps its old values: delete it.
+namespace {
+/// Fixed writers: MibStatus, estop-core's EStop and SPDP.
+constexpr size_t kFixedWriters = 3;
+/// Fixed readers: the joystick's XYTwist, SeatCommand and DriveCommand, estop-core's EStop
+/// and SPDP.
+constexpr size_t kFixedReaders = 5;
+/// SEDP's publication and subscription endpoints: in the per-participant limits only.
+constexpr size_t kSedpEndpoints = 2;
+constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
+constexpr size_t kReaders = rammp::kAxisCount + kFixedReaders;
+/// No watched nodes: estop-core's default watches the HMI as a deadman.
+constexpr std::string_view kNoWatchedNodes[] = {""};
+} // namespace
+
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= kReaders,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= kReaders,
+              "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >= kWriters + kSedpEndpoints,
+              "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= kReaders + kSedpEndpoints,
+              "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
+
 MibSystem::MibSystem()
-    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-  mib_(mib::bsp::MIB::instance()), drive_controller_(),
-  latch_({.clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
+    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
+    , mib_(mib::bsp::MIB::instance())
+    , drive_controller_()
+    , latch_({.watched = mib::config::estop_watch_hmi
+                             ? std::span<const std::string_view>(estop::kDefaultWatched)
+                             : std::span<const std::string_view>(kNoWatchedNodes, 0),
+              .clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
 
 void MibSystem::start() {
   latch_.start(); // first: it starts latched, so nothing moves until a clear succeeds
@@ -453,6 +488,12 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
+    if (!mib::config::estop_watch_hmi) {
+      // Bench mode (MIBconfig.hpp): no HMI deadman, so clear the boot latch here.
+      logger_.warn("E-stop: not watching the HMI (estop_watch_hmi = false); clearing the boot "
+                   "latch");
+      latch_.start_clear_attempt();
+    }
     state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
     break;
   case SystemState::IDLE:
@@ -485,8 +526,19 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::IDLE);
       break;
     }
-    logger_.error("System state: ERROR - running error placeholder");
+    // Once per entry into ERROR: this runs every 20 ms.
+    if (!error_reported_.exchange(true)) {
+      if (estop_error_.load()) {
+        logger_.error("System state: ERROR - e-stop latched (cause: {}); clear it from the HMI "
+                      "or the control panel",
+                      latch_.status().cause);
+      } else {
+        logger_.error("System state: ERROR - not operational; see the first error above");
+      }
+    }
     break;
   }
-
+  if (state_.load() != SystemState::ERROR) {
+    error_reported_.store(false);
+  }
 }
