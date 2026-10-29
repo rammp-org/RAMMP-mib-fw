@@ -81,29 +81,42 @@ environment deploys from `main` only).
 
 ## Firmware updates
 
-The **Firmware** tab flashes the MIB over whichever link is connected, so the MIB no
-longer needs the USB-C for updates. It is the PACE RACER dashboard's flow over espp's
-`OtaService`:
-1. Pick a build. Served by `eth_bridge.py`, the page lists `build*/rammp_mib.bin` in this
-   repo, so `idf.py build` and **Flash MIB** is the whole loop. You can also pick or drop a
-   `.bin`.
-2. The MIB disables drive, drops every panel override, commands every motor DISARMED,
-   writes the other app slot and reboots into it.
-3. The panel reconnects and marks the new image valid. If the panel can't, the MIB
-   confirms it itself 20 s after RTPS comes up.
+The **Firmware** tab flashes the MIB and the PACE RACERs over the air, so neither needs
+its USB port for updates. It is the PACE RACER dashboard's flow over espp's `OtaService`;
+both boards serve it.
 
-An image that never gets that far stays pending, and the bootloader boots the previous
-one at the next reset. **Roll back** returns to the previous image on demand. The page
-refuses a file that isn't an ESP app image, and asks before flashing one that isn't
-`rammp_mib` (a PACE RACER image, say). In the simulated test a 1 MB image wrote in
-under a second over localhost TCP; over real Ethernet and at 921600 baud it is not yet
-measured (serial should be on the order of 15 s).
+```
+python3 tools/mib_panel/eth_bridge.py --racer <pace-racer-fw>/components/pace-racer-board/atos-drive
+```
 
-**Once, over USB:** the two-slot partition table and the rollback bootloader have to
-reach the MIB once. Flash this firmware with `idf.py flash` over the USB-C one last
-time (bootloader, partition table and app); every update after that goes through the
-panel. `sdkconfig` has to be regenerated for the new table:
-`rm sdkconfig && idf.py build flash`.
+1. **Target:**
+   - **MIB** goes over the link you're connected with.
+   - **PACE RACER:** press **Find RACERs**. The bridge broadcasts the RACERs' `PACE?`
+     discovery on udp :5556; each answers with its axis, firmware and slot. Or type a
+     board's IP. A RACER goes over Ethernet, through the bridge to its tcp :5555.
+2. **Build:** the bridge lists every `build*/` with a `flasher_args.json`: this repo's, and
+   with `--racer`, the RACER app's (`build-hub20`, `build-flatbot`, ...). The list shows only
+   builds for the chosen target. You can also pick or drop a `.bin`.
+3. **Flash:** the board makes itself safe, writes its other app slot and reboots into it.
+   - The MIB disables drive, drops panel overrides and commands every motor DISARMED.
+   - A RACER unloads its drive.
+   - The panel refuses to flash a RACER while the MIB is driving.
+   - Then the panel reconnects and marks the new image valid.
+   - Unconfirmed, a MIB image confirms itself 20 s after RTPS comes up. A RACER's confirms
+     once it holds a lease and serves its stream.
+   - An image that never gets that far loses to the previous one at the next reset.
+4. **Running image** reads the target's firmware, slot and state. **Mark valid** and
+   **Roll back** act on the target.
+
+The page refuses a file that isn't an ESP app image, and asks before flashing an image
+built for the other board (a RACER image to the MIB, or the reverse). In the simulated
+tests a 1 MB image wrote in a few seconds over localhost TCP; over real Ethernet and at
+921600 baud it is not yet measured.
+
+**Once, over USB:** the MIB's two-slot partition table and rollback bootloader have to
+reach it once. Flash this firmware with `rm sdkconfig && idf.py build flash` over the USB-C
+one last time; every update after that goes through the panel. A RACER's first
+ethernet-capable image goes over USB too (`tools/provision.py` in pace-racer-fw).
 
 ## Safety
 
@@ -135,7 +148,7 @@ the numbers.
 | `index.html` | layout and styles |
 | `panel.js` | the UI: status, charts, tuning, auto-tune, drive, seat, sensors, log |
 | `mib_link.js` | frame codec, Ethernet / Web Serial / WebUSB / simulator transports, telemetry store, MIB requests |
-| `eth_bridge.py` | serves the panel, lists the repo's builds, and relays its WebSocket to the MIB's tcp :5555 |
+| `eth_bridge.py` | serves the panel, lists firmware builds (`--racer` adds the RACER's), finds RACERs (`PACE?`), and relays the WebSocket to a board's tcp :5555 |
 | `mib_sim.js` | the simulated MIB |
 | `ax-tokens.css`, `ax-fx.js` | alex-style tokens and effects, vendored |
 | `uPlot.iife.min.js` | uPlot 1.6.31 (MIT), vendored from espp `components/telemetry/web` |

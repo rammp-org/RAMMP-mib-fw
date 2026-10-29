@@ -584,51 +584,91 @@ if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) fetch('bridge.json').t
 
 // ---------------------------------------------------------------- firmware (OTA)
 // The PACE RACER dashboard's flow (atos-drive/tools/dashboard.html): BEGIN with the size,
-// 4 KiB DATA chunks each acknowledged, FINISH, then the MIB reboots into the new slot; the
-// panel reconnects and marks the new image valid.
-const fw = { picked: null, busy: false, abort: false, rebooting: false };
+// 4 KiB DATA chunks each acknowledged, FINISH, then the board reboots into the new slot; the
+// panel reconnects and marks the new image valid. The target is the MIB (the panel's own
+// link) or a PACE RACER (its tcp :5555 through eth_bridge.py, found with "PACE?").
+const fw = { picked: null, busy: false, abort: false, rebooting: false, builds: [], racers: new Map() };
+const FW_PROJECT = { mib: 'rammp_mib', racer: 'pace_racer_atos_drive' };
 const fwCstr = (img, a, b) => new TextDecoder().decode(img.subarray(a, b)).split('\0')[0];
+const bridgeServed = () => /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+// The bridge's HTTP base: this origin when it served the page, else the Ethernet bridge field.
+const bridgeBase = () => bridgeServed() ? '' : $('ethBridge').value.trim().replace(/^ws/, 'http').replace(/\/$/, '') + '/';
+function fwTarget() {
+  const v = $('fwTarget').value;
+  if (v === 'mib') return { kind: 'mib', label: 'MIB' };
+  const r = fw.racers.get(v.slice(6));
+  return { kind: 'racer', addr: v.slice(6), label: r && r.axis_name ? `RACER ${r.axis_name}` : `RACER ${v.slice(6)}`, info: r };
+}
 function fwSource() {
   if (fw.picked) return { name: fw.picked.name, read: async () => new Uint8Array(await fw.picked.arrayBuffer()) };
-  const d = $('fwBuild').value; if (!d) return null;
-  return { name: $('fwBuild').selectedOptions[0].textContent, read: async () => {
-    const r = await fetch('builds/' + encodeURIComponent(d), { cache: 'no-store' });
-    if (!r.ok) throw new Error(`the bridge could not read ${d}: HTTP ${r.status}`);
+  const b = fw.builds.find(x => x.id === $('fwBuild').value); if (!b) return null;
+  return { name: `${b.id} · ${b.version}`, read: async () => {
+    const r = await fetch(`${bridgeBase()}builds/${b.id}/${b.app.file}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`the bridge could not read ${b.id}: HTTP ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
   } };
 }
 function fwRefresh() {
-  const src = fwSource();
-  $('fwFlash').disabled = fw.busy || !link || !src; $('fwValid').disabled = fw.busy || !link; $('fwRollback').disabled = fw.busy || !link;
-  if (!fw.busy) { $('fwStatus').className = 'ax-status'; $('fwStatus').textContent = !src ? 'No image chosen' : link ? src.name : src.name + ' · connect to flash'; }
+  const t = fwTarget(), src = fwSource(), reach = t.kind === 'mib' ? !!link : true;
+  $('fwFlash').textContent = `Flash ${t.label}`;
+  $('fwFlash').disabled = fw.busy || !reach || !src; $('fwValid').disabled = fw.busy || !reach; $('fwRollback').disabled = fw.busy || !reach; $('fwRead').disabled = fw.busy || !reach;
+  if (!fw.busy) { $('fwStatus').className = 'ax-status'; $('fwStatus').textContent = !src ? 'No image chosen' : !reach ? src.name + ' · connect to flash' : src.name; }
 }
-async function renderFwInfo() {
-  if (!link) { $('fwInfo').innerHTML = '<tr><td class="empty">Not connected.</td></tr>'; return; }
-  try {
-    info = await link.info();
-    $('mFw').textContent = `fw ${info.version} (${info.built})`;
-    const rows = [['Version', info.version], ['Built', info.built], ['Slot', info.partition || '–'],
-      ['State', info.pending_verify ? '<span class="ax-status warning">Pending verify</span>' : '<span class="ax-status good">Confirmed</span>'],
-      ['Reset reason', info.reset_reason], ['Up', `${info.uptime_s} s`], ['ESP-IDF', info.idf]];
-    $('fwInfo').innerHTML = rows.map(([k, v]) => `<tr><td class="ax-label">${k}</td><td class="ax-n">${v}</td></tr>`).join('');
-  } catch (e) { $('fwInfo').innerHTML = `<tr><td class="empty">No info reply: ${e.message}</td></tr>`; }
-}
-async function loadBuilds() {
-  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
-  try {
-    const r = await fetch('builds', { cache: 'no-store' }); if (!r.ok) return;
-    const list = await r.json(); if (!list.length) return;
-    $('fwBuild').innerHTML = list.map(b => `<option value="${b.dir}">${b.dir} · ${b.version} · ${b.built}</option>`).join('');
-  } catch (_) {}
+function renderBuildList() {
+  const want = FW_PROJECT[fwTarget().kind], list = fw.builds.filter(b => b.project === want);
+  $('fwBuild').innerHTML = list.length ? list.map(b => `<option value="${b.id}">${b.id} · ${b.version} · ${b.built}</option>`).join('')
+    : `<option value="">no ${want} builds from the bridge</option>`;
   fwRefresh();
 }
+function renderTargets() {
+  const keep = $('fwTarget').value;
+  $('fwTarget').innerHTML = '<option value="mib">MIB (the connected link)</option>' + [...fw.racers.entries()].map(([addr, r]) =>
+    `<option value="racer:${addr}">PACE RACER ${r.axis_name || '(axis ?)'} · ${addr}${r.version ? ' · ' + r.version : ''}</option>`).join('');
+  if ([...$('fwTarget').options].some(o => o.value === keep)) $('fwTarget').value = keep;
+}
+// Info for the "Running image" table: the MIB from its link, a RACER over a short-lived one.
+const racerLink = async addr => { const l = new FrameLink(new WsTransport($('ethBridge').value.trim(), addr.includes(':') ? addr : `${addr}:5555`)); await l.connect(); return l; };
+async function renderFwInfo() {
+  const t = fwTarget();
+  if (t.kind === 'mib' && !link) { $('fwInfo').innerHTML = '<tr><td class="empty">Not connected.</td></tr>'; return; }
+  let j;
+  try {
+    if (t.kind === 'mib') { j = info = await link.info(); $('mFw').textContent = `fw ${j.version} (${j.built})`; }
+    else { const l = await racerLink(t.addr); try { j = await l.info(); } finally { await l.close(); } }
+  } catch (e) { $('fwInfo').innerHTML = `<tr><td class="empty">No info from ${t.label}: ${e.message}</td></tr>`; return; }
+  const rows = [['Board', t.kind === 'mib' ? 'MIB' : `PACE RACER ${j.axis_name || ''} (axis ${j.axis ?? '?'})`], ['Version', j.version], ['Built', j.built], ['Slot', j.partition || '–'],
+    ['State', j.pending_verify ? '<span class="ax-status warning">Pending verify</span>' : '<span class="ax-status good">Confirmed</span>'],
+    ['Reset reason', j.reset_reason || '–'], ['Up', j.uptime_s !== undefined ? `${j.uptime_s} s` : '–']];
+  if (j.motor) rows.push(['Motor profile', j.motor]);
+  if (j.mac) rows.push(['MAC', j.mac]);
+  $('fwInfo').innerHTML = rows.map(([k, v]) => `<tr><td class="ax-label">${k}</td><td class="ax-n">${v ?? '–'}</td></tr>`).join('');
+}
+async function loadBuilds() {
+  try { const r = await fetch(bridgeBase() + 'builds', { cache: 'no-store' }); if (r.ok) fw.builds = await r.json(); } catch (_) {}
+  renderBuildList();
+}
+async function findRacers() {
+  axBusy($('fwFind'), true, 'Asking');
+  try {
+    const r = await fetch(bridgeBase() + 'discover', { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const boards = await r.json();
+    for (const b of boards) fw.racers.set(b.ip, b);
+    renderTargets(); sys(`PACE RACERs answering: ${boards.length ? boards.map(b => `${b.axis_name || '?'} ${b.ip} ${b.version || ''}`).join(', ') : 'none'}`);
+    toast(boards.length ? `Found ${boards.length} PACE RACER${boards.length > 1 ? 's' : ''}` : 'No PACE RACER answered', boards.length ? 'ok' : '');
+  } catch (e) { toast('Find RACERs needs eth_bridge.py: ' + e.message, 'err'); }
+  finally { axBusy($('fwFind'), false); }
+}
+$('fwFind').onclick = findRacers;
+$('fwAddRacer').onclick = () => { const a = $('fwRacerIp').value.trim(); if (!a) return; fw.racers.set(a, fw.racers.get(a) || {}); renderTargets(); $('fwTarget').value = 'racer:' + a; $('fwTarget').onchange(); };
+$('fwTarget').onchange = () => { fw.picked = null; $('fwFile').value = ''; renderBuildList(); renderFwInfo(); };
+$('fwRead').onclick = renderFwInfo;
 $('fwFile').onchange = () => { fw.picked = $('fwFile').files[0] || null; fwRefresh(); };
 $('fwBuild').onchange = () => { fw.picked = null; $('fwFile').value = ''; fwRefresh(); };
 $('tab-firmware').addEventListener('dragover', e => e.preventDefault());
 $('tab-firmware').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) { fw.picked = f; fwRefresh(); } });
 $('fwAbort').onclick = () => { fw.abort = true; };
 const u32le = n => { const p = new Uint8Array(4); new DataView(p.buffer).setUint32(0, n >>> 0, true); return p; };
-// After a reboot, reach the same MIB again. Web Serial: the port outlives the reboot and the
+// After the MIB reboots, reach it again. Web Serial: the port outlives the reboot and the
 // link renegotiates its rate by itself, so just wait for answers. Otherwise the link dropped
 // (TCP closed, USB re-enumerated): open a new one of the same kind.
 async function reconnectAfterReboot(old, timeoutMs = 90000) {
@@ -653,57 +693,91 @@ async function reconnectLoop(old, timeoutMs) {
   }
   return false;
 }
+// A RACER after its reboot: open a fresh link until it answers.
+async function racerAfterReboot(addr, timeoutMs = 90000) {
+  const deadline = Date.now() + timeoutMs; await sleep(3000);
+  while (Date.now() < deadline) { try { return await racerLink(addr); } catch (e) { await sleep(2000); } }
+  return null;
+}
+// BEGIN, DATA..., FINISH on `l` (a MibLink or a FrameLink).
+async function otaWrite(l, img, say, bar) {
+  say('BEGIN: the board erases its update slot');
+  await l.ota(OTA.BEGIN, u32le(img.length), 60000);
+  for (let sent = 0; sent < img.length;) {
+    if (fw.abort) throw Object.assign(new Error('aborted'), { userAbort: true });
+    const part = img.subarray(sent, Math.min(sent + SF_MAX_PAYLOAD, img.length));
+    await l.ota(OTA.DATA, part, 5000); sent += part.length;
+    bar.firstElementChild.style.width = (100 * sent / img.length).toFixed(1) + '%';
+    say(`${(sent / 1024).toFixed(0)} / ${(img.length / 1024).toFixed(0)} KiB`);
+  }
+  say('FINISH: the board verifies the image');
+  await l.ota(OTA.FINISH, null, 60000);
+}
 $('fwFlash').onclick = async () => {
-  const src = fwSource(); if (!src || !link) return fwRefresh();
-  if (!confirm(`Flash ${src.name} to the MIB? It disables drive, disarms every motor and reboots.`)) return;
+  const t = fwTarget(), src = fwSource(); if (!src || (t.kind === 'mib' && !link)) return fwRefresh();
+  if (t.kind === 'racer' && status && status.state === 'DRIVE_ENABLED') { toast('Disable drive on the MIB before flashing a wheel', 'err'); return; }
+  if (!confirm(`Flash ${src.name} to the ${t.label}? It stops its motor${t.kind === 'mib' ? 's (drive disabled, every motor disarmed)' : ''} and reboots.`)) return;
   fw.busy = true; fw.abort = false; axBusy($('fwFlash'), true, 'Flashing'); $('fwAbort').disabled = false;
   const bar = $('fwBar'); bar.className = 'bar'; bar.firstElementChild.style.width = '0';
-  const say = (t, cls = 'warning') => { $('fwStatus').className = 'ax-status ' + cls; $('fwStatus').textContent = t; };
-  const t0 = performance.now();
+  const say = (s, cls = 'warning') => { $('fwStatus').className = 'ax-status ' + cls; $('fwStatus').textContent = s; };
+  const t0 = performance.now(); let l = null;
   try {
     say('Reading ' + src.name);
     const img = await src.read();
-    if (img[0] !== 0xE9) throw new Error('not an ESP app image (first byte is not 0xE9): pick build/rammp_mib.bin');
-    const project = fwCstr(img, 80, 112), version = fwCstr(img, 48, 80);
-    if (project !== 'rammp_mib' && !confirm(`This image is "${project || 'unknown'}", not rammp_mib (a PACE RACER image?). Flash it to the MIB anyway?`)) throw Object.assign(new Error('not a MIB image'), { userAbort: true });
-    sys(`flashing ${src.name}: ${project} ${version}, ${(img.length / 1024).toFixed(0)} KiB`);
-    say('BEGIN: the MIB erases the update slot');
-    await link.ota(OTA.BEGIN, u32le(img.length), 60000);
-    const chunk = SF_MAX_PAYLOAD;
-    for (let sent = 0; sent < img.length;) {
-      if (fw.abort) throw Object.assign(new Error('aborted'), { userAbort: true });
-      const part = img.subarray(sent, Math.min(sent + chunk, img.length));
-      await link.ota(OTA.DATA, part, 5000); sent += part.length;
-      bar.firstElementChild.style.width = (100 * sent / img.length).toFixed(1) + '%';
-      say(`${(sent / 1024).toFixed(0)} / ${(img.length / 1024).toFixed(0)} KiB`);
+    if (img[0] !== 0xE9) throw new Error('not an ESP app image (first byte is not 0xE9)');
+    const project = fwCstr(img, 80, 112), version = fwCstr(img, 48, 80), want = FW_PROJECT[t.kind];
+    if (project !== want && !confirm(`This image is "${project || 'unknown'}", not ${want}: the wrong firmware for the ${t.label}. Flash it anyway?`)) throw Object.assign(new Error('wrong image'), { userAbort: true });
+    sys(`flashing ${t.label}: ${project} ${version}, ${(img.length / 1024).toFixed(0)} KiB`);
+    let back;
+    if (t.kind === 'mib') {
+      const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true;
+      await otaWrite(link, img, say, bar);
+      fw.busy = false; say('Written; the MIB is rebooting');
+      back = (await reconnectAfterReboot(oldT)) ? link : null;
+    } else {
+      say(`Connecting to ${t.label}`); l = await racerLink(t.addr);
+      await otaWrite(l, img, say, bar);
+      await l.close(); l = null; say(`Written; the ${t.label} is rebooting`);
+      back = l = await racerAfterReboot(t.addr);
     }
-    const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true;
-    say('FINISH: the MIB verifies the image');
-    await link.ota(OTA.FINISH, null, 60000);
     bar.className = 'bar done'; const dt = (performance.now() - t0) / 1000;
-    say(`Written in ${dt.toFixed(1)} s (${(img.length / 1024 / dt).toFixed(0)} KiB/s); the MIB is rebooting`);
-    sys(`OTA written in ${dt.toFixed(1)} s; waiting for the MIB`);
-    fw.busy = false;
-    if (await reconnectAfterReboot(oldT)) {
-      const st = await link.otaStatus();
-      if (st.pending) { await link.ota(OTA.MARK_VALID); say(`Running ${st.version}, marked valid`, 'good'); toast(`MIB updated to ${st.version}`, 'ok'); }
-      else say(`Running ${st.version}${st.version === version ? '' : ` (not ${version}: it rolled back?)`}`, st.version === version ? 'good' : 'critical');
-      renderFwInfo();
-    } else say('The MIB did not come back. A power cycle boots the previous image; the USB-C console shows why.', 'critical');
+    if (back) {
+      const st = await back.otaStatus();
+      if (t.kind === 'racer' && fw.racers.has(t.addr)) { fw.racers.get(t.addr).version = st.version; renderTargets(); }
+      if (st.pending) { await back.ota(OTA.MARK_VALID); say(`${t.label} runs ${st.version}, marked valid (${dt.toFixed(0)} s)`, 'good'); toast(`${t.label} updated to ${st.version}`, 'ok'); }
+      else say(`${t.label} runs ${st.version}${st.version === version ? '' : ` (not ${version}: it rolled back?)`}`, st.version === version ? 'good' : 'critical');
+    } else say(`The ${t.label} did not come back. A power cycle boots its previous image.`, 'critical');
   } catch (e) {
     bar.className = 'bar failed'; say(e.userAbort ? 'Aborted' : 'Failed: ' + e.message, 'critical');
-    sys('OTA ' + (e.userAbort ? 'aborted' : 'failed: ' + e.message));
-    fw.rebooting = false;
-    if (link) { try { await link.ota(OTA.ABORT); } catch (_) {} }
-  } finally { fw.busy = false; axBusy($('fwFlash'), false); $('fwAbort').disabled = true; const s = $('fwStatus').textContent, c = $('fwStatus').className; fwRefresh(); $('fwStatus').textContent = s; $('fwStatus').className = c; }
+    sys(`OTA ${t.label} ` + (e.userAbort ? 'aborted' : 'failed: ' + e.message)); fw.rebooting = false;
+    const a = t.kind === 'mib' ? link : l; if (a) { try { await a.ota(OTA.ABORT); } catch (_) {} }
+  } finally {
+    if (l) await l.close();
+    fw.busy = false; axBusy($('fwFlash'), false); $('fwAbort').disabled = true;
+    const s = $('fwStatus').textContent, c = $('fwStatus').className; fwRefresh(); $('fwStatus').textContent = s; $('fwStatus').className = c;
+    renderFwInfo();
+  }
 };
-$('fwValid').onclick = async () => { try { await link.ota(OTA.MARK_VALID); toast('Running image marked valid', 'ok'); renderFwInfo(); } catch (e) { toast('Mark valid: ' + e.message, 'err'); } };
+// Mark valid / roll back on the target.
+async function fwOnTarget(fn) {
+  const t = fwTarget();
+  if (t.kind === 'mib') return fn(link, t);
+  const l = await racerLink(t.addr); try { return await fn(l, t); } finally { await l.close(); }
+}
+$('fwValid').onclick = async () => { try { await fwOnTarget(l => l.ota(OTA.MARK_VALID)); toast('Running image marked valid', 'ok'); renderFwInfo(); } catch (e) { toast('Mark valid: ' + e.message, 'err'); } };
 $('fwRollback').onclick = async () => {
-  if (!confirm('Roll the MIB back to its previous image and reboot?')) return;
-  const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true;
-  try { await link.ota(OTA.MARK_INVALID); sys('rolling back; the MIB is rebooting'); if (await reconnectAfterReboot(oldT)) renderFwInfo(); } catch (e) { toast('Roll back: ' + e.message, 'err'); }
+  const t = fwTarget();
+  if (!confirm(`Roll the ${t.label} back to its previous image and reboot?`)) return;
+  try {
+    if (t.kind === 'mib') { const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true; await link.ota(OTA.MARK_INVALID); sys('rolling back; the MIB is rebooting'); await reconnectAfterReboot(oldT); }
+    else { await fwOnTarget(l => l.ota(OTA.MARK_INVALID)); sys(`rolling back; the ${t.label} is rebooting`); const l = await racerAfterReboot(t.addr); if (l) await l.close(); }
+    renderFwInfo();
+  } catch (e) { toast('Roll back: ' + e.message, 'err'); }
 };
-loadBuilds();
+// Served by the bridge: list its builds now. Elsewhere (GitHub Pages) ask the bridge only
+// when the Firmware tab opens, so the page does not reach for localhost on every visit.
+if (bridgeServed()) loadBuilds();
+else document.querySelector('[data-tab=firmware]').addEventListener('click', () => { if (!fw.builds.length) loadBuilds(); });
 
 setConnected(false);
 chartLoop();

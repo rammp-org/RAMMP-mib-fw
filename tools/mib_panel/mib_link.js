@@ -387,3 +387,24 @@ class MibLink {
   seat(axis, target) { return this.mib(MIBP.SEAT, cat(u8(axis), f32s(target))); }
   estop(engage) { return this.mib(MIBP.ESTOP, u8(engage ? 1 : 2)); }
 }
+
+// ---------------------------------------------------------------- FrameLink
+// A bare service-stream link for one-off jobs on another board (a PACE RACER's tcp :5555):
+// request/reply and OTA, no telemetry. The PACE RACER serves the same OTA (0) and system
+// (0x20) modules as the MIB.
+class FrameLink {
+  constructor(transport) { this.t = transport; this.parser = new SfParser(false); this.waiters = []; this.dec = new TextDecoder(); this.open = false; }
+  async connect() {
+    await this.t.open(); this.open = true;
+    this.t.readLoop(d => { for (const f of this.parser.feed(d).frames) this.onFrame(f); })
+      .catch(() => {}).finally(() => { this.open = false; for (const w of this.waiters) { clearTimeout(w.timer); w.reject(new Error('link closed')); } this.waiters = []; });
+  }
+  onFrame(f) {
+    for (const w of [...this.waiters]) if (w.module === f.module && w.types.includes(f.type)) {
+      this.waiters.splice(this.waiters.indexOf(w), 1); clearTimeout(w.timer); return w.resolve(f);
+    }
+  }
+  async send(module, type, payload) { if (!this.open) throw new Error('not connected'); await this.t.send(sfBuild(module, type, payload)); }
+  async close() { this.open = false; try { await this.t.close(); } catch (e) {} }
+}
+for (const m of ['request', 'ota', 'otaStatus', 'info', 'reset']) FrameLink.prototype[m] = MibLink.prototype[m];

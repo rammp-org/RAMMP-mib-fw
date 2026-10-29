@@ -56,7 +56,7 @@ class SimMib {
     }
     if (f.module === M_OTA) return this.handleOta(f, p, dv);
     if (f.module === M_SYS) {
-      if (f.type === SYS.INFO) this.send(M_SYS, SYS.INFO_REPLY, new TextEncoder().encode(JSON.stringify({ product: 'RAMMP MIB (simulated)', project: 'rammp_mib', version: SIM_FLASH.version, partition: SIM_FLASH.partition, pending_verify: SIM_FLASH.pending, built: new Date().toISOString().slice(0, 16), idf: 'v6.0.1', reset_reason: 'power-on', uptime_s: Math.round(this.now()), usb: true, uart: true, ip: '192.168.4.1' })));
+      if (f.type === SYS.INFO) this.send(M_SYS, SYS.INFO_REPLY, new TextEncoder().encode(JSON.stringify({ product: 'RAMMP MIB (simulated)', project: 'rammp_mib', ...(this.identity || {}), version: SIM_FLASH.version, partition: SIM_FLASH.partition, pending_verify: SIM_FLASH.pending, built: new Date().toISOString().slice(0, 16), idf: 'v6.0.1', reset_reason: 'power-on', uptime_s: Math.round(this.now()), usb: true, uart: true, ip: '192.168.4.1' })));
       // The UART's rate, for a test harness that models the serial link (SimTransport ignores it).
       if (f.type === SYS.SET_BAUD) { this.send(M_SYS, SYS.OK, u8(SYS.SET_BAUD)); this.baud = dv.getUint32(0, true); this.lastRx = this.now(); return; }
       if (f.type === SYS.RESET) { this.send(M_SYS, SYS.OK, u8(SYS.RESET)); this.state = 0; this.estop.latched = true; this.estop.cause = 'boot'; setTimeout(() => { this.state = 1; }, 1200); }

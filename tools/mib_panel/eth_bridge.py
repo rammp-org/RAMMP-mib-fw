@@ -7,8 +7,9 @@ service stream (tcp :5555). A browser cannot open a TCP socket; this relays one.
 
 Endpoints:
     GET  /, /<file>            the panel, from this directory
-    GET  /builds               JSON list of MIB app images in the repo's build*/ dirs
-    GET  /builds/<dir>         that build's rammp_mib.bin, so the page flashes it without a file dialog
+    GET  /builds               JSON list of firmware builds: this repo's build*/, and --racer's
+    GET  /builds/<source>/<dir>/<file>   a file that build's flasher_args.json names
+    GET  /discover             PACE RACER boards answering "PACE?" on udp :5556
     GET  /bridge.json          {"bridge": true, "default_target": "192.168.4.1"}: tells
                                the page it can use this origin's /ws
     WS   /ws?target=<ip>[:port]   raw bytes <-> tcp <ip>:<port, 5555>, one socket per page
@@ -29,14 +30,15 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))  # tools/mib_panel -> the firmware repo, where idf.py puts build*/
-APP_BIN = "rammp_mib.bin"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SERVICE_PORT = 5555
+PAGES_ORIGIN = "https://rammp-org.github.io"
 DEFAULT_TARGET = "192.168.4.1"  # the MIB is the chair network's DHCP server (MIBconfig.hpp)
 IP_BOUND_IF = 25  # macOS setsockopt(IPPROTO_IP, ...) to pin a socket to one interface
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -102,27 +104,103 @@ def _bind_for(sock, target_ip):
     return None
 
 
-# ---------------------------------------------------------------- builds (from the RACER bridge)
+# ---------------------------------------------------------------- builds
+# Firmware builds the page can flash: every build*/ dir with a flasher_args.json under each
+# source (an ESP-IDF project dir). The MIB repo is always a source; --racer adds the PACE
+# RACER's atos-drive app. flasher_args.json names the app image the page sends over the air.
+SOURCES = {"mib": REPO}
+
+
 def _cstr(b):
     return b.split(b"\0", 1)[0].decode("ascii", "replace")
 
 
 def builds():
-    """MIB app images under the repo's build*/ dirs, newest first. Version and build time come
-    from the image's esp_app_desc (after the 24-byte image header and an 8-byte segment header)."""
+    """[{id, source, dir, project, version, built, chip, app, files}], newest first."""
     out = []
-    for d in sorted(os.listdir(REPO)):
-        path = os.path.join(REPO, d, APP_BIN)
-        if not (d.startswith("build") and os.path.isfile(path)):
+    for source, root in SOURCES.items():
+        try:
+            dirs = sorted(os.listdir(root))
+        except OSError:
             continue
-        with open(path, "rb") as fh:
-            head = fh.read(256)
-        if len(head) < 144 or head[0] != 0xE9 or struct.unpack_from("<I", head, 32)[0] != 0xABCD5432:
-            continue
-        out.append({"dir": d, "version": _cstr(head[48:80]), "project": _cstr(head[80:112]),
-                    "built": f"{_cstr(head[128:144])} {_cstr(head[112:128])}",
-                    "mtime": os.path.getmtime(path), "size": os.path.getsize(path)})
+        for d in dirs:
+            bdir = os.path.join(root, d)
+            try:
+                with open(os.path.join(bdir, "flasher_args.json")) as fh:
+                    fa = json.load(fh)
+                app = os.path.join(bdir, fa["app"]["file"])
+                with open(app, "rb") as fh:
+                    head = fh.read(256)
+            except (OSError, ValueError, KeyError):
+                continue
+            # esp_app_desc follows the 24-byte image header and an 8-byte segment header.
+            if not d.startswith("build") or len(head) < 144 or head[0] != 0xE9 or \
+                    struct.unpack_from("<I", head, 32)[0] != 0xABCD5432:
+                continue
+            files = sorted(({"offset": int(o, 16), "file": f} for o, f in fa.get("flash_files", {}).items()),
+                           key=lambda x: x["offset"])
+            out.append({"id": f"{source}/{d}", "source": source, "dir": d,
+                        "project": _cstr(head[80:112]), "version": _cstr(head[48:80]),
+                        "built": f"{_cstr(head[128:144])} {_cstr(head[112:128])}",
+                        "chip": fa.get("extra_esptool_args", {}).get("chip", ""),
+                        "app": {"offset": int(fa["app"]["offset"], 16), "file": fa["app"]["file"],
+                                "size": os.path.getsize(app)},
+                        "files": files, "mtime": os.path.getmtime(app)})
     return sorted(out, key=lambda b: -b["mtime"])
+
+
+def build_file(path):
+    """/builds/<source>/<dir>/<file in flasher_args> -> bytes, or None. Only listed files."""
+    for b in builds():
+        if path.startswith(b["id"] + "/"):
+            rel = path[len(b["id"]) + 1:]
+            if rel in {f["file"] for f in b["files"]} | {b["app"]["file"]}:
+                with open(os.path.join(SOURCES[b["source"]], b["dir"], rel), "rb") as fh:
+                    return fh.read()
+    return None
+
+
+# ---------------------------------------------------------------- PACE RACER discovery
+DISCOVERY_PORT = 5556
+
+
+def discover(timeout=1.5):
+    """Broadcast "PACE?" from every interface (eth_link.discover); [board info dict + 'ip']."""
+    socks = []
+    for name, ip, mask in (_ifaces() or [(None, "0.0.0.0", "0.0.0.0")]):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            s.bind((ip, 0))
+        except OSError:
+            s.close()
+            continue
+        s.setblocking(False)
+        socks.append(s)
+        dsts = {"255.255.255.255"}
+        if name:
+            ipn = int.from_bytes(socket.inet_aton(ip), "big")
+            mn = int.from_bytes(socket.inet_aton(mask), "big")
+            dsts.add(socket.inet_ntoa(((ipn & mn) | (~mn & 0xFFFFFFFF)).to_bytes(4, "big")))
+        for dst in dsts:
+            try:
+                s.sendto(b"PACE?", (dst, DISCOVERY_PORT))
+            except OSError:
+                pass
+    boards, t0 = {}, time.time()
+    while time.time() - t0 < timeout:
+        for s in socks:
+            try:
+                data, (ip, _) = s.recvfrom(2048)
+                info = json.loads(data.decode())
+            except (OSError, ValueError):
+                continue
+            info["ip"] = ip
+            boards[ip] = info
+        time.sleep(0.05)
+    for s in socks:
+        s.close()
+    return sorted(boards.values(), key=lambda b: b.get("axis", 99))
 
 
 # ---------------------------------------------------------------- websocket
@@ -161,6 +239,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def reply(self, code, ctype, body):
         self.send_response(code)
+        # The hosted copy of the panel may read the build list and discovery; no other site.
+        if self.headers.get("Origin") == PAGES_ORIGIN:
+            self.send_header("Access-Control-Allow-Origin", PAGES_ORIGIN)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -174,11 +255,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/builds":
             return self.reply(200, "application/json", json.dumps(builds()).encode())
         if u.path.startswith("/builds/"):
-            d = u.path[len("/builds/"):]
-            if d not in {b["dir"] for b in builds()}:  # only listed dirs: no path tricks
-                return self.send_error(404, "no such build")
-            with open(os.path.join(REPO, d, APP_BIN), "rb") as fh:
-                return self.reply(200, "application/octet-stream", fh.read())
+            body = build_file(u.path[len("/builds/"):])  # only files a listed build names
+            return self.reply(200, "application/octet-stream", body) if body is not None else self.send_error(404, "no such build file")
+        if u.path == "/discover":
+            return self.reply(200, "application/json", json.dumps(discover()).encode())
         if u.path == "/bridge.json":
             return self.reply(200, "application/json", json.dumps({"bridge": True, "default_target": DEFAULT_TARGET}).encode())
         name = "index.html" if u.path == "/" else u.path.lstrip("/")
@@ -264,8 +344,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765, help="local HTTP / WebSocket port (default 8765)")
     ap.add_argument("--target", default=DEFAULT_TARGET, help=f"the MIB's address (default {DEFAULT_TARGET})")
+    ap.add_argument("--racer", metavar="DIR", help="pace-racer-fw's atos-drive app dir, to flash its build*/ to the RACERs")
     a = ap.parse_args()
     DEFAULT_TARGET = a.target
+    if a.racer:
+        SOURCES["racer"] = os.path.abspath(os.path.expanduser(a.racer))
+    for b in builds():
+        print(f"  build {b['id']}: {b['project']} {b['version']} ({b['chip']}, {b['built']})", flush=True)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     with socket.socket() as probe:
         via = _bind_for(probe, DEFAULT_TARGET.partition(":")[0])
