@@ -23,7 +23,6 @@ This file is part of embeddedRTPS.
 Author: i11 - Embedded Software, RWTH Aachen University
 */
 
-#include "rtps/discovery/ParticipantProxyData.hpp"
 #include "rtps/discovery/SEDPAgent.hpp"
 #include "rtps/discovery/TopicData.hpp"
 #include "rtps/entities/Participant.hpp"
@@ -98,6 +97,29 @@ void SEDPAgent::handlePublisherReaderMessage(const ReaderCacheChange &change) {
   }
 }
 
+namespace {
+// The unicast locator a remote endpoint's traffic goes to. FastDDS puts
+// PID_UNICAST_LOCATOR in every SEDP sample; CycloneDDS omits it and relies on
+// the participant's default unicast locator from SPDP (RTPS 2.5 8.5.3.2 allows
+// both). Without this fallback a CycloneDDS endpoint gets an invalid locator
+// and nothing is ever sent to it.
+rtps::LocatorIPv4 endpointUnicastLocator(rtps::Participant *part, const rtps::TopicData &data) {
+  rtps::LocatorIPv4 loc(data.unicastLocator);
+  if (loc.isValid()) {
+    return loc;
+  }
+  const rtps::ParticipantProxyData *remote = part->findRemoteParticipant(data.endpointGuid.prefix);
+  if (remote != nullptr) {
+    for (const auto &candidate : remote->m_defaultUnicastLocatorList) {
+      if (candidate.isValid()) {
+        return candidate;
+      }
+    }
+  }
+  return loc;
+}
+} // namespace
+
 void SEDPAgent::addUnmatchedRemoteWriter(const TopicData &writerData) {
   addUnmatchedRemoteWriter(TopicDataCompressed(writerData));
 }
@@ -163,57 +185,13 @@ uint32_t SEDPAgent::getNumRemoteUnmatchedWriters() {
   return m_unmatchedRemoteWriters.getNumElements();
 }
 
-namespace {
-// RTPS 2.2 8.5.3.3 / 9.6.2.2: an endpoint announced without unicast locators of
-// its own is reachable at its participant's default unicast locators (from
-// SPDP). Fast DDS always includes a per-endpoint PID_UNICAST_LOCATOR, but
-// Cyclone DDS omits it unless network partitions are configured, so without
-// this fallback a Cyclone (ROS 2 rmw_cyclonedds) reader is matched but every
-// sample is sent to an invalid locator.
-//
-// A participant on several interfaces (Cyclone with more than one
-// <NetworkInterface>) announces one default locator per interface; prefer the
-// one on our own subnet, since the others are not reachable from this link.
-rtps::TopicData withDefaultUnicastLocator(const rtps::TopicData &announced,
-                                          const rtps::ParticipantProxyData &participant,
-                                          const rtps::Ip4AddressBytes &localIp) {
-  if (announced.unicastLocator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
-    return announced;
-  }
-  const rtps::LocatorIPv4 *chosen = nullptr;
-  for (const auto &locator : participant.m_defaultUnicastLocatorList) {
-    if (locator.kind != rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
-      continue;
-    }
-    if (locator.isSameSubnet(localIp)) {
-      chosen = &locator;
-      break;
-    }
-    if (chosen == nullptr) {
-      chosen = &locator;
-    }
-  }
-  if (chosen == nullptr) {
-    return announced;
-  }
-  rtps::TopicData resolved = announced;
-  const auto &ip = chosen->address;
-  resolved.unicastLocator =
-      rtps::FullLengthLocator::createUDPv4Locator(ip[0], ip[1], ip[2], ip[3], chosen->port);
-  return resolved;
-}
-} // namespace
-
-void SEDPAgent::handlePublisherReaderMessage(const TopicData &announcedWriterData,
+void SEDPAgent::handlePublisherReaderMessage(const TopicData &writerData,
                                              const ReaderCacheChange &change) {
   // TODO Is it okay to add Endpoint if the respective participant is unknown
   // participant?
-  const ParticipantProxyData *remoteParticipant =
-      m_part->findRemoteParticipant(announcedWriterData.endpointGuid.prefix);
-  if (remoteParticipant == nullptr) {
+  if (!m_part->findRemoteParticipant(writerData.endpointGuid.prefix)) {
     return;
   }
-  const TopicData writerData = withDefaultUnicastLocator(announcedWriterData, *remoteParticipant, m_part->m_localIpAddress);
 
   if (writerData.isDisposedFlagSet() || writerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(writerData, change);
@@ -241,7 +219,7 @@ void SEDPAgent::handlePublisherReaderMessage(const TopicData &announcedWriterDat
   }
 #endif
   reader->addNewMatchedWriter(
-      WriterProxy{writerData.endpointGuid, LocatorIPv4(writerData.unicastLocator),
+      WriterProxy{writerData.endpointGuid, endpointUnicastLocator(m_part, writerData),
                   (writerData.reliabilityKind == ReliabilityKind_t::RELIABLE)});
   if (mfp_onNewPublisherCallback != nullptr) {
     mfp_onNewPublisherCallback(m_onNewPublisherArgs);
@@ -287,14 +265,11 @@ void SEDPAgent::handleRemoteEndpointDeletion(const TopicData &topic,
   removeUnmatchedEntity(guid);
 }
 
-void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &announcedReaderData,
+void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &readerData,
                                                 const ReaderCacheChange &change) {
-  const ParticipantProxyData *remoteParticipant =
-      m_part->findRemoteParticipant(announcedReaderData.endpointGuid.prefix);
-  if (remoteParticipant == nullptr) {
+  if (!m_part->findRemoteParticipant(readerData.endpointGuid.prefix)) {
     return;
   }
-  const TopicData readerData = withDefaultUnicastLocator(announcedReaderData, *remoteParticipant, m_part->m_localIpAddress);
 
   if (readerData.isDisposedFlagSet() || readerData.isUnregisteredFlagSet()) {
     handleRemoteEndpointDeletion(readerData, change);
@@ -324,12 +299,12 @@ void SEDPAgent::handleSubscriptionReaderMessage(const TopicData &announcedReader
 #endif
   if (readerData.multicastLocator.kind == rtps::LocatorKind_t::LOCATOR_KIND_UDPv4) {
     writer->addNewMatchedReader(
-        ReaderProxy{readerData.endpointGuid, LocatorIPv4(readerData.unicastLocator),
+        ReaderProxy{readerData.endpointGuid, endpointUnicastLocator(m_part, readerData),
                     LocatorIPv4(readerData.multicastLocator),
                     (readerData.reliabilityKind == ReliabilityKind_t::RELIABLE)});
   } else {
     writer->addNewMatchedReader(
-        ReaderProxy{readerData.endpointGuid, LocatorIPv4(readerData.unicastLocator),
+        ReaderProxy{readerData.endpointGuid, endpointUnicastLocator(m_part, readerData),
                     (readerData.reliabilityKind == ReliabilityKind_t::RELIABLE)});
   }
 
