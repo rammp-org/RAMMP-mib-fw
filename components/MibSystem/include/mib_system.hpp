@@ -149,7 +149,7 @@ private:
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::array<AxisLink, rammp::kAxisCount> axes_{}; ///< Every PACE RACER axis, in table order.
   mutable std::mutex axes_mutex_;                  ///< Protects axes_ state and overrides.
-  std::atomic<bool> ota_active_{false};             ///< A firmware update is being written.
+  std::atomic<bool> ota_active_{false};            ///< A firmware update is being written.
   std::atomic<bool> endpoints_ready_{false};       ///< initialize_pubsub() succeeded.
   uint8_t tuning_req_{0};                          ///< Last MotorTuning::tuning_req_id.
   float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.
