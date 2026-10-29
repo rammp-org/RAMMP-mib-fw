@@ -104,6 +104,7 @@ function setConnected(on, label) {
   $('mLink').textContent = label || (on ? 'Live' : 'Disconnected');
   $('connectBtn').textContent = on ? 'Disconnect' : 'Connect';
   for (const id of ['resetBtn', 'estopBtn', 'clearBtn', 'tuApply', 'tuLoad', 'tdHold', 'tdRev', 'stRun', 'atStart', 'drEnable', 'drDisable', 'csvBtn']) $(id).disabled = !on;
+  if (typeof fwRefresh === 'function') fwRefresh();
   $('transport').disabled = on; $('ethTarget').disabled = on; $('ethBridge').disabled = on;
   document.querySelectorAll('#seatGrid button').forEach(b => { b.disabled = !on; });
 }
@@ -111,25 +112,36 @@ $('connectBtn').onclick = async () => {
   if (link) return disconnect();
   const kind = $('transport').value;
   localStorage.setItem('mib.transport', kind); localStorage.setItem('mib.ethTarget', $('ethTarget').value.trim()); localStorage.setItem('mib.ethBridge', $('ethBridge').value.trim());
-  const t = kind === 'eth' ? new WsTransport($('ethBridge').value.trim(), $('ethTarget').value.trim())
-    : kind === 'usb' ? new UsbTransport() : kind === 'serial' ? new SerialTransport() : new SimTransport();
   axBusy($('connectBtn'), true, 'Connecting');
+  try { await openLink(makeTransport(kind)); }
+  catch (e) { if (e.name !== 'NotFoundError') toast('Connect failed: ' + e.message, 'err'); sys('connect failed: ' + e.message); }
+  finally { axBusy($('connectBtn'), false); $('connectBtn').textContent = link ? 'Disconnect' : 'Connect'; }
+};
+// `previous`: the transport of a link that just dropped (a reboot), to reach the same MIB again.
+function makeTransport(kind, previous) {
+  if (kind === 'eth') return new WsTransport($('ethBridge').value.trim(), $('ethTarget').value.trim());
+  if (kind === 'serial') return new SerialTransport(previous ? previous.lastPort : undefined);
+  if (kind === 'usb') return new UsbTransport(previous ? previous.lastDevice : undefined);
+  return new SimTransport();
+}
+async function openLink(t) {
   try {
     const l = new MibLink(t, {
       onLog: (text, cls) => logText(text, cls),
       onSchema: names => { sys(`telemetry: ${names.length} channels`); buildChannelList(names); },
       onError: (type, why) => onMibError(type, why),
-      onClose: lost => { if (link === l) { link = null; stopAllOverrides(false); clearInterval(pollTimer); setConnected(false, lost ? 'Link lost' : 'Disconnected'); if (lost) toast('Link to the MIB lost', 'err'); } },
+      onClose: lost => { if (link === l) { link = null; stopAllOverrides(false); clearInterval(pollTimer); setConnected(false, lost ? 'Link lost' : 'Disconnected'); if (lost && !fw.rebooting) toast('Link to the MIB lost', 'err'); } },
     });
     await l.connect(); link = l;
     setConnected(true); sys(`connected: ${t.name()}`); toast('Connected: ' + t.name(), 'ok');
     try { info = await l.info(); $('mFw').textContent = `fw ${info.version} (${info.built})`; sys(`MIB ${info.project} ${info.version}, reset reason ${info.reset_reason}, up ${info.uptime_s} s`); } catch (e) { sys('no info reply: ' + e.message); }
-    startPolling(kind === 'serial' && !l.fast ? 500 : 250);
+    startPolling(t.kind === 'serial' && !l.fast ? 500 : 250);
+    renderFwInfo();
   } catch (e) {
     try { await t.close(); } catch (_) {}
-    link = null; setConnected(false); if (e.name !== 'NotFoundError') toast('Connect failed: ' + e.message, 'err'); sys('connect failed: ' + e.message);
-  } finally { axBusy($('connectBtn'), false); $('connectBtn').textContent = link ? 'Disconnect' : 'Connect'; }
-};
+    link = null; setConnected(false); throw e;
+  }
+}
 async function disconnect() { stopAllOverrides(true); await sleep(60); clearInterval(pollTimer); const l = link; link = null; if (l) await l.close(); setConnected(false); }
 $('resetBtn').onclick = async () => {
   if (!link || !confirm('Reboot the MIB? Every motor disarms while it restarts.')) return;
@@ -143,7 +155,7 @@ function startPolling(ms) {
   clearInterval(pollTimer);
   let inflight = false;
   pollTimer = setInterval(async () => {
-    if (!link || inflight) return; inflight = true;
+    if (!link || inflight || fw.busy) return; inflight = true;
     try { status = await link.status(); renderStatus(); } catch (e) { /* a missed poll is shown by the age of the data */ }
     inflight = false;
   }, ms);
@@ -569,6 +581,129 @@ if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) fetch('bridge.json').t
   if (!localStorage.getItem('mib.ethTarget')) $('ethTarget').value = j.default_target;
   sys(`served by eth_bridge.py: Ethernet goes through ${location.host}`);
 }).catch(() => {});
+
+// ---------------------------------------------------------------- firmware (OTA)
+// The PACE RACER dashboard's flow (atos-drive/tools/dashboard.html): BEGIN with the size,
+// 4 KiB DATA chunks each acknowledged, FINISH, then the MIB reboots into the new slot; the
+// panel reconnects and marks the new image valid.
+const fw = { picked: null, busy: false, abort: false, rebooting: false };
+const fwCstr = (img, a, b) => new TextDecoder().decode(img.subarray(a, b)).split('\0')[0];
+function fwSource() {
+  if (fw.picked) return { name: fw.picked.name, read: async () => new Uint8Array(await fw.picked.arrayBuffer()) };
+  const d = $('fwBuild').value; if (!d) return null;
+  return { name: $('fwBuild').selectedOptions[0].textContent, read: async () => {
+    const r = await fetch('builds/' + encodeURIComponent(d), { cache: 'no-store' });
+    if (!r.ok) throw new Error(`the bridge could not read ${d}: HTTP ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  } };
+}
+function fwRefresh() {
+  const src = fwSource();
+  $('fwFlash').disabled = fw.busy || !link || !src; $('fwValid').disabled = fw.busy || !link; $('fwRollback').disabled = fw.busy || !link;
+  if (!fw.busy) { $('fwStatus').className = 'ax-status'; $('fwStatus').textContent = !src ? 'No image chosen' : link ? src.name : src.name + ' · connect to flash'; }
+}
+async function renderFwInfo() {
+  if (!link) { $('fwInfo').innerHTML = '<tr><td class="empty">Not connected.</td></tr>'; return; }
+  try {
+    info = await link.info();
+    $('mFw').textContent = `fw ${info.version} (${info.built})`;
+    const rows = [['Version', info.version], ['Built', info.built], ['Slot', info.partition || '–'],
+      ['State', info.pending_verify ? '<span class="ax-status warning">Pending verify</span>' : '<span class="ax-status good">Confirmed</span>'],
+      ['Reset reason', info.reset_reason], ['Up', `${info.uptime_s} s`], ['ESP-IDF', info.idf]];
+    $('fwInfo').innerHTML = rows.map(([k, v]) => `<tr><td class="ax-label">${k}</td><td class="ax-n">${v}</td></tr>`).join('');
+  } catch (e) { $('fwInfo').innerHTML = `<tr><td class="empty">No info reply: ${e.message}</td></tr>`; }
+}
+async function loadBuilds() {
+  if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+  try {
+    const r = await fetch('builds', { cache: 'no-store' }); if (!r.ok) return;
+    const list = await r.json(); if (!list.length) return;
+    $('fwBuild').innerHTML = list.map(b => `<option value="${b.dir}">${b.dir} · ${b.version} · ${b.built}</option>`).join('');
+  } catch (_) {}
+  fwRefresh();
+}
+$('fwFile').onchange = () => { fw.picked = $('fwFile').files[0] || null; fwRefresh(); };
+$('fwBuild').onchange = () => { fw.picked = null; $('fwFile').value = ''; fwRefresh(); };
+$('tab-firmware').addEventListener('dragover', e => e.preventDefault());
+$('tab-firmware').addEventListener('drop', e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) { fw.picked = f; fwRefresh(); } });
+$('fwAbort').onclick = () => { fw.abort = true; };
+const u32le = n => { const p = new Uint8Array(4); new DataView(p.buffer).setUint32(0, n >>> 0, true); return p; };
+// After a reboot, reach the same MIB again. Web Serial: the port outlives the reboot and the
+// link renegotiates its rate by itself, so just wait for answers. Otherwise the link dropped
+// (TCP closed, USB re-enumerated): open a new one of the same kind.
+async function reconnectAfterReboot(old, timeoutMs = 90000) {
+  try { return await reconnectLoop(old, timeoutMs); } finally { fw.rebooting = false; }
+}
+async function reconnectLoop(old, timeoutMs) {
+  const kind = old ? old.kind : $('transport').value, deadline = Date.now() + timeoutMs;
+  $('mLink').className = 'ax-status warning'; $('mLink').textContent = 'Rebooting';
+  await sleep(2500);
+  if (kind === 'serial' && link && link.t === old) {
+    while (Date.now() < deadline) { try { await link.info(); startPolling(250); renderFwInfo(); setConnected(true); return true; } catch (e) { await sleep(1000); } }
+    return false;
+  }
+  if (link) { const l = link; link = null; clearInterval(pollTimer); try { await l.close(); } catch (_) {} }
+  setConnected(false, 'Rebooting');
+  while (Date.now() < deadline) {
+    try {
+      let t = makeTransport(kind, old);
+      if (kind === 'usb' && !t.device && navigator.usb) t = new UsbTransport((await navigator.usb.getDevices()).find(d => d.vendorId === MIB_USB.vendorId));
+      await openLink(t); return true;
+    } catch (e) { await sleep(2000); }
+  }
+  return false;
+}
+$('fwFlash').onclick = async () => {
+  const src = fwSource(); if (!src || !link) return fwRefresh();
+  if (!confirm(`Flash ${src.name} to the MIB? It disables drive, disarms every motor and reboots.`)) return;
+  fw.busy = true; fw.abort = false; axBusy($('fwFlash'), true, 'Flashing'); $('fwAbort').disabled = false;
+  const bar = $('fwBar'); bar.className = 'bar'; bar.firstElementChild.style.width = '0';
+  const say = (t, cls = 'warning') => { $('fwStatus').className = 'ax-status ' + cls; $('fwStatus').textContent = t; };
+  const t0 = performance.now();
+  try {
+    say('Reading ' + src.name);
+    const img = await src.read();
+    if (img[0] !== 0xE9) throw new Error('not an ESP app image (first byte is not 0xE9): pick build/rammp_mib.bin');
+    const project = fwCstr(img, 80, 112), version = fwCstr(img, 48, 80);
+    if (project !== 'rammp_mib' && !confirm(`This image is "${project || 'unknown'}", not rammp_mib (a PACE RACER image?). Flash it to the MIB anyway?`)) throw Object.assign(new Error('not a MIB image'), { userAbort: true });
+    sys(`flashing ${src.name}: ${project} ${version}, ${(img.length / 1024).toFixed(0)} KiB`);
+    say('BEGIN: the MIB erases the update slot');
+    await link.ota(OTA.BEGIN, u32le(img.length), 60000);
+    const chunk = SF_MAX_PAYLOAD;
+    for (let sent = 0; sent < img.length;) {
+      if (fw.abort) throw Object.assign(new Error('aborted'), { userAbort: true });
+      const part = img.subarray(sent, Math.min(sent + chunk, img.length));
+      await link.ota(OTA.DATA, part, 5000); sent += part.length;
+      bar.firstElementChild.style.width = (100 * sent / img.length).toFixed(1) + '%';
+      say(`${(sent / 1024).toFixed(0)} / ${(img.length / 1024).toFixed(0)} KiB`);
+    }
+    const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true;
+    say('FINISH: the MIB verifies the image');
+    await link.ota(OTA.FINISH, null, 60000);
+    bar.className = 'bar done'; const dt = (performance.now() - t0) / 1000;
+    say(`Written in ${dt.toFixed(1)} s (${(img.length / 1024 / dt).toFixed(0)} KiB/s); the MIB is rebooting`);
+    sys(`OTA written in ${dt.toFixed(1)} s; waiting for the MIB`);
+    fw.busy = false;
+    if (await reconnectAfterReboot(oldT)) {
+      const st = await link.otaStatus();
+      if (st.pending) { await link.ota(OTA.MARK_VALID); say(`Running ${st.version}, marked valid`, 'good'); toast(`MIB updated to ${st.version}`, 'ok'); }
+      else say(`Running ${st.version}${st.version === version ? '' : ` (not ${version}: it rolled back?)`}`, st.version === version ? 'good' : 'critical');
+      renderFwInfo();
+    } else say('The MIB did not come back. A power cycle boots the previous image; the USB-C console shows why.', 'critical');
+  } catch (e) {
+    bar.className = 'bar failed'; say(e.userAbort ? 'Aborted' : 'Failed: ' + e.message, 'critical');
+    sys('OTA ' + (e.userAbort ? 'aborted' : 'failed: ' + e.message));
+    fw.rebooting = false;
+    if (link) { try { await link.ota(OTA.ABORT); } catch (_) {} }
+  } finally { fw.busy = false; axBusy($('fwFlash'), false); $('fwAbort').disabled = true; const s = $('fwStatus').textContent, c = $('fwStatus').className; fwRefresh(); $('fwStatus').textContent = s; $('fwStatus').className = c; }
+};
+$('fwValid').onclick = async () => { try { await link.ota(OTA.MARK_VALID); toast('Running image marked valid', 'ok'); renderFwInfo(); } catch (e) { toast('Mark valid: ' + e.message, 'err'); } };
+$('fwRollback').onclick = async () => {
+  if (!confirm('Roll the MIB back to its previous image and reboot?')) return;
+  const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true;
+  try { await link.ota(OTA.MARK_INVALID); sys('rolling back; the MIB is rebooting'); if (await reconnectAfterReboot(oldT)) renderFwInfo(); } catch (e) { toast('Roll back: ' + e.message, 'err'); }
+};
+loadBuilds();
 
 setConnected(false);
 chartLoop();

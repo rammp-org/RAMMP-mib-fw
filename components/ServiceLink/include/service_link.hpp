@@ -11,6 +11,8 @@
 
 #include "base_component.hpp"
 #include "dispatcher_worker.hpp"
+#include "ota.hpp"
+#include "ota_service.hpp"
 #include "stream_frame.hpp"
 #include "task.hpp"
 #include "telemetry.hpp"
@@ -31,14 +33,16 @@ namespace mib {
 ///   written between log lines; the panel separates the two by the frame magic and CRC.
 ///
 /// Both transports carry the same modules:
+///   0    OTA        espp::OtaService: firmware update, mark valid, roll back (one per
+///                   transport on one espp::Ota engine; each owns only the session it began)
 ///   3    telemetry  espp::Telemetry: named float channels, device timestamps
 ///   0x10 console    device -> host stdout (USB and TCP; on the UART the logs are the stream)
 ///   0x20 system     reset, info
 ///   0xFF discovery  what the device serves
 /// plus whatever the application adds with register_module().
 ///
-/// Modelled on the PACE RACER's DemoLink (pace-racer-fw atos-drive/main/demo_link.hpp),
-/// without OTA and the core dump: the MIB flashes over the CH343 as before.
+/// Modelled on the PACE RACER's DemoLink and EthLink (pace-racer-fw atos-drive/main/), without
+/// the core dump.
 class ServiceLink : public espp::BaseComponent {
 public:
   /// Sends one encoded frame back on the transport a request arrived on.
@@ -66,6 +70,11 @@ public:
     std::string landing_page_url{""};  ///< WebUSB landing page, without a scheme.
     int uart_telemetry_divider{5};     ///< Emit every Nth sample on the UART.
     uint16_t tcp_port{5555};           ///< TCP service port; 0 disables. See start_tcp().
+    /// Called (on a service-link worker task) right before an OTA session begins, so the
+    /// application can put the plant in a safe state: flash writes stall the cache.
+    std::function<void()> before_ota{nullptr};
+    /// Called when an OTA session is aborted (the update will not happen).
+    std::function<void()> ota_aborted{nullptr};
     espp::Logger::Verbosity log_level{espp::Logger::Verbosity::INFO};
   };
 
@@ -94,6 +103,11 @@ public:
   /// True while some host has asked for telemetry.
   bool streaming() const;
 
+  /// A new image boots PENDING_VERIFY (rollback is on); this confirms it after `delay`, if no
+  /// host has. Call once the application is healthy (here: RTPS up). An image that never gets
+  /// there stays pending, and the bootloader boots the previous one at the next reset.
+  void confirm_image_after(std::chrono::seconds delay);
+
   /// Extra fields for the system module's info reply, as `"key":value` JSON members.
   void set_info_extra(std::function<std::string()> extra) { info_extra_ = std::move(extra); }
 
@@ -102,6 +116,7 @@ private:
     std::string name;
     reply_fn send;
     std::unique_ptr<espp::Telemetry> telemetry;
+    std::unique_ptr<espp::OtaService> ota;
     std::unique_ptr<espp::DispatcherWorker> worker;
   };
 
@@ -120,6 +135,7 @@ private:
   void usb_send_best_effort(std::span<const uint8_t> frame);
 
   Config config_;
+  espp::Ota ota_; ///< The one OTA engine every transport's OtaService shares.
   std::unique_ptr<espp::UsbDevice> usb_;
   std::vector<std::unique_ptr<Transport>> transports_;
   struct Module {

@@ -81,7 +81,8 @@ ssize_t vfs_write(int, const void *data, size_t size) {
 
 ServiceLink::ServiceLink(const Config &config)
     : BaseComponent("ServiceLink", config.log_level)
-    , config_(config) {
+    , config_(config)
+    , ota_({.reject_same_version = false, .log_level = espp::Logger::Verbosity::INFO}) {
   transports_.reserve(3); // the TCP transport is added later, while other tasks read these
 }
 
@@ -140,12 +141,29 @@ ServiceLink::Transport &ServiceLink::add_transport(std::string name, reply_fn se
       .stream_on_start = false,
       .period_ms = static_cast<uint16_t>(20),
   });
+  t->ota = std::make_unique<espp::OtaService>(
+      ota_, espp::OtaService::Config{.send = send, .log_level = espp::Logger::Verbosity::INFO});
   t->worker = std::make_unique<espp::DispatcherWorker>(espp::DispatcherWorker::Config{
       .send = send,
-      .task_config = {.name = "svc_" + t->name, .stack_size_bytes = 6 * 1024},
+      .on_overflow = [ota = t->ota.get()]() { ota->on_rx_overflow(); },
+      .task_config = {.name = "svc_" + t->name, .stack_size_bytes = 8 * 1024},
   });
   auto &worker = *t->worker;
   worker.register_module(*t->telemetry);
+  // OTA (module 0), wrapped so the application makes the plant safe on BEGIN; the service
+  // still owns the session state machine (and restarts after a good FINISH).
+  worker.register_module(
+      t->ota->module_id(),
+      [this, ota = t->ota.get()](const espp::stream_frame::Frame &f) {
+        if (!f.is_reply() && f.type == 0x01 /* BEGIN */ && config_.before_ota) {
+          logger_.warn("OTA begin: putting the MIB in a safe state");
+          config_.before_ota();
+        }
+        ota->handle(f);
+        if (!f.is_reply() && f.type == 0x04 /* ABORT */ && config_.ota_aborted)
+          config_.ota_aborted();
+      },
+      t->ota->module_info());
   const reply_fn reply = send;
   const bool uart = t->name == "uart";
   worker.register_module(
@@ -446,6 +464,26 @@ void ServiceLink::tcp_close_client() {
     t->telemetry->set_streaming(false); // the next panel asks again
 }
 
+// ---- OTA ------------------------------------------------------------------------------
+
+void ServiceLink::confirm_image_after(std::chrono::seconds delay) {
+  if (!ota_.is_pending_verify())
+    return;
+  logger_.warn("Running a new image ({}), pending verify: confirming it in {} s unless a host "
+               "does",
+               ota_.running_partition_label(), delay.count());
+  std::thread([this, delay] {
+    std::this_thread::sleep_for(delay);
+    if (!ota_.is_pending_verify())
+      return; // a host already decided
+    std::error_code ec;
+    if (ota_.mark_app_valid(ec))
+      logger_.info("New image confirmed after {} s of healthy running", delay.count());
+    else
+      logger_.error("Confirming the new image failed: {}", ec.message());
+  }).detach();
+}
+
 // ---- telemetry ------------------------------------------------------------------------
 
 void ServiceLink::emit(std::span<const float> values) {
@@ -500,11 +538,14 @@ void ServiceLink::handle_system(const espp::stream_frame::Frame &f, const reply_
     const auto *app = esp_app_get_description();
     std::string json = fmt::format(
         "{{\"product\":\"{}\",\"project\":\"{}\",\"version\":\"{}\",\"built\":\"{} {}\","
-        "\"idf\":\"{}\",\"reset_reason\":\"{}\",\"uptime_s\":{},\"usb\":{},\"uart\":{},\"tcp\":{}",
+        "\"idf\":\"{}\",\"reset_reason\":\"{}\",\"uptime_s\":{},\"usb\":{},\"uart\":{},\"tcp\":{},"
+        "\"partition\":\"{}\","
+        "\"pending_verify\":{}",
         config_.product, app->project_name, app->version, app->date, app->time, app->idf_ver,
         reset_reason_name(esp_reset_reason()), esp_timer_get_time() / 1000000,
         usb_transport_ ? "true" : "false", uart_transport_ ? "true" : "false",
-        tcp_transport_.load() ? "true" : "false");
+        tcp_transport_.load() ? "true" : "false", ota_.running_partition_label(),
+        ota_.is_pending_verify() ? "true" : "false");
     if (info_extra_) {
       const auto extra = info_extra_();
       if (!extra.empty())

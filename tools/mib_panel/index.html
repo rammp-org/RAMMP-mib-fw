@@ -92,6 +92,9 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
 .chanlist { max-height: 300px; overflow: auto; border: 1px solid var(--ax-border); margin-top: 8px; }
 .chanlist label { display: flex; gap: 8px; align-items: center; padding: 3px 8px; font: 12px var(--ax-font-mono); border-bottom: 1px solid var(--ax-rule); cursor: pointer; }
 .chanlist label:hover { background: rgba(var(--ax-accent-rgb), 0.06); }
+.bar { height: 6px; background: var(--ax-rule); margin-top: 12px; }
+.bar > div { height: 100%; width: 0; background: var(--ax-accent); transition: width 0.2s; }
+.bar.done > div { background: var(--ax-good); } .bar.failed > div { background: var(--ax-critical); }
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 6px; }
 .toast div { background: var(--ax-panel); border: 1px solid var(--ax-border-strong); border-left: 3px solid var(--ax-warning); padding: 8px 12px; font: 12px var(--ax-font-mono); max-width: 420px; }
 .toast div.err { border-left-color: var(--ax-critical); }
@@ -137,6 +140,7 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     <button data-tab="drive">Drive</button>
     <button data-tab="seat">Seat actuators</button>
     <button data-tab="sensors">Sensors &amp; data</button>
+    <button data-tab="firmware">Firmware</button>
     <button data-tab="log">Log</button>
   </nav>
 
@@ -266,6 +270,29 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
       <div class="ax-panel chart-wrap"><h2>Plot</h2><div class="ax-cap" id="cCustomCap">Pick channels on the left.</div>
         <div class="field" style="grid-template-columns:110px 1fr"><span class="ax-label">Y-axis title</span><input class="ax-input" id="cCustomY" placeholder="set from the channels' units"></div>
         <div class="chart" id="cCustom"></div></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ FIRMWARE -->
+  <section class="tab" id="tab-firmware">
+    <div class="ax-grid cols-even">
+      <div class="ax-panel" id="fwPanel">
+        <h2>Update the MIB</h2>
+        <div class="ax-cap">Over the link you are connected with (Ethernet, Web Serial or WebUSB), the way the PACE RACER dashboard flashes a wheel. The MIB disables drive and disarms every motor first, writes the other app slot, and reboots into it.</div>
+        <div class="field"><span class="ax-label">Build</span><select class="ax-input" id="fwBuild"><option value="">none found (needs eth_bridge.py)</option></select><span></span></div>
+        <div class="field"><span class="ax-label">Or a file</span><input class="ax-input" id="fwFile" type="file" accept=".bin"><span></span></div>
+        <div class="hint">Drop <code>build/rammp_mib.bin</code> anywhere on this panel too.</div>
+        <div class="row"><button class="ax-btn primary" id="fwFlash" disabled data-fx="sparks">Flash MIB</button><button class="ax-btn danger" id="fwAbort" disabled>Abort</button></div>
+        <div class="bar" id="fwBar"><div></div></div>
+        <div class="row"><span class="ax-status" id="fwStatus">No image chosen</span></div>
+      </div>
+      <div class="ax-panel">
+        <h2>Running image</h2>
+        <div class="ax-cap">A new image boots pending verify. The panel confirms it when it reconnects; otherwise the MIB confirms it 20 s after RTPS comes up. An image that never gets that far loses to the previous one at the next reset.</div>
+        <table><tbody id="fwInfo"><tr><td class="empty">Not connected.</td></tr></tbody></table>
+        <div class="row"><button class="ax-btn" id="fwValid" disabled>Mark valid</button><button class="ax-btn danger" id="fwRollback" disabled>Roll back</button></div>
+        <div class="warnbox"><b>Once, over USB:</b> a MIB still on the old partition table (one factory app, no rollback) has nowhere to write an update. Flash this firmware with <code>idf.py flash</code> over the USB-C one last time; it writes the bootloader, the two-slot table and the app.</div>
+      </div>
     </div>
   </section>
 

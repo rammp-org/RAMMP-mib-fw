@@ -47,9 +47,16 @@ CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
 CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=20
 CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
 
-# 1.5 MB factory app (IDF's "single app, large" table): TinyUSB and the service link
-# left the default 1 MB partition 3 % free. Still fits the 2 MB flash setting.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Firmware updates over the service link (Ethernet, UART or WebUSB): two 3 MB OTA slots
+# (partitions.csv) and bootloader rollback. The ESP32-P4-ETH has 32 MB of flash; 16 MB is
+# declared, which is all the table needs. Moving to this table takes one USB flash
+# (idf.py flash: bootloader, partition table and app); updates go over the panel after that.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # The panel's TCP service port (a listener and one client) beside the RTPS sockets;
 # the PACE RACER raised the same limit for its EthLink.

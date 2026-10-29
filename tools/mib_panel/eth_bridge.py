@@ -7,6 +7,8 @@ service stream (tcp :5555). A browser cannot open a TCP socket; this relays one.
 
 Endpoints:
     GET  /, /<file>            the panel, from this directory
+    GET  /builds               JSON list of MIB app images in the repo's build*/ dirs
+    GET  /builds/<dir>         that build's rammp_mib.bin, so the page flashes it without a file dialog
     GET  /bridge.json          {"bridge": true, "default_target": "192.168.4.1"}: tells
                                the page it can use this origin's /ws
     WS   /ws?target=<ip>[:port]   raw bytes <-> tcp <ip>:<port, 5555>, one socket per page
@@ -31,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))  # tools/mib_panel -> the firmware repo, where idf.py puts build*/
+APP_BIN = "rammp_mib.bin"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SERVICE_PORT = 5555
 DEFAULT_TARGET = "192.168.4.1"  # the MIB is the chair network's DHCP server (MIBconfig.hpp)
@@ -98,6 +102,29 @@ def _bind_for(sock, target_ip):
     return None
 
 
+# ---------------------------------------------------------------- builds (from the RACER bridge)
+def _cstr(b):
+    return b.split(b"\0", 1)[0].decode("ascii", "replace")
+
+
+def builds():
+    """MIB app images under the repo's build*/ dirs, newest first. Version and build time come
+    from the image's esp_app_desc (after the 24-byte image header and an 8-byte segment header)."""
+    out = []
+    for d in sorted(os.listdir(REPO)):
+        path = os.path.join(REPO, d, APP_BIN)
+        if not (d.startswith("build") and os.path.isfile(path)):
+            continue
+        with open(path, "rb") as fh:
+            head = fh.read(256)
+        if len(head) < 144 or head[0] != 0xE9 or struct.unpack_from("<I", head, 32)[0] != 0xABCD5432:
+            continue
+        out.append({"dir": d, "version": _cstr(head[48:80]), "project": _cstr(head[80:112]),
+                    "built": f"{_cstr(head[128:144])} {_cstr(head[112:128])}",
+                    "mtime": os.path.getmtime(path), "size": os.path.getsize(path)})
+    return sorted(out, key=lambda b: -b["mtime"])
+
+
 # ---------------------------------------------------------------- websocket
 def ws_frame(opcode, payload=b""):
     hdr = bytes([0x80 | opcode])
@@ -144,6 +171,14 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/ws":
             return self.websocket(parse_qs(u.query).get("target", [DEFAULT_TARGET])[0])
+        if u.path == "/builds":
+            return self.reply(200, "application/json", json.dumps(builds()).encode())
+        if u.path.startswith("/builds/"):
+            d = u.path[len("/builds/"):]
+            if d not in {b["dir"] for b in builds()}:  # only listed dirs: no path tricks
+                return self.send_error(404, "no such build")
+            with open(os.path.join(REPO, d, APP_BIN), "rb") as fh:
+                return self.reply(200, "application/octet-stream", fh.read())
         if u.path == "/bridge.json":
             return self.reply(200, "application/json", json.dumps({"bridge": True, "default_target": DEFAULT_TARGET}).encode())
         name = "index.html" if u.path == "/" else u.path.lstrip("/")

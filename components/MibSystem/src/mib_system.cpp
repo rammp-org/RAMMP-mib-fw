@@ -285,6 +285,10 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.warn("Ignoring drive enable while the control panel overrides a motor");
       return false;
     }
+    if (ota_active_.load()) {
+      logger_.warn("Ignoring drive enable during a firmware update");
+      return false;
+    }
     if (!drive_controller_.update_drive_profile(command.profile)) {
       logger_.error("Failed to update drive profile");
       return false;
@@ -494,7 +498,15 @@ void MibSystem::run_state_step() {
                    "latch");
       latch_.start_clear_attempt();
     }
-    state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
+    if (initialize_pubsub()) {
+      state_.store(SystemState::IDLE);
+      // RTPS and the endpoints are up: a new image that got this far is a keeper.
+      if (service_) {
+        service_->confirm_image_after(std::chrono::seconds{20});
+      }
+    } else {
+      state_.store(SystemState::ERROR);
+    }
     break;
   case SystemState::IDLE:
     logger_.debug("System state: IDLE - running idle placeholder");

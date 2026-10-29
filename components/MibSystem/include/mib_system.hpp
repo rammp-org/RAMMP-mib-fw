@@ -90,6 +90,10 @@ private:
   /// Apply a normalized stick sample to the drive, if driving is enabled.
   void apply_stick(float x, float y);
 
+  /// Disable drive and drop every override before a firmware update starts.
+  /// \note Runs on a service-link worker task.
+  void make_safe_for_ota();
+
   /// True while the panel overrides at least one axis.
   bool any_override_active() const;
 
@@ -145,6 +149,7 @@ private:
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::array<AxisLink, rammp::kAxisCount> axes_{}; ///< Every PACE RACER axis, in table order.
   mutable std::mutex axes_mutex_;                  ///< Protects axes_ state and overrides.
+  std::atomic<bool> ota_active_{false};             ///< A firmware update is being written.
   std::atomic<bool> endpoints_ready_{false};       ///< initialize_pubsub() succeeded.
   uint8_t tuning_req_{0};                          ///< Last MotorTuning::tuning_req_id.
   float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.

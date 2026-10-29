@@ -79,6 +79,32 @@ environment deploys from `main` only).
   in `emit_telemetry()`.
 - **Log**: the MIB's console, filterable and downloadable.
 
+## Firmware updates
+
+The **Firmware** tab flashes the MIB over whichever link is connected, so the MIB no
+longer needs the USB-C for updates. It is the PACE RACER dashboard's flow over espp's
+`OtaService`:
+1. Pick a build. Served by `eth_bridge.py`, the page lists `build*/rammp_mib.bin` in this
+   repo, so `idf.py build` and **Flash MIB** is the whole loop. You can also pick or drop a
+   `.bin`.
+2. The MIB disables drive, drops every panel override, commands every motor DISARMED,
+   writes the other app slot and reboots into it.
+3. The panel reconnects and marks the new image valid. If the panel can't, the MIB
+   confirms it itself 20 s after RTPS comes up.
+
+An image that never gets that far stays pending, and the bootloader boots the previous
+one at the next reset. **Roll back** returns to the previous image on demand. The page
+refuses a file that isn't an ESP app image, and asks before flashing one that isn't
+`rammp_mib` (a PACE RACER image, say). In the simulated test a 1 MB image wrote in
+under a second over localhost TCP; over real Ethernet and at 921600 baud it is not yet
+measured (serial should be on the order of 15 s).
+
+**Once, over USB:** the two-slot partition table and the rollback bootloader have to
+reach the MIB once. Flash this firmware with `idf.py flash` over the USB-C one last
+time (bootloader, partition table and app); every update after that goes through the
+panel. `sdkconfig` has to be regenerated for the new table:
+`rm sdkconfig && idf.py build flash`.
+
 ## Safety
 
 **Bench mode is on for now:** `estop_watch_hmi = false` in `MIBconfig.hpp`. The e-stop
@@ -97,7 +123,7 @@ person on the e-stop.
 ## Protocol
 
 espp `stream_frame` frames on any of the links (TCP :5555, the UART, WebUSB), routed by module: telemetry (3, espp `Telemetry`),
-console log (0x10), system (0x20: reset, info, UART rate), discovery (0xFF) and the MIB
+OTA (0), console log (0x10), system (0x20: reset, info, UART rate), discovery (0xFF) and the MIB
 control module (0x40), documented in
 `components/MibSystem/include/mib_panel_protocol.hpp`. `mib_link.js` mirrors
 the numbers.
@@ -109,7 +135,7 @@ the numbers.
 | `index.html` | layout and styles |
 | `panel.js` | the UI: status, charts, tuning, auto-tune, drive, seat, sensors, log |
 | `mib_link.js` | frame codec, Ethernet / Web Serial / WebUSB / simulator transports, telemetry store, MIB requests |
-| `eth_bridge.py` | serves the panel and relays its WebSocket to the MIB's tcp :5555 |
+| `eth_bridge.py` | serves the panel, lists the repo's builds, and relays its WebSocket to the MIB's tcp :5555 |
 | `mib_sim.js` | the simulated MIB |
 | `ax-tokens.css`, `ax-fx.js` | alex-style tokens and effects, vendored |
 | `uPlot.iife.min.js` | uPlot 1.6.31 (MIT), vendored from espp `components/telemetry/web` |

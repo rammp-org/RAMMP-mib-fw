@@ -8,6 +8,9 @@
 // tracking loop of hall_pll_hz, and the board's PI speed loop at 1 kHz.
 'use strict';
 
+// What the simulated MIB's flash holds, kept across its (simulated) reboots.
+const SIM_FLASH = { version: 'sim-1.0', partition: 'ota_0', pending: false, previous: null };
+
 class SimMib {
   constructor(out) {
     this.out = out; this.parser = new SfParser(false); this.t0 = performance.now();
@@ -51,8 +54,9 @@ class SimMib {
       if (f.type === TM.SET_STREAM) { this.streaming = !!p[0]; this.send(M_TM, TM.OK, u8(TM.SET_STREAM)); if (this.streaming) this.sendSchema(); }
       return;
     }
+    if (f.module === M_OTA) return this.handleOta(f, p, dv);
     if (f.module === M_SYS) {
-      if (f.type === SYS.INFO) this.send(M_SYS, SYS.INFO_REPLY, new TextEncoder().encode(JSON.stringify({ product: 'RAMMP MIB (simulated)', project: 'rammp_mib', version: 'sim', built: new Date().toISOString().slice(0, 16), idf: 'v6.0.1', reset_reason: 'power-on', uptime_s: Math.round(this.now()), usb: true, uart: true, ip: '192.168.4.1' })));
+      if (f.type === SYS.INFO) this.send(M_SYS, SYS.INFO_REPLY, new TextEncoder().encode(JSON.stringify({ product: 'RAMMP MIB (simulated)', project: 'rammp_mib', version: SIM_FLASH.version, partition: SIM_FLASH.partition, pending_verify: SIM_FLASH.pending, built: new Date().toISOString().slice(0, 16), idf: 'v6.0.1', reset_reason: 'power-on', uptime_s: Math.round(this.now()), usb: true, uart: true, ip: '192.168.4.1' })));
       // The UART's rate, for a test harness that models the serial link (SimTransport ignores it).
       if (f.type === SYS.SET_BAUD) { this.send(M_SYS, SYS.OK, u8(SYS.SET_BAUD)); this.baud = dv.getUint32(0, true); this.lastRx = this.now(); return; }
       if (f.type === SYS.RESET) { this.send(M_SYS, SYS.OK, u8(SYS.RESET)); this.state = 0; this.estop.latched = true; this.estop.cause = 'boot'; setTimeout(() => { this.state = 1; }, 1200); }
@@ -98,6 +102,28 @@ class SimMib {
         return this.ok(f.type, p[0]);
       case MIBP.STATUS: return this.reply(MIBP.STATUS_REPLY, new TextEncoder().encode(JSON.stringify(this.statusJson())));
       default: return this.err(f.type, 'unknown request');
+    }
+  }
+  // espp OtaService, enough of it to exercise the panel: BEGIN, DATA, FINISH (then a
+  // reboot into the new slot, pending verify), GET_STATUS, MARK_VALID, MARK_INVALID, ABORT.
+  handleOta(f, p, dv) {
+    const ok = () => this.send(M_OTA, OTA.OK, new Uint8Array(0));
+    const err = (code, msg) => this.send(M_OTA, OTA.ERROR, cat(f32s(0).map(() => 0), new TextEncoder().encode(msg)).map((b, i) => i < 4 ? (code >> (8 * i)) & 0xFF : b));
+    const reboot = () => setTimeout(() => { this.stop(); this.onReboot && this.onReboot(); }, 750);
+    switch (f.type) {
+      case OTA.BEGIN: this.ota = { size: dv.getUint32(0, true), got: 0 }; if (this.state === 3) this.state = 1; this.axes.forEach(a => { a.overrideUntil = 0; }); return setTimeout(ok, 300);
+      case OTA.DATA: if (!this.ota) return err(1, 'no session'); this.ota.got += p.length; if (this.ota.got === p.length) this.ota.head = p.slice(0, 160); return ok();
+      case OTA.FINISH: {
+        if (!this.ota || this.ota.got !== this.ota.size) return err(2, `got ${this.ota ? this.ota.got : 0} of ${this.ota ? this.ota.size : 0} bytes`);
+        const h = this.ota.head, cs = (a, b) => new TextDecoder().decode(h.subarray(a, b)).split('\0')[0];
+        SIM_FLASH.previous = { version: SIM_FLASH.version, partition: SIM_FLASH.partition };
+        SIM_FLASH.version = cs(48, 80) || 'sim-new'; SIM_FLASH.partition = SIM_FLASH.partition === 'ota_0' ? 'ota_1' : 'ota_0'; SIM_FLASH.pending = true;
+        this.ota = null; ok(); return reboot();
+      }
+      case OTA.ABORT: this.ota = null; return ok();
+      case OTA.GET_STATUS: { const e = new TextEncoder(), v = e.encode(SIM_FLASH.version), pr = e.encode('rammp_mib'); return this.send(M_OTA, OTA.STATUS, cat(u8((SIM_FLASH.pending ? 1 : 0) | (SIM_FLASH.previous ? 2 : 0), v.length), v, u8(pr.length), pr)); }
+      case OTA.MARK_VALID: SIM_FLASH.pending = false; return ok();
+      case OTA.MARK_INVALID: if (SIM_FLASH.previous) { Object.assign(SIM_FLASH, SIM_FLASH.previous, { pending: false, previous: null }); } ok(); return reboot();
     }
   }
   sendSchema() {

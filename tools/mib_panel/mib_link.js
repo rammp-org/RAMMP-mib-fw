@@ -176,7 +176,11 @@ class WsTransport {
 // In-page MIB (mib_sim.js): the same frames, no hardware.
 class SimTransport {
   constructor() { this.kind = 'sim'; this.sim = null; this.onData = null; }
-  async open() { this.sim = new SimMib(bytes => this.onData && this.onData(bytes)); this.sim.start(); }
+  async open() {
+    this.sim = new SimMib(bytes => this.onData && this.onData(bytes));
+    this.sim.onReboot = () => this.close(); // the link drops, as it does on hardware
+    this.sim.start();
+  }
   name() { return 'Simulated MIB'; }
   async send(bytes) { if (!this.sim) throw new Error('link closed'); this.sim.receive(bytes); }
   async readLoop(onData) { this.onData = onData; await new Promise(res => { this.closed = res; }); }
@@ -184,7 +188,9 @@ class SimTransport {
 }
 
 // ---------------------------------------------------------------- protocol numbers
-const M_TM = 3, M_CON = 0x10, M_SYS = 0x20, M_MIB = 0x40;
+const M_OTA = 0, M_TM = 3, M_CON = 0x10, M_SYS = 0x20, M_MIB = 0x40;
+// espp OtaService (module 0), as the PACE RACER dashboard speaks it.
+const OTA = { BEGIN: 1, DATA: 2, FINISH: 3, ABORT: 4, OK: 5, ERROR: 6, PROGRESS: 7, GET_STATUS: 8, MARK_VALID: 9, MARK_INVALID: 10, STATUS: 11 };
 const TM = { GET_SCHEMA: 0x01, SET_STREAM: 0x02, SCHEMA: 0x81, SAMPLE: 0x82, OK: 0x83, ERROR: 0x84 };
 const SYS = { RESET: 0x01, INFO: 0x02, SET_BAUD: 0x03, OK: 0x81, INFO_REPLY: 0x82 };
 const SERIAL_FAST_BAUD = 921600;
@@ -353,6 +359,17 @@ class MibLink {
     const f = await this.request(M_MIB, type, payload, [MIBP.OK, MIBP.ERROR]);
     if (f.type === MIBP.ERROR) throw new Error(this.dec.decode(f.payload.subarray(1)));
     return f.payload[1];
+  }
+  // One OTA request; PROGRESS frames are not waited for.
+  async ota(type, payload, timeoutMs = 3000) {
+    const f = await this.request(M_OTA, type, payload, [OTA.OK, OTA.ERROR, OTA.STATUS], timeoutMs);
+    if (f.type === OTA.ERROR) { const v = new DataView(f.payload.buffer, f.payload.byteOffset); throw new Error(`MIB OTA error ${v.getUint32(0, true)}: ${this.dec.decode(f.payload.subarray(4))}`); }
+    return f;
+  }
+  async otaStatus() {
+    const p = (await this.ota(OTA.GET_STATUS)).payload; let i = 1;
+    const rs = () => { if (i >= p.length) return ''; const n = p[i++]; const s = this.dec.decode(p.subarray(i, i + n)); i += n; return s; };
+    return { pending: !!(p[0] & 1), rollback: !!(p[0] & 2), version: rs(), project: rs() };
   }
   async info() { const f = await this.request(M_SYS, SYS.INFO, null, [SYS.INFO_REPLY]); return JSON.parse(this.dec.decode(f.payload)); }
   async status() { const f = await this.request(M_MIB, MIBP.STATUS, null, [MIBP.STATUS_REPLY]); return JSON.parse(this.dec.decode(f.payload)); }

@@ -133,6 +133,12 @@ void MibSystem::start_service_link() {
       .landing_page_url = mib::config::service_landing_page_url,
       .uart_telemetry_divider = mib::config::service_uart_telemetry_divider,
       .tcp_port = mib::config::service_tcp_port,
+      .before_ota = [this]() { make_safe_for_ota(); },
+      .ota_aborted =
+          [this]() {
+            ota_active_.store(false);
+            logger_.info("Firmware update aborted: motors may run again");
+          },
   });
   service_->register_module(
       mib::panel::kModule,
@@ -158,6 +164,25 @@ void MibSystem::start_service_link() {
       .task_config = {.name = "MIB telemetry", .stack_size_bytes = 4 * 1024, .priority = 1},
   });
   telemetry_task_->start();
+}
+
+void MibSystem::make_safe_for_ota() {
+  // Flash writes stall the cache for milliseconds at a time: nothing should be moving.
+  ota_active_.store(true);
+  {
+    std::lock_guard<std::mutex> lock(axes_mutex_);
+    for (auto &axis : axes_)
+      axis.override_until = {};
+  }
+  {
+    std::lock_guard<std::mutex> lock(joystick_mutex_);
+    panel_stick_until_ = {};
+  }
+  drive_controller_.stop();
+  if (state_.load() == SystemState::DRIVE_ENABLED) {
+    state_.store(SystemState::IDLE);
+  }
+  logger_.warn("Firmware update: drive disabled, overrides dropped, motors commanded DISARMED");
 }
 
 bool MibSystem::any_override_active() const {
@@ -190,8 +215,11 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
   case P::kMotorOverride: {
     if (!need(28) || !axis_ok(p[0]))
       return;
-    if (state_.load() != SystemState::IDLE || latch_.is_active()) {
-      reply_error(reply, f.type, latch_.is_active() ? "e-stop is latched" : "MIB is not IDLE");
+    if (state_.load() != SystemState::IDLE || latch_.is_active() || ota_active_.load()) {
+      reply_error(reply, f.type,
+                  latch_.is_active()   ? "e-stop is latched"
+                  : ota_active_.load() ? "a firmware update is running"
+                                       : "MIB is not IDLE");
       return;
     }
     if (!endpoints_ready_.load()) {

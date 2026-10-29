@@ -8,5 +8,7 @@ dependencies:
   espp/dispatcher: '>=1.3.5'
   espp/stream_frame: '>=1.3.5'
   espp/telemetry: '>=1.3.5'
+  # Firmware updates over the service link, with rollback.
+  espp/ota: '>=1.3.5'
   espp/task: '>=1.3'
   espp/logger: '>=1.3'
