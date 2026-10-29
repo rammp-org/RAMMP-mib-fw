@@ -45,8 +45,11 @@ public:
   static constexpr uint8_t kConsoleModule = 0x10;
   static constexpr uint8_t kConsoleLog = 0x82; ///< device -> host: UTF-8 stdout chunk
   static constexpr uint8_t kSystemModule = 0x20;
-  static constexpr uint8_t kSystemReset = 0x01;     ///< host -> device: reboot
-  static constexpr uint8_t kSystemInfo = 0x02;      ///< host -> device: JSON info
+  static constexpr uint8_t kSystemReset = 0x01; ///< host -> device: reboot
+  static constexpr uint8_t kSystemInfo = 0x02;  ///< host -> device: JSON info
+  /// host -> device, UART only: [baud u32]. Replies OK at the old rate, then switches.
+  /// The UART returns to its default rate 3 s after the last byte from the host.
+  static constexpr uint8_t kSystemSetBaud = 0x03;
   static constexpr uint8_t kSystemOk = 0x81;        ///< device -> host: [u8 request type]
   static constexpr uint8_t kSystemInfoReply = 0x82; ///< device -> host: UTF-8 JSON
 
@@ -94,7 +97,9 @@ private:
   };
 
   Transport &add_transport(std::string name, reply_fn send, reply_fn send_best_effort);
-  void handle_system(const espp::stream_frame::Frame &frame, const reply_fn &reply);
+  void handle_system(const espp::stream_frame::Frame &frame, const reply_fn &reply, bool uart);
+  void set_uart_baud(uint32_t baud);
+  void announce();
   bool start_usb();
   bool start_uart();
   void route_stdout_to_usb();
@@ -114,6 +119,10 @@ private:
   std::function<std::string()> info_extra_;
   std::unique_ptr<espp::Task> uart_rx_task_;
   std::atomic<uint32_t> emit_count_{0};
+  uint32_t uart_default_baud_{115200};      ///< The console rate, from sdkconfig.
+  std::atomic<uint32_t> uart_baud_{115200}; ///< The rate in force.
+  std::atomic<int64_t> uart_last_rx_us_{0}; ///< Last byte from a host on the UART.
+  int64_t last_announce_us_{0};             ///< Last console line with the panel URL.
   Transport *usb_transport_{nullptr};
   Transport *uart_transport_{nullptr};
 };

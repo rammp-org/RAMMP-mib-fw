@@ -30,11 +30,11 @@ This repository contains the firmware for the RAMMP MIB (MEBot Interface Board),
 
 ### Control panel
 
-[`tools/mib_panel`](tools/mib_panel/) is a browser control panel for the MIB: status,
-live plots, PACE RACER speed-loop tuning and auto-tune, motor test drives, driving,
-seat targets and sensor data. It connects over WebUSB on the P4's HS USB port (J3;
-the board's USB-C is a CH343 serial bridge) or over Web Serial on the USB-C, or runs
-against a simulated MIB. See its README for wiring and hosting.
+[`tools/mib_panel`](tools/mib_panel/), hosted at <https://rammp-org.github.io/RAMMP-mib-fw/>,
+is a browser control panel for the MIB: status, live plots, PACE RACER speed-loop tuning
+and auto-tune, motor test drives, driving, seat targets and sensor data. Open it in desktop
+Chrome or Edge and connect with Web Serial over the MIB's USB-C (the MIB prints the link on
+its console). See its README for the other links (WebUSB on J3, a simulated MIB).
 
 ### Automated Setup
 

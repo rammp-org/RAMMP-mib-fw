@@ -122,7 +122,7 @@ $('connectBtn').onclick = async () => {
     await l.connect(); link = l;
     setConnected(true); sys(`connected: ${t.name()}`); toast('Connected: ' + t.name(), 'ok');
     try { info = await l.info(); $('mFw').textContent = `fw ${info.version} (${info.built})`; sys(`MIB ${info.project} ${info.version}, reset reason ${info.reset_reason}, up ${info.uptime_s} s`); } catch (e) { sys('no info reply: ' + e.message); }
-    startPolling(kind === 'serial' ? 500 : 250);
+    startPolling(kind === 'serial' && !l.fast ? 500 : 250);
   } catch (e) {
     try { await t.close(); } catch (_) {}
     link = null; setConnected(false); if (e.name !== 'NotFoundError') toast('Connect failed: ' + e.message, 'err'); sys('connect failed: ' + e.message);
@@ -131,6 +131,7 @@ $('connectBtn').onclick = async () => {
 async function disconnect() { stopAllOverrides(true); await sleep(60); clearInterval(pollTimer); const l = link; link = null; if (l) await l.close(); setConnected(false); }
 $('resetBtn').onclick = async () => {
   if (!link || !confirm('Reboot the MIB? Every motor disarms while it restarts.')) return;
+  // Over serial the auto-reset circuit does it; the link drops back to 115200 and renegotiates once the MIB is up.
   try { if (link.t.kind === 'serial') { await link.t.hardReset(); } else { await link.reset(); } sys('reset sent'); } catch (e) { toast('Reset: ' + e.message, 'err'); }
 };
 // Chrome lists an already-paired MIB without a chooser; reconnect when it is plugged back in.
@@ -556,4 +557,4 @@ const tuneCharts = [
 
 setConnected(false);
 chartLoop();
-sys('panel ready. WebUSB: the MIB on its J3 HS USB port. Web Serial: its USB-C. Or try the simulator.');
+sys('panel ready. Web Serial: the MIB\'s USB-C. WebUSB: its J3 header. Or try the simulator.');

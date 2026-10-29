@@ -26,10 +26,12 @@ inline constexpr bool service_usb_enabled = true;
 /// @brief Serve the control panel over the console UART (the USB-C, through the CH343).
 inline constexpr bool service_uart_enabled = true;
 
-/// @brief Telemetry is decimated to every Nth sample on the 115200-baud UART link.
+/// @brief Telemetry is decimated to every Nth sample while the UART runs at its 115200-baud
+/// default. The panel raises the rate to 921600 while connected, and then gets every one.
 inline constexpr int service_uart_telemetry_divider = 5;
 
-/// @brief Page Chrome offers when the WebUSB port is plugged in (no scheme; https).
+/// @brief The control panel, without a scheme (https): Chrome offers it when the WebUSB port
+/// is plugged in, and the console prints it at boot and every 30 s until a panel connects.
 inline constexpr const char *service_landing_page_url = "rammp-org.github.io/RAMMP-mib-fw/";
 
 /// @brief A panel motor override or panel drive input lapses this long after its last frame.

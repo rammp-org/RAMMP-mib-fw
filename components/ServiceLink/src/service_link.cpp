@@ -100,11 +100,21 @@ bool ServiceLink::start() {
     return false;
   }
   const auto *app = esp_app_get_description();
-  logger_.info("Service link up: {}{}{} | fw {} {}", usb_transport_ ? "WebUSB (J3) " : "",
-               uart_transport_ ? "UART (USB-C) " : "",
-               usb_transport_ ? fmt::format("| landing https://{}", config_.landing_page_url) : "",
-               app->project_name, app->version);
+  logger_.info("Service link up: {}{}| fw {} {}", usb_transport_ ? "WebUSB (J3) " : "",
+               uart_transport_ ? "UART (USB-C) " : "", app->project_name, app->version);
+  announce();
   return true;
+}
+
+// The USB-C's CH343 cannot show a WebUSB landing page, so the console says where the
+// panel is: at boot, then every 30 s until a panel streams.
+void ServiceLink::announce() {
+  last_announce_us_ = esp_timer_get_time();
+  if (config_.landing_page_url.empty())
+    return;
+  logger_.info("Control panel: https://{} (Chrome or Edge: Connect, Web Serial, this USB-C "
+               "port)",
+               config_.landing_page_url);
 }
 
 ServiceLink::Transport &ServiceLink::add_transport(std::string name, reply_fn send,
@@ -127,8 +137,10 @@ ServiceLink::Transport &ServiceLink::add_transport(std::string name, reply_fn se
   auto &worker = *t->worker;
   worker.register_module(*t->telemetry);
   const reply_fn reply = send;
+  const bool uart = t->name == "uart";
   worker.register_module(
-      kSystemModule, [this, reply](const espp::stream_frame::Frame &f) { handle_system(f, reply); },
+      kSystemModule,
+      [this, reply, uart](const espp::stream_frame::Frame &f) { handle_system(f, reply, uart); },
       {.name = "System", .app = "", .description = "Reset and device info", .protocol = ""});
   for (const auto &m : modules_) {
     auto handler = m.handler;
@@ -235,6 +247,10 @@ bool ServiceLink::start_uart() {
   // Every stdout write now goes through the driver's TX mutex, so a frame written in
   // one uart_write_bytes() call cannot be split by a log line.
   uart_vfs_dev_use_driver(kConsoleUart);
+#if defined(CONFIG_ESP_CONSOLE_UART_BAUDRATE)
+  uart_default_baud_ = CONFIG_ESP_CONSOLE_UART_BAUDRATE;
+#endif
+  uart_baud_ = uart_default_baud_;
 
   auto &t = add_transport(
       "uart", [this](std::span<const uint8_t> f) { uart_send(f); },
@@ -245,17 +261,37 @@ bool ServiceLink::start_uart() {
       });
   uart_transport_ = &t;
   uart_rx_task_ = std::make_unique<espp::Task>(espp::Task::Config{
-      .callback = [port, worker = t.worker.get()](std::mutex &, std::condition_variable &) -> bool {
+      .callback = [this, port, worker = t.worker.get()](std::mutex &,
+                                                        std::condition_variable &) -> bool {
         uint8_t buf[256];
         const int n = uart_read_bytes(port, buf, sizeof(buf), pdMS_TO_TICKS(20));
-        if (n > 0)
+        const int64_t now = esp_timer_get_time();
+        if (n > 0) {
+          uart_last_rx_us_ = now;
           worker->push(std::span<const uint8_t>(buf, static_cast<size_t>(n)));
+        }
+        // A panel that went away (tab closed, cable pulled) leaves the console fast:
+        // put it back for idf.py monitor and the like.
+        if (uart_baud_ != uart_default_baud_ && now - uart_last_rx_us_ > 3'000'000) {
+          set_uart_baud(uart_default_baud_);
+          logger_.info("No panel on the UART for 3 s: console back to {} baud", uart_default_baud_);
+        }
+        if (!uart_transport_->telemetry->streaming() && now - last_announce_us_ > 30'000'000)
+          announce();
         return false;
       },
       .task_config = {.name = "svc_uart_rx", .stack_size_bytes = 3 * 1024},
   });
   uart_rx_task_->start();
   return true;
+}
+
+void ServiceLink::set_uart_baud(uint32_t baud) {
+  const auto port = static_cast<uart_port_t>(kConsoleUart);
+  uart_wait_tx_done(port, pdMS_TO_TICKS(200)); // what was queued goes out at the old rate
+  uart_set_baudrate(port, baud);
+  uart_baud_ = baud;
+  uart_last_rx_us_ = esp_timer_get_time();
 }
 
 void ServiceLink::uart_send(std::span<const uint8_t> f) {
@@ -269,8 +305,10 @@ void ServiceLink::emit(std::span<const float> values) {
   const auto now_us = static_cast<uint32_t>(esp_timer_get_time());
   if (usb_transport_ && usb_transport_->telemetry->streaming())
     usb_transport_->telemetry->emit(values, now_us);
-  if (uart_transport_ && uart_transport_->telemetry->streaming() &&
-      n % static_cast<uint32_t>(std::max(1, config_.uart_telemetry_divider)) == 0)
+  // At the console's 115200 baud the full rate does not fit beside the logs and status.
+  const uint32_t divider =
+      uart_baud_ >= 460800 ? 1 : static_cast<uint32_t>(std::max(1, config_.uart_telemetry_divider));
+  if (uart_transport_ && uart_transport_->telemetry->streaming() && n % divider == 0)
     uart_transport_->telemetry->emit(values, now_us);
 }
 
@@ -283,9 +321,22 @@ bool ServiceLink::streaming() const {
 
 // ---- system module --------------------------------------------------------------------
 
-void ServiceLink::handle_system(const espp::stream_frame::Frame &f, const reply_fn &reply) {
+void ServiceLink::handle_system(const espp::stream_frame::Frame &f, const reply_fn &reply,
+                                bool uart) {
   if (f.is_reply())
     return;
+  if (f.type == kSystemSetBaud) {
+    if (!uart || f.payload.size() < 4)
+      return;
+    const uint32_t baud = espp::stream_frame::get_u32(f.payload);
+    if (baud < 9600 || baud > 2'000'000)
+      return;
+    const uint8_t which = kSystemSetBaud;
+    reply(espp::stream_frame::build_frame(true, kSystemModule, kSystemOk,
+                                          std::span<const uint8_t>(&which, 1)));
+    set_uart_baud(baud);
+    return;
+  }
   if (f.type == kSystemReset) {
     const uint8_t which = kSystemReset;
     reply(espp::stream_frame::build_frame(true, kSystemModule, kSystemOk,

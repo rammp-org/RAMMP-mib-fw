@@ -8,30 +8,32 @@ no server.
 
 ## Connect
 
+Open <https://rammp-org.github.io/RAMMP-mib-fw/> in desktop Chrome or Edge, plug
+into the MIB's **USB-C**, press **Connect** with **Web Serial (USB-C)** selected,
+and pick the CH343 port. The MIB prints that link on its console at boot and
+every 30 s until a panel connects, so `idf.py monitor` shows where to go.
+
+The USB-C is a CH343P USB-UART bridge on the console UART, not native USB.
+While the panel is connected it asks the MIB to run the console at 921600 baud
+(telemetry at 50 Hz); the MIB returns to 115200 when the panel disconnects, or
+3 s after the panel goes quiet, so `idf.py monitor` and flashing are unchanged.
+If the MIB reboots under the panel, the panel drops back to 115200 and asks
+again. The board's DTR/RTS auto-reset lines are held deasserted while connected;
+**Reset MIB** pulses them the way `idf.py monitor` does.
+
+Other links:
+
 | Link | Cable | Browser | Notes |
 | --- | --- | --- | --- |
-| WebUSB | the P4's USB 2.0 HS port: **J3**, the 4-pin header | Chrome / Edge, Chrome for Android | Chrome offers the page when the MIB is plugged in. 50 Hz telemetry. |
-| Web Serial | the USB-C (CH343 USB-UART, the console) | desktop Chrome / Edge | No plug-in prompt (the CH343 has fixed descriptors). Telemetry at 10 Hz on 115200 baud; the MIB's log is the stream itself. |
-| Simulated MIB | none | any | An in-page MIB with two modelled drive wheels (`mib_sim.js`), for trying the panel. |
+| Web Serial | USB-C | desktop Chrome / Edge | The default. Untested on phones: whether Chrome for Android's Web Serial reaches a USB-UART bridge is unverified. |
+| WebUSB | the P4's USB 2.0 HS port, **J3** (4-pin header: 1 VCC_5V, 2 D−, 3 D+, 4 GND) | Chrome / Edge, Chrome for Android | Chrome offers the page when it is plugged in. Needs a J3-to-USB cable; wire D−, D+ and GND and leave pin 1 open unless the MIB is powered only from that cable. Not tried on hardware. This is the way to reach the MIB from a phone. |
+| Simulated MIB | none | any | An in-page MIB with two modelled drive wheels (`mib_sim.js`). |
 
-**The ESP32-P4-ETH's USB-C is not native USB.** It goes to a CH343P USB-UART
-bridge (UART0) and stays the console and the flashing port. The P4's
-native USB is only on J3 (pin 1 VCC_5V, 2 D−, 3 D+, 4 GND; Waveshare schematic
-`ESP32-P4-ETH-datasheet.pdf`). WebUSB and the "go to this page" notification
-need a cable from J3 to a USB connector, for example a panel-mount USB-C on the
-MIB enclosure. Wire D−, D+ and GND; leave pin 1 unconnected unless the MIB is
-powered only from that cable, so a laptop's 5 V is never tied to the MIB's own
-5 V rail. Not yet tried on hardware.
-
-Plugging J3 into a laptop: Chrome shows a notification for
-`rammp-org.github.io/RAMMP-mib-fw/` (`service_landing_page_url` in
-`MIBconfig.hpp`). That URL serves this folder once GitHub Pages is enabled for
-the repository (Settings, Pages, Source: GitHub Actions); the
-`control_panel_pages.yml` workflow deploys it on every push to `main` that
-touches `tools/mib_panel/`.
-
-Locally: `python3 -m http.server -d tools/mib_panel 8000` and open
-`http://localhost:8000/`. WebUSB and Web Serial need https or localhost.
+Hosting: the `control_panel_pages.yml` workflow publishes this folder to GitHub
+Pages on every push to `main` that touches `tools/mib_panel/` (the Pages
+environment deploys from `main` only). Locally:
+`python3 -m http.server -d tools/mib_panel 8000` and open
+`http://localhost:8000/` (Web Serial and WebUSB need https or localhost).
 
 ## What it does
 
@@ -78,7 +80,7 @@ person on the e-stop.
 ## Protocol
 
 espp `stream_frame` frames, routed by module: telemetry (3, espp `Telemetry`),
-console log (0x10), system (0x20: reset, info), discovery (0xFF) and the MIB
+console log (0x10), system (0x20: reset, info, UART rate), discovery (0xFF) and the MIB
 control module (0x40), documented in
 `components/MibSystem/include/mib_panel_protocol.hpp`. `mib_link.js` mirrors
 the numbers.

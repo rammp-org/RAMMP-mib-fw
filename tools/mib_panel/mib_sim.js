@@ -18,7 +18,7 @@ class SimMib {
       // Not in the firmware yet: shows how a plugged-in sensor appears on the panel.
       'sensor.imu_pitch', 'sensor.imu_roll',
     ];
-    this.streaming = false; this.state = 0; this.profile = 1; this.estop = { latched: true, clearing: false, cause: 'boot', releases: 0 };
+    this.streaming = false; this.baud = 115200; this.state = 0; this.profile = 1; this.estop = { latched: true, clearing: false, cause: 'boot', releases: 0 };
     this.seat = [0, 0, 0, 0]; this.stick = { x: 0, y: 0, until: 0 }; this.hmi = { x: 0, y: 0 };
     this.plan = { lin: 0, ang: 0 }; this.tuningReq = 0; this.cmdSeq = 0;
     this.axes = AXES.map(a => ({
@@ -43,7 +43,7 @@ class SimMib {
   ok(req, v = 0) { this.reply(MIBP.OK, u8(req, v)); }
   err(req, why) { this.reply(MIBP.ERROR, cat(u8(req), new TextEncoder().encode(why))); }
 
-  receive(bytes) { for (const f of this.parser.feed(bytes).frames) this.handle(f); }
+  receive(bytes) { this.lastRx = this.now(); for (const f of this.parser.feed(bytes).frames) this.handle(f); }
   handle(f) {
     const p = f.payload, dv = new DataView(p.buffer, p.byteOffset, p.byteLength), F = o => dv.getFloat32(o, true);
     if (f.module === M_TM) {
@@ -53,6 +53,8 @@ class SimMib {
     }
     if (f.module === M_SYS) {
       if (f.type === SYS.INFO) this.send(M_SYS, SYS.INFO_REPLY, new TextEncoder().encode(JSON.stringify({ product: 'RAMMP MIB (simulated)', project: 'rammp_mib', version: 'sim', built: new Date().toISOString().slice(0, 16), idf: 'v6.0.1', reset_reason: 'power-on', uptime_s: Math.round(this.now()), usb: true, uart: true, ip: '192.168.4.1' })));
+      // The UART's rate, for a test harness that models the serial link (SimTransport ignores it).
+      if (f.type === SYS.SET_BAUD) { this.send(M_SYS, SYS.OK, u8(SYS.SET_BAUD)); this.baud = dv.getUint32(0, true); this.lastRx = this.now(); return; }
       if (f.type === SYS.RESET) { this.send(M_SYS, SYS.OK, u8(SYS.RESET)); this.state = 0; this.estop.latched = true; this.estop.cause = 'boot'; setTimeout(() => { this.state = 1; }, 1200); }
       return;
     }
@@ -203,6 +205,7 @@ class SimMib {
     }
   }
   emitTelemetry() {
+    if (this.baud !== 115200 && this.now() - (this.lastRx || 0) > 3) this.baud = 115200;
     if (!this.streaming) return;
     const now = this.now(), st = (this.state === 1 && this.estop.latched) ? 4 : this.state, live = now < this.stick.until;
     const v = [st, this.estop.latched ? 1 : 0, this.profile, live ? this.stick.x : 0, live ? this.stick.y : 0, 41 + Math.sin(now / 30), ...this.seat];

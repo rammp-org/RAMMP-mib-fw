@@ -105,23 +105,39 @@ class UsbTransport {
 // The MIB's USB-C is a CH343 USB-UART bridge on the console UART. Its DTR/RTS drive the
 // board's EN / BOOT auto-reset circuit, so both are held deasserted while connected.
 class SerialTransport {
-  constructor(port) { this.port = port || null; this.kind = 'serial'; this.reader = null; this.writer = null; }
-  async open() {
+  constructor(port) { this.port = port || null; this.kind = 'serial'; this.reader = null; this.writer = null; this.baud = 115200; this.reopening = null; }
+  async open(baud = 115200) {
     if (!navigator.serial) throw new Error('Web Serial is not available in this browser (use desktop Chrome or Edge)');
     if (!this.port) this.port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x1a86 }] });
-    await this.port.open({ baudRate: 115200, bufferSize: 65536 });
+    await this.port.open({ baudRate: baud, bufferSize: 65536 }); this.baud = baud;
     try { await this.port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (e) {}
     this.writer = this.port.writable.getWriter();
   }
-  name() { return 'Web Serial (USB-C console)'; }
-  async send(bytes) { await this.writer.write(bytes); }
+  name() { return `Web Serial (USB-C console, ${this.baud} baud)`; }
+  async send(bytes) { if (this.reopening) await this.reopening; if (!this.writer) throw new Error('link closed'); await this.writer.write(bytes); }
   async readLoop(onData) {
-    while (this.port && this.port.readable) {
+    for (;;) {
+      if (this.reopening) await this.reopening;
+      if (!this.port || !this.port.readable) return;
       this.reader = this.port.readable.getReader();
       try {
-        for (;;) { const { value, done } = await this.reader.read(); if (done) return; if (value) onData(value); }
-      } finally { try { this.reader.releaseLock(); } catch (e) {} this.reader = null; }
+        for (;;) { const { value, done } = await this.reader.read(); if (done) break; if (value) onData(value); }
+      } catch (e) { if (!this.reopening) throw e; }
+      finally { try { this.reader.releaseLock(); } catch (e) {} this.reader = null; }
+      if (!this.reopening) return;
     }
+  }
+  // Close and reopen at another rate; the read loop waits and carries on.
+  async setBaud(baud) {
+    if (baud === this.baud || !this.port) return;
+    let done; this.reopening = new Promise(r => { done = r; });
+    try {
+      try { if (this.reader) await this.reader.cancel(); } catch (e) {}
+      while (this.reader) await new Promise(r => setTimeout(r, 5));
+      try { this.writer.releaseLock(); } catch (e) {} this.writer = null;
+      await this.port.close();
+      await this.open(baud);
+    } finally { this.reopening = null; done(); }
   }
   // A hardware reset through the auto-reset circuit, the way idf.py monitor does it.
   async hardReset() {
@@ -150,7 +166,8 @@ class SimTransport {
 // ---------------------------------------------------------------- protocol numbers
 const M_TM = 3, M_CON = 0x10, M_SYS = 0x20, M_MIB = 0x40;
 const TM = { GET_SCHEMA: 0x01, SET_STREAM: 0x02, SCHEMA: 0x81, SAMPLE: 0x82, OK: 0x83, ERROR: 0x84 };
-const SYS = { RESET: 0x01, INFO: 0x02, OK: 0x81, INFO_REPLY: 0x82 };
+const SYS = { RESET: 0x01, INFO: 0x02, SET_BAUD: 0x03, OK: 0x81, INFO_REPLY: 0x82 };
+const SERIAL_FAST_BAUD = 921600;
 const MIBP = {
   OVERRIDE: 0x01, RELEASE: 0x02, TUNING: 0x03, CLEAR_FAULT: 0x04, DRIVE: 0x05, STICK: 0x06,
   SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, OK: 0x81, STATUS_REPLY: 0x89, ERROR: 0x8F, ALL: 0xFF,
@@ -226,19 +243,48 @@ class MibLink {
   constructor(transport, handlers = {}) {
     this.t = transport; this.h = handlers; this.parser = new SfParser(transport.kind === 'serial');
     this.waiters = []; this.store = new TelemetryStore(); this.dec = new TextDecoder(); this.open = false;
+    this.fast = false; this.lastFrame = 0;
   }
   async connect() {
     await this.t.open(); this.open = true;
     this.t.readLoop(d => this.onBytes(d))
       .catch(e => this.h.onLog && this.h.onLog(`link read error: ${e.message}\n`, 'err'))
-      .finally(() => { if (this.open) { this.open = false; this.failAll('link closed'); this.h.onClose && this.h.onClose(true); } });
+      .finally(() => { if (this.open) { this.open = false; clearInterval(this.watch); this.failAll('link closed'); this.h.onClose && this.h.onClose(true); } });
+    if (this.t.kind === 'serial') {
+      await this.negotiateBaud();
+      // A MIB that rebooted is back at 115200 and cannot read us: drop back and ask again.
+      this.watch = setInterval(async () => {
+        if (!this.open || this.busy) return;
+        // Still slow but the MIB answers (it was booting when we asked): ask again.
+        if (!this.fast && performance.now() - this.lastFrame < 1000 && performance.now() - this.lastNeg > 5000) {
+          this.busy = true; await this.negotiateBaud(); this.busy = false; return;
+        }
+        if (!this.fast || performance.now() - this.lastFrame < 2500) return;
+        this.busy = true; this.fast = false;
+        this.h.onLog && this.h.onLog('[panel] no frames for 2.5 s: back to 115200 baud\n', 'sys');
+        try { await this.t.setBaud(115200); this.parser = new SfParser(true); await new Promise(r => setTimeout(r, 300)); await this.negotiateBaud(); await this.send(M_TM, TM.GET_SCHEMA); } catch (e) {}
+        this.busy = false;
+      }, 500);
+    }
     await this.send(M_TM, TM.GET_SCHEMA);
     const p = new Uint8Array(3); p[0] = 1; new DataView(p.buffer).setUint16(1, 20, true);
     await this.send(M_TM, TM.SET_STREAM, p);
   }
+  // Ask the MIB to run its console at 921600 while the panel is connected: at 115200 the
+  // telemetry has to be decimated. The MIB drops back to 115200 3 s after the panel goes quiet.
+  async negotiateBaud() {
+    this.lastNeg = performance.now();
+    try {
+      const p = new Uint8Array(4); new DataView(p.buffer).setUint32(0, SERIAL_FAST_BAUD, true);
+      await this.request(M_SYS, SYS.SET_BAUD, p, [SYS.OK], 1000);
+      await this.t.setBaud(SERIAL_FAST_BAUD); this.parser = new SfParser(true); this.fast = true; this.lastFrame = performance.now();
+      this.h.onLog && this.h.onLog(`[panel] console at ${SERIAL_FAST_BAUD} baud while connected\n`, 'sys');
+    } catch (e) { this.h.onLog && this.h.onLog(`[panel] staying at 115200 baud, telemetry decimated (${e.message})\n`, 'sys'); }
+  }
   async close() {
-    if (!this.open) return; this.open = false;
+    if (!this.open) return; this.open = false; clearInterval(this.watch);
     try { const p = new Uint8Array(3); await this.send(M_TM, TM.SET_STREAM, p, true); } catch (e) {}
+    if (this.fast) { try { const p = new Uint8Array(4); new DataView(p.buffer).setUint32(0, 115200, true); await this.send(M_SYS, SYS.SET_BAUD, p, true); await new Promise(r => setTimeout(r, 150)); } catch (e) {} }
     this.failAll('disconnected'); try { await this.t.close(); } catch (e) {}
     this.h.onClose && this.h.onClose(false);
   }
@@ -249,6 +295,7 @@ class MibLink {
     for (const f of frames) this.onFrame(f);
   }
   onFrame(f) {
+    this.lastFrame = performance.now();
     if (f.module === M_TM && f.type === TM.SAMPLE) return this.onSamples(f.payload);
     if (f.module === M_TM && f.type === TM.SCHEMA) return this.onSchema(f.payload);
     if (f.module === M_CON && f.type === 0x82) return this.h.onLog && this.h.onLog(this.dec.decode(f.payload));
