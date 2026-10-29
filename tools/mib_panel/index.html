@@ -239,8 +239,14 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
         <div class="row" style="margin-top:14px"><div class="pad" id="pad"><div class="knob" id="knob"></div></div></div>
         <div class="hint" id="padHint">Enable drive, then hold and drag on the pad. Up is forward, right is a right turn.</div>
         <div class="field"><span class="ax-label">Pad gain</span><input class="ax-range" id="padGain" type="range" min="0.1" max="1" step="0.05" value="0.4"><span class="unit" id="padGainV">40 %</span></div>
+        <div class="hint" id="padScale">–</div>
+        <section class="ax-tiles" style="margin-top:12px;grid-template-columns:1fr 1fr">
+          <div class="ax-tile"><div class="ax-label">Drive L current</div><div class="ax-value" id="drIqL">–<small>A</small></div><div class="ax-sub" id="drVelL">–</div></div>
+          <div class="ax-tile"><div class="ax-label">Drive R current</div><div class="ax-value" id="drIqR">–<small>A</small></div><div class="ax-sub" id="drVelR">–</div></div>
+        </section>
       </div>
       <div>
+        <div class="ax-panel chart-wrap"><h2>Drive current</h2><div class="ax-cap">Torque-producing current i<sub>q</sub> of each drive wheel, from its MotorState.</div><div class="chart" id="cDrIq"></div></div>
         <div class="ax-panel chart-wrap"><h2>Stick</h2><div class="ax-cap">The stick the MIB is driving on (the panel's while you hold the pad, else the HMI's).</div><div class="chart" id="cDrStick"></div></div>
         <div class="ax-panel chart-wrap"><h2>Wheel speed</h2><div class="ax-cap">Command and measured speed, both drive wheels.</div><div class="chart" id="cDrVel"></div></div>
       </div>

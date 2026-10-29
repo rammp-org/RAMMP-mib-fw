@@ -34,7 +34,7 @@ class SimMib {
   start() {
     this.physics = setInterval(() => this.step(), 5);
     this.motorTimer = setInterval(() => this.publishMotorCommands(), 50);
-    this.stateTimer = setInterval(() => this.reportStates(), 50);
+    this.stateTimer = setInterval(() => this.reportStates(), 20); // MotorState at 50 Hz, as the PACE RACER (ab44267)
     this.tmTimer = setInterval(() => this.emitTelemetry(), 20);
     setTimeout(() => { this.state = 1; this.log('I (1520) RAMMP_MIB: System state: INIT done, IDLE'); }, 1200);
     this.log('I (312) ServiceLink: Service link up: (simulated) | fw rammp_mib sim');
@@ -154,7 +154,9 @@ class SimMib {
     // planner: stick -> chassis velocity with the profile's limits
     const prof = [{ v: 0.35, w: 1.0, a: 0.5, aw: 1.0 }, { v: 0.75, w: 2.0, a: 1.0, aw: 2.0 }, { v: 1.0, w: 3.14, a: 2.0, aw: 4.0 }][this.profile];
     const live = now < this.stick.until, sx = live ? this.stick.x : this.hmi.x, sy = live ? this.stick.y : this.hmi.y;
-    const tl = drive ? Math.max(-prof.v, Math.min(prof.v, sy)) : 0, ta = drive ? Math.max(-prof.w, Math.min(prof.w, sx)) : 0;
+    // espp TrajectoryPlanner: the normalized stick, kept in the unit circle, scaled by the profile.
+    const mag = Math.hypot(sx, sy), k = mag > 1 ? 1 / mag : 1;
+    const tl = drive ? sy * k * prof.v : 0, ta = drive ? sx * k * prof.w : 0;
     const dt = 0.05, toward = (c, t, r) => c + Math.max(-r * dt, Math.min(r * dt, t - c));
     this.plan.lin = toward(this.plan.lin, tl, prof.a); this.plan.ang = toward(this.plan.ang, ta, prof.aw);
     const r = 0.127, half = 0.558 / 2, wl = (this.plan.lin - this.plan.ang * half) / r, wr = -(this.plan.lin + this.plan.ang * half) / r;

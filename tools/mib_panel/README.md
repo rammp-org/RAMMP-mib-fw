@@ -61,7 +61,7 @@ environment deploys from `main` only).
 - **Auto-tune**: the PACE dyno's speed-loop pole placement
   (`test-bench/web/characterize.html`, `stepSg`), on the chair. It measures the
   drag current at half the step speed, then the plant gain K = α / i<sub>q</sub>
-  from a torque step (rescaled so the spin-up spans about 0.6 s of 20 Hz
+  from a torque step (rescaled so the spin-up spans about 0.6 s of 50 Hz
   `MotorState`), sets k<sub>p</sub> = 2ω<sub>n</sub>/K and k<sub>i</sub> = ω<sub>n</sub>²/K for each
   ω<sub>n</sub> tried, verifies each with a speed step, and keeps the fastest one
   under the overshoot limit. Gains stay live until **Save to board**; an abort

@@ -385,8 +385,9 @@ async function autotuneAxis(axis, o) {
   mark(0, 'ok', `i<sub>drag</sub> = ${fmt(iDrag, 2)} A at ${fmt(vMean, 2)} rad/s`);
 
   // 2. Plant gain: a torque step from rest; the speed slope over the current above drag.
-  // MotorState is 20 Hz, so the spin-up must last long enough to sample: a probe step
-  // first, then the torque rescaled so the wheel takes about 0.6 s to reach 1.2x the step.
+  // MotorState arrives at 50 Hz (20 Hz before PACE RACER ab44267), so the spin-up must last
+  // long enough to sample: a probe step first, then the torque rescaled so the wheel takes
+  // about 0.6 s to reach 1.2x the step.
   const torqueStep = async (s, tau) => {
     const tMark = link.store.now();
     setOverride(axis, { state: REQ_STATE.ARMED, mode: MODE.TORQUE, torque: s * tau, torqueLimit: tl, velLimit: vl, accelLimit: 0 });
@@ -414,7 +415,7 @@ async function autotuneAxis(axis, o) {
     tau = Math.max(0.2, Math.min(tl, tau));
   }
   if (!res.win.length) throw new Error(`no motion up to a ${fmt(tau, 1)} N·m step`);
-  if (res.win.length < 4) throw new Error(`the wheel spun up too fast to sample (${res.win.length} MotorStates at 20 Hz) even at ${fmt(res.tau, 2)} N·m`);
+  if (res.win.length < 4) throw new Error(`the wheel spun up too fast to sample (${res.win.length} distinct MotorStates) even at ${fmt(res.tau, 2)} N·m`);
   const { rows, win, fit, iNet, s } = res;
   if (!(fit.m > 0) || !(iNet > 0.05)) throw new Error(`plant fit failed (α ${fmt(fit.m)} rad/s², net current ${fmt(iNet)} A)`);
   const K = fit.m / iNet;
@@ -460,7 +461,27 @@ $('atRevert').onclick = async () => {
 $('drEnable').onclick = async () => { try { await link.drive(true, +$('drProfile').value); toast('Drive enabled', 'ok'); } catch (e) { toast('Enable: ' + e.message, 'err'); } };
 $('drDisable').onclick = async () => { padRelease(); try { await link.drive(false, +$('drProfile').value); toast('Drive disabled', 'ok'); } catch (e) { toast('Disable: ' + e.message, 'err'); } };
 $('drProfile').onchange = async () => { if (status && status.state === 'DRIVE_ENABLED') { try { await link.drive(true, +$('drProfile').value); } catch (e) { toast(e.message, 'err'); } } };
-$('padGain').oninput = () => { $('padGainV').textContent = Math.round($('padGain').value * 100) + ' %'; };
+// The MIB's drive profiles (MIBconfig.hpp). The trajectory planner scales the normalized stick
+// by the active profile's maxima, so the pad gain is a stick deflection, not a speed.
+const PROFILE_MAX = [{ v: 0.35, w: 1.0 }, { v: 0.75, w: 2.0 }, { v: 1.0, w: 3.14159 }];
+function renderPadScale() {
+  const g = +$('padGain').value, p = status ? status.profile : +$('drProfile').value, m = PROFILE_MAX[p] || PROFILE_MAX[1];
+  $('padGainV').textContent = Math.round(g * 100) + ' %';
+  $('padScale').innerHTML = `Full pad = a real stick at <b>${Math.round(g * 100)} %</b> (stick ±${g.toFixed(2)}): up to <b>${(g * m.v).toFixed(2)} m/s</b> forward and <b>${(g * m.w).toFixed(2)} rad/s</b> turning in ${PROFILE_NAMES[p] || 'NORMAL'} (full stick: ${m.v} m/s, ${m.w.toFixed(1)} rad/s). The MIB keeps stick x and y inside the unit circle.`;
+}
+const PROFILE_NAMES = ['LOW', 'NORMAL', 'HIGH'];
+$('padGain').oninput = renderPadScale; $('drProfile').addEventListener('change', renderPadScale);
+renderPadScale();
+// Drive tiles: current and speed of each drive wheel, live.
+setInterval(() => {
+  if (!link || !link.store.count || !$('tab-drive').classList.contains('on')) return;
+  const st = link.store;
+  for (const [side, seg] of [['L', 'drive_left'], ['R', 'drive_right']]) {
+    axSet($('drIq' + side), st.get(`${seg}.iq`), { digits: 2 });
+    $('drVel' + side).textContent = `${fmt(st.get(`${seg}.vel`), 2)} rad/s (cmd ${fmt(st.get(`${seg}.cmd_vel`), 2)}) · ${fmt(st.get(`${seg}.torque`), 2)} N·m`;
+  }
+  renderPadScale();
+}, 200);
 const padState = { down: false, x: 0, y: 0, timer: null };
 function padMove(e) {
   const r = $('pad').getBoundingClientRect(); let x = ((e.clientX - r.left) / r.width) * 2 - 1, y = -(((e.clientY - r.top) / r.height) * 2 - 1);
@@ -558,6 +579,7 @@ const allCharts = [
     { ch: 'drive_left.vel', label: 'Drive L', color: c()[0] }, { ch: 'drive_left.cmd_vel', label: 'Drive L cmd', color: c()[0], dash: [6, 4] },
     { ch: 'drive_right.vel', label: 'Drive R', color: c()[1] }, { ch: 'drive_right.cmd_vel', label: 'Drive R cmd', color: c()[1], dash: [6, 4] }], 'Wheel speed, rad/s'),
   new LiveChart($('cOvIq'), [{ ch: 'drive_left.iq', label: 'Drive L', color: c()[0] }, { ch: 'drive_right.iq', label: 'Drive R', color: c()[1] }], 'Current i_q, A'),
+  new LiveChart($('cDrIq'), [{ ch: 'drive_left.iq', label: 'Drive L', color: c()[0] }, { ch: 'drive_right.iq', label: 'Drive R', color: c()[1] }], 'Current i_q, A'),
   new LiveChart($('cDrStick'), [{ ch: 'mib.stick_x', label: 'x (turn)', color: c()[0] }, { ch: 'mib.stick_y', label: 'y (forward)', color: c()[2] }], 'Stick, normalized'),
   new LiveChart($('cDrVel'), [
     { ch: 'drive_left.vel', label: 'Drive L', color: c()[0] }, { ch: 'drive_left.cmd_vel', label: 'Drive L cmd', color: c()[0], dash: [6, 4] },
