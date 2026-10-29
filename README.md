@@ -27,6 +27,7 @@ This repository contains the firmware for the RAMMP MIB (MEBot Interface Board),
 - [ ] Read and implement software-based limit switches
 - [ ] Read MT6701 and carriage (TBD) encoders
 - [ ] Read load cell data
+- [x] ROS 2 (the Jetson): the MIB's state out, a logged joystick in. See [docs/ros2.md](docs/ros2.md)
 
 ### Automated Setup
 

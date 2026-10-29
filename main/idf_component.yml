@@ -3,6 +3,9 @@ dependencies:
   idf:
     version: '>=6.0'
   espp/esp32-p4-eth: '>=1.3'
+  # The Jetson (ROS 2 on rmw_cyclonedds_cpp) needs the CycloneDDS interop fixes of
+  # esp-cpp/espp#862; 1.3.10 and older exchange no samples with it (docs/ros2.md).
+  # TODO: raise to the first release that has #862.
   espp/rtps: '>=1.3'
   espp/cdr: '>=1.3'
   espp/logger: '>=1.3'
