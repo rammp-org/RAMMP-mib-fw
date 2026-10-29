@@ -8,6 +8,7 @@
 #include "bsp.hpp"
 #include "base_component.hpp"
 #include "drive_controller.hpp"
+#include "estop/estop.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
@@ -155,9 +156,11 @@ private:
 
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
+  estop::Latch latch_;                         ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::chrono::steady_clock::time_point estop_entered_at_{}; ///< When ESTOP was last entered.
   mutable std::mutex estop_mutex_;             ///< Protects estop_entered_at_.
+  std::atomic<bool> estop_error_{false};       ///< ERROR came from the e-stop: left once it clears.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
