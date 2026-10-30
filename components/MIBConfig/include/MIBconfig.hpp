@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstdint>
 
+#include "driver/gpio.h"
+
 namespace mib::config {
 
 /// @brief State-machine task period.
@@ -13,6 +15,25 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
+
+/// @brief How long ESTOP holds before the MIB asks the e-stop latch to clear.
+inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
+
+/// @brief How often that clear is re-requested while the latch refuses it (a switch still
+/// held, or the joystick not heard yet). Matches the latch's clear window.
+inline constexpr auto estop_clear_retry = std::chrono::seconds{1};
+
+/// @brief Motor debug list (rammp::Motors) publication period.
+inline constexpr auto motor_states_publish_interval = std::chrono::milliseconds{200};
+
+/// @brief A board whose last MotorState is older than this is reported offline.
+inline constexpr auto motor_state_timeout = std::chrono::milliseconds{500};
+
+/// @brief A jog stops this long after the last MotorJog (rammp::MotorJog's contract).
+inline constexpr auto motor_jog_timeout = std::chrono::milliseconds{300};
+
+/// @brief Output-shaft speed of a motor debug jog, in rad/s.
+inline constexpr float motor_jog_velocity_radps = 1.0f;
 
 /// @brief IMU read task period.
 inline constexpr auto imu_task_interval = std::chrono::milliseconds{10};
@@ -34,6 +55,10 @@ inline constexpr std::uint8_t ethernet_netmask[4] = {255, 255, 255, 0};
 
 /// @brief IPv4 gateway address advertised by the MIB DHCP server.
 inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
+
+/// @brief E-stop clear button: normally open to GND, held 2 s. Any GPIO the board leaves free.
+/// GPIO_NUM_NC: no button wired, so only MibSystem calling latch_.start_clear_attempt() clears it.
+inline constexpr gpio_num_t estop_clear_gpio = GPIO_NUM_NC;
 
 /// @brief Differential-drive geometry and motor direction configuration.
 struct DifferentialDriveConfig {

@@ -7,4 +7,16 @@ dependencies:
   espp/cdr: '>=1.3'
   espp/logger: '>=1.3'
   espp/task: '>=1.3'
+  # Left to itself the component manager settles on LVGL 9.4.0, whose Kconfig rejects
+  # CONFIG_LV_MEM_SIZE_KILOBYTES=0 ("LV_MEM_SIZE >= 2kB is required"); 9.6 builds.
+  lvgl/lvgl: '>=9.6.0'
+  # The robot-wide e-stop (estop::Latch).
+  estop_core:
+    git: https://github.com/rammp-org/rammp-estop-core.git
+    version: v0.3.0
+  # estop_core fetches the RTPS spec's messages from git; this makes every user of it
+  # take the rammp-rtps submodule's copy instead (a managed component would otherwise
+  # win over EXTRA_COMPONENT_DIRS).
+  rammp_rtps_messages:
+    override_path: "../external/rammp-rtps/components/rammp_rtps_messages"
   espp/bno055: '>=1.3.10'

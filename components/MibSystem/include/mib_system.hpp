@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -8,15 +9,18 @@
 #include "bsp.hpp"
 #include "base_component.hpp"
 #include "drive_controller.hpp"
+#include "estop/estop.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
 
 /// @brief Top-level MIB application: owns the system state machine and RTPS endpoints.
 ///
-/// Brings the board up through mib::bsp::MIB, then runs two periodic tasks: a
-/// fast state task that advances the system state machine, and a slower
-/// publication task that reports system / seat state to the rest of the robot.
+/// Brings the board up through mib::bsp::MIB, then runs three periodic tasks: a
+/// fast state task that advances the system state machine, a slower
+/// publication task that reports system / seat state to the rest of the robot,
+/// and the motor command task that commands every rammp::kAxes board and
+/// reports them to the joystick as rammp::Motors.
 ///
 /// \note Construction does no hardware work; call start() to bring the system up.
 class MibSystem : public espp::BaseComponent {
@@ -38,8 +42,31 @@ private:
     IDLE,          ///< Initialized and waiting; drive is disabled.
     CALIBRATE,     ///< Running a calibration routine.
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
+    AUTONOMOUS,    ///< The Jetson drives the base; any joystick input ends it (back to IDLE).
+    SHARED,        ///< Shared control; the joystick commands nothing, even when touched.
+    ESTOP,         ///< Emergency stop: the e-stop latch is active, drive stopped; IDLE once it clears.
     ERROR,         ///< Initialization or runtime failure; not operational.
   };
+
+  /// Guards shared with the state-machine model (tools/hfsm/mib_system.json).
+  /// \return True if the command asks to enable driving.
+  static bool drive_enable_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::ENABLE;
+  }
+  /// \return True if the command asks to disable driving.
+  static bool drive_disable_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::DISABLE;
+  }
+  /// \return True if the command changes the profile while already driving (an ENABLE
+  ///         received in DRIVE_ENABLED).
+  static bool profile_change_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::ENABLE;
+  }
+  /// \return True if the stick is off centre or any button is pressed.
+  static bool joystick_touched(const rammp::XYTwist &sample) {
+    return sample.x != 0.0f || sample.y != 0.0f || sample.twist != 0.0f ||
+           sample.buttons != rammp::Buttons::NONE;
+  }
 
   /// Create the RTPS publishers and subscribers.
   /// \note The RTPS participant must already be started.
@@ -49,6 +76,54 @@ private:
   /// Run one iteration of the state machine, acting on the current state.
   /// \note Runs on the state task.
   void run_state_step();
+
+  /// Enter ESTOP from the current state and stop the drive. ESTOP holds for
+  /// mib::config::estop_hold_duration, then asks the e-stop latch to clear (repeated every
+  /// mib::config::estop_clear_retry while the latch refuses), and returns to IDLE once the
+  /// latch has cleared. Called by run_state_step() while latch_.is_active().
+  /// \note Ignored in INIT (the blocking INIT step would overwrite the state; INIT enters
+  ///       ESTOP itself for the boot latch, without the hold) and in ERROR (bring-up
+  ///       failed; not operational).
+  void enter_estop();
+
+  /// Jetson control requests. The RTPS messages (AutonomousRequest, AutonomousStop,
+  /// SharedRequest, SharedStop) are not defined yet and their names may change, so these
+  /// take no payload and nothing calls them. They run on an RTPS receive thread once wired.
+  /// Autonomy starts from IDLE or DRIVE_ENABLED and always ends in IDLE, so driving has
+  /// to be re-enabled from the joystick afterwards.
+  /// IDLE or DRIVE_ENABLED -> AUTONOMOUS. Ignored elsewhere.
+  void handle_autonomous_request();
+  /// AUTONOMOUS -> IDLE. Ignored elsewhere.
+  void handle_autonomous_stop();
+  /// IDLE or DRIVE_ENABLED -> SHARED. Ignored elsewhere.
+  void handle_shared_request();
+  /// SHARED -> IDLE. Ignored elsewhere.
+  void handle_shared_stop();
+
+  /// Enter AUTONOMOUS or SHARED from a manual state.
+  /// \return False (and logs) if the current state is not IDLE or DRIVE_ENABLED.
+  bool enter_autonomy(SystemState autonomy_state, const char *name);
+
+  /// Leave autonomy: stop the drive and go to IDLE.
+  void leave_autonomy(const char *reason);
+
+  /// Handle one drive setpoint from the Jetson (autonomy).
+  /// \param linear_mps Forward velocity in metres per second.
+  /// \param angular_radps Angular velocity in radians per second, positive counter-clockwise.
+  /// \note Acted on in AUTONOMOUS and SHARED only. The RTPS topic for this is not defined
+  ///       yet, so nothing calls this. Runs on an RTPS receive thread once it does.
+  void handle_autonomy_setpoint(float linear_mps, float angular_radps);
+
+  /// Enter CALIBRATE from IDLE.
+  /// \note The trigger (a joystick command or another source) is not finalized; nothing
+  ///       calls this yet. Only valid from IDLE.
+  void enter_calibrate();
+
+  /// Leave ESTOP for IDLE once the e-stop latch has cleared. Until then, after the hold,
+  /// ask the latch to clear every mib::config::estop_clear_retry. Nothing is resumed:
+  /// driving must be re-enabled and the Jetson must request control again.
+  /// \note Runs on the state task.
+  void run_estop_step();
 
   /// Handle one joystick sample from the HMI.
   /// \param sample The received normalized stick position, buttons, and drive mode.
@@ -65,8 +140,16 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_drive_command(const rammp::DriveCommand &command);
 
-  /// Handle a motor controller status report.
-  void handle_motor_status();
+  /// Handle one board's state report.
+  /// \param index The board's row in rammp::kAxes.
+  /// \param state The received state.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_motor_state(size_t index, const rammp::MotorState &state);
+
+  /// Handle a motor jog request from the joystick (hold-to-run, motor debug).
+  /// \param jog The requested board and direction.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_motor_jog(const rammp::MotorJog &jog);
 
   /// Publish the current system state.
   /// \note Runs on the publication task.
@@ -76,8 +159,9 @@ private:
   /// \note Runs on the publication task.
   void publish_seat_state();
 
-  /// Publish velocity commands for the two drive motor controllers.
-  /// \note Runs on the publication task and feeds only the motor command topics.
+  /// Publish a command to every rammp::kAxes board: the wheel speeds while
+  /// driving, a jog while IDLE, otherwise DISARMED.
+  /// \note Runs on the motor command task.
   void publish_motor_commands();
 
   /// Start the IMU read task if the IMU initialized.
@@ -94,13 +178,20 @@ private:
   /// \note Runs on the publication task.
   void publish_diagnostics();
 
+  /// Publish the motor debug list: every board with its latest state.
+  /// \note Runs on the motor command task.
+  void publish_motor_states();
+
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
 
   mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
+  estop::Latch latch_;                         ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
+  std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
+  std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
   std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
   MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
@@ -109,10 +200,28 @@ private:
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
+  uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
+  /// When publish_motor_states() last sent a Motors sample (epoch = never).
+  std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
+  /// Latest state of each kAxes board, and when it arrived (epoch = never).
+  std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
+  std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
+  std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
+  mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
+  rammp::MotorJog latest_jog_{};               ///< Most recent jog request.
+  std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
+  mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
+  bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
-  std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
+  /// One command output per kAxes row, in table order.
+  std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>
+      motor_publishers_;
+  /// One state input per kAxes row, in table order.
+  std::array<std::unique_ptr<espp::Subscriber<rammp::MotorState>>, rammp::kAxisCount>
+      motor_state_subscribers_;
+  std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_; ///< Motor debug list.
+  std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
@@ -120,7 +229,7 @@ private:
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
   std::unique_ptr<espp::Task> imu_task_;           ///< Reads the IMU at 100 Hz.
-  std::chrono::steady_clock::time_point last_imu_log_{}; ///< Last IMU log time; IMU task only.
+  std::chrono::steady_clock::time_point last_imu_log_{};  ///< Last IMU log time; IMU task only.
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
-  std::atomic<bool> imu_reading_ok_{false};              ///< True if the latest IMU read succeeded.
+  std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
 };
