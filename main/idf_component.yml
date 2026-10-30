@@ -19,3 +19,4 @@ dependencies:
   # win over EXTRA_COMPONENT_DIRS).
   rammp_rtps_messages:
     override_path: "../external/rammp-rtps/components/rammp_rtps_messages"
+  espp/bno055: '>=1.3.10'

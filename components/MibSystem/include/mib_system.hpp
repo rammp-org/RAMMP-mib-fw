@@ -164,6 +164,20 @@ private:
   /// \note Runs on the motor command task.
   void publish_motor_commands();
 
+  /// Start the IMU read task if the IMU initialized.
+  /// \note Runs on the state task during INIT. A missing IMU is logged, not fatal.
+  void start_imu_task();
+
+  /// Read the IMU once and periodically log its orientation and calibration.
+  /// \note Runs on the IMU task.
+  /// \return True if the read succeeded.
+  bool update_imu();
+
+  /// Publish one Diagnostics sample, one item per RAMMP_DIAG_TABLE row.
+  /// Rows the MIB has no reading for are sent with no values.
+  /// \note Runs on the publication task.
+  void publish_diagnostics();
+
   /// Publish the motor debug list: every board with its latest state.
   /// \note Runs on the motor command task.
   void publish_motor_states();
@@ -185,6 +199,7 @@ private:
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
   uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
   /// When publish_motor_states() last sent a Motors sample (epoch = never).
   std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
@@ -198,6 +213,7 @@ private:
   mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
   bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
   /// One command output per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>
       motor_publishers_;
@@ -212,4 +228,8 @@ private:
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
+  std::unique_ptr<espp::Task> imu_task_;           ///< Reads the IMU at 100 Hz.
+  std::chrono::steady_clock::time_point last_imu_log_{};  ///< Last IMU log time; IMU task only.
+  std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
+  std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
 };
