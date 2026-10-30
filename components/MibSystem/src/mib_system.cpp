@@ -1,6 +1,7 @@
 #include "mib_system.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 #include <span>
@@ -8,19 +9,20 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
+#include "sdkconfig.h"
 
 using namespace std::chrono_literals;
 
-// The RTPS endpoint pool in sdkconfig.defaults (the same checks as #45): a MotorCommand and a
-// MotorTuning writer and a MotorState reader per axis-table board, plus the fixed endpoints
-// below. A row added to the axis table needs the limits raised; these fail the build until
-// they are. An sdkconfig made before the limits were raised keeps its old values: delete it.
+// The RTPS endpoint pool in sdkconfig.defaults: a MotorCommand and a MotorTuning writer and a
+// MotorState reader per axis-table board, plus the fixed endpoints below. A row added to the
+// axis table needs the limits raised; these checks fail the build until they are. An sdkconfig
+// made before the limits were raised keeps its old values: delete it.
 namespace {
-/// Fixed writers: MibStatus, estop-core's EStop and SPDP.
-constexpr size_t kFixedWriters = 3;
-/// Fixed readers: the joystick's XYTwist, SeatCommand and DriveCommand, estop-core's EStop
-/// and SPDP.
-constexpr size_t kFixedReaders = 5;
+/// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
+constexpr size_t kFixedWriters = 5;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
+/// estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 6;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
@@ -79,13 +81,15 @@ void MibSystem::start() {
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
         publish_seat_state();
+        publish_diagnostics();
         log_drive_status();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::publication_task_interval);
         return false;
       },
-      .task_config = {.name = "MIB state publication", .stack_size_bytes = 4 * 1024},
+      // 6 KB: also builds and publishes Diagnostics.
+      .task_config = {.name = "MIB state publication", .stack_size_bytes = 6 * 1024},
   });
   publication_task_->start();
 
@@ -93,6 +97,10 @@ void MibSystem::start() {
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
         publish_motor_commands();
+        if (std::chrono::steady_clock::now() - last_motor_state_publish_timestamp_ >=
+            mib::config::motor_states_publish_interval) {
+          publish_motor_states();
+        }
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::motor_command_task_interval);
@@ -100,7 +108,7 @@ void MibSystem::start() {
       },
       .task_config = {
           .name = "MIB motor commands",
-          .stack_size_bytes = 4 * 1024,
+          .stack_size_bytes = 6 * 1024, // Motors serializes a string per board
           .priority = 2,
       },
   });
@@ -171,37 +179,61 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
-  // Every axis in the table: command and tuning out, state in. Axes the MIB does not
-  // drive still get DISARMED commands, so their boards hold no WATCHDOG fault.
+  diagnostics_publisher_ = std::make_unique<espp::Publisher<rammp::Diagnostics>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::Diagnostics>::Config{.topic = rammp::kMcbDiagnostics.name,
+                                                  .type_name = rammp::kMcbDiagnostics.type,
+                                                  .reliability = Reliability::BEST_EFFORT});
+
+  if (!diagnostics_publisher_->is_valid()) {
+    logger_.error("Failed to create MIB diagnostics publisher");
+    return false;
+  }
+
   for (size_t i = 0; i < rammp::kAxisCount; i++) {
-    const auto &spec = rammp::kAxes[i];
-    auto &axis = axes_[i];
-    axis.command_publisher = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
+    const rammp::AxisSpec &axis = rammp::kAxes[i];
+    motor_publishers_[i] = std::make_unique<espp::Publisher<rammp::MotorCommand>>(
         mib_.rtps_participant(),
-        espp::Publisher<rammp::MotorCommand>::Config{.topic = spec.command.name,
-                                                     .type_name = spec.command.type,
+        espp::Publisher<rammp::MotorCommand>::Config{.topic = axis.command.name,
+                                                     .type_name = axis.command.type,
                                                      .reliability = Reliability::BEST_EFFORT});
-    axis.tuning_publisher = std::make_unique<espp::Publisher<rammp::MotorTuning>>(
+    motor_state_subscribers_[i] = std::make_unique<espp::Subscriber<rammp::MotorState>>(
         mib_.rtps_participant(),
-        espp::Publisher<rammp::MotorTuning>::Config{.topic = spec.tuning.name,
-                                                    .type_name = spec.tuning.type,
+        espp::Subscriber<rammp::MotorState>::Config{
+            .topic = axis.state.name,
+            .type_name = axis.state.type,
+            .reliability = Reliability::BEST_EFFORT,
+            .on_message = [this, i](const rammp::MotorState &state) {
+              handle_motor_state(i, state);
+            }});
+    // The control panel's gains (MotorTuning), resent by publish_motor_commands().
+    axes_[i].tuning_publisher = std::make_unique<espp::Publisher<rammp::MotorTuning>>(
+        mib_.rtps_participant(),
+        espp::Publisher<rammp::MotorTuning>::Config{.topic = axis.tuning.name,
+                                                    .type_name = axis.tuning.type,
                                                     .reliability = Reliability::BEST_EFFORT});
-    axis.state_subscriber = std::make_unique<espp::Subscriber<rammp::MotorState>>(
-        mib_.rtps_participant(), espp::Subscriber<rammp::MotorState>::Config{
-                                     .topic = spec.state.name,
-                                     .type_name = spec.state.type,
-                                     .reliability = Reliability::BEST_EFFORT,
-                                     .on_message = [this, i](const rammp::MotorState &state) {
-                                       std::lock_guard<std::mutex> lock(axes_mutex_);
-                                       axes_[i].state = state;
-                                       axes_[i].state_time = std::chrono::steady_clock::now();
-                                       axes_[i].state_seen = true;
-                                     }});
-    if (!axis.command_publisher->is_valid() || !axis.tuning_publisher->is_valid() ||
-        !axis.state_subscriber->is_valid()) {
-      logger_.error("Failed to create the RTPS endpoints for axis {}", spec.segment);
+    if (!motor_publishers_[i]->is_valid() || !motor_state_subscribers_[i]->is_valid() ||
+        !axes_[i].tuning_publisher->is_valid()) {
+      logger_.error("Failed to create the {} motor endpoints", axis.label);
       return false;
     }
+  }
+
+  motor_states_publisher_ = std::make_unique<espp::Publisher<rammp::Motors>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::Motors>::Config{.topic = rammp::kMibMotors.name,
+                                             .type_name = rammp::kMibMotors.type,
+                                             .reliability = Reliability::BEST_EFFORT});
+  motor_jog_subscriber_ = std::make_unique<espp::Subscriber<rammp::MotorJog>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::MotorJog>::Config{
+          .topic = rammp::kJoystickMotorJog.name,
+          .type_name = rammp::kJoystickMotorJog.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::MotorJog &jog) { handle_motor_jog(jog); }});
+  if (!motor_states_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
+    logger_.error("Failed to create the motor debug endpoints");
+    return false;
   }
 
   endpoints_ready_.store(true);
@@ -380,8 +412,20 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   return true;
 }
 
-void MibSystem::handle_motor_status() {
-  logger_.info("Motor status received - placeholder");
+void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  motor_states_[index] = state;
+  motor_state_times_[index] = std::chrono::steady_clock::now();
+}
+
+void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
+  if (jog.axis_id >= rammp::kAxisCount) {
+    logger_.warn("Ignoring motor jog for unknown axis {}", jog.axis_id);
+    return;
+  }
+  std::lock_guard<std::mutex> lock(jog_mutex_);
+  latest_jog_ = jog;
+  latest_jog_time_ = std::chrono::steady_clock::now();
 }
 
 void MibSystem::publish_system_state() {
@@ -478,25 +522,169 @@ void MibSystem::log_drive_status() {
                right_rad_per_second);
 }
 
+void MibSystem::start_imu_task() {
+  if (!mib_.init_imu()) {
+    logger_.warn("IMU unavailable; continuing without it");
+    return;
+  }
+  imu_reading_ok_.store(true);
+
+  imu_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        const bool ok = update_imu();
+
+        // Fixed-period schedule: waiting a full interval after each read would
+        // stretch the period by the read time. espp::Task copies the callback
+        // every iteration, so the deadline lives in a member, not the lambda.
+        const auto now = std::chrono::steady_clock::now();
+        imu_next_wake_ += ok ? mib::config::imu_task_interval : mib::config::imu_retry_interval;
+        if (imu_next_wake_ < now) {
+          imu_next_wake_ = now; // fell behind; skip the missed periods instead of bursting
+        }
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_until(lock, imu_next_wake_);
+        return false;
+      },
+      // 6 KB: the IMU log line left 508 B free of 4 KB on the bench.
+      .task_config = {.name = "MIB IMU", .stack_size_bytes = 6 * 1024},
+  });
+  imu_next_wake_ = std::chrono::steady_clock::now();
+  imu_task_->start();
+}
+
+bool MibSystem::update_imu() {
+  auto *imu = mib_.imu();
+  std::error_code ec;
+  // A BNO055 that lost power comes back in CONFIG mode and reads all zeros
+  // without a bus error, so after any failed read, run init() again first.
+  // Probe once before init(): init() polls the chip ID 20 times, and each
+  // failed poll logs an I2C error, which floods the console while it is unplugged.
+  bool ok = imu_reading_ok_.load();
+  if (!ok) {
+    if (imu->probe(ec)) {
+      ok = imu->init(ec);
+    } else {
+      ec = std::make_error_code(std::errc::no_such_device);
+    }
+  }
+  if (ok) {
+    ok = imu->update(ec);
+  }
+  imu_reading_ok_.store(ok);
+
+  // Logging shares the publication rate so a failing bus does not flood the console.
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last_imu_log_ < mib::config::publication_task_interval) {
+    return ok;
+  }
+  last_imu_log_ = now;
+
+  if (!ok) {
+    logger_.warn("IMU read failed: {}", ec.message());
+    return false;
+  }
+
+  const auto data = imu->data();
+  constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+  logger_.info("IMU: heading={:.1f} roll={:.1f} pitch={:.1f} deg gyro=({:.2f}, {:.2f}, {:.2f}) "
+               "rad/s accel=({:.2f}, {:.2f}, {:.2f}) m/s^2 calib sys={} gyr={} acc={} mag={}",
+               data.euler.heading * kRadToDeg, data.euler.roll * kRadToDeg,
+               data.euler.pitch * kRadToDeg, data.gyro_radps.x, data.gyro_radps.y,
+               data.gyro_radps.z, data.accel_mps2.x, data.accel_mps2.y, data.accel_mps2.z,
+               data.calibration.system, data.calibration.gyro, data.calibration.accel,
+               data.calibration.mag);
+  return true;
+}
+
+void MibSystem::publish_diagnostics() {
+  // Raw readings are integers in 10^-decimals of the row's unit (RAMMP_DIAG_TABLE).
+  auto to_raw = [](float value, rammp::DiagId id, size_t field) {
+    const auto decimals = rammp::kDiagItems[static_cast<size_t>(id)].decimals[field];
+    return static_cast<int32_t>(std::lround(value * std::pow(10.0f, decimals)));
+  };
+
+  rammp::Diagnostics diagnostics{};
+  diagnostics.seq = ++diagnostics_sequence_;
+  diagnostics.items.resize(rammp::kDiagCount);
+
+  // A failed read leaves the last good sample in the driver; send nothing rather than stale data.
+  auto *imu = mib_.imu();
+  if (imu != nullptr && imu_reading_ok_.load()) {
+    const auto data = imu->data();
+    constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+    diagnostics.items[static_cast<size_t>(rammp::DiagId::IMU_TILT)].values = {
+        to_raw(data.euler.roll * kRadToDeg, rammp::DiagId::IMU_TILT, 0),
+        to_raw(data.euler.pitch * kRadToDeg, rammp::DiagId::IMU_TILT, 1),
+        to_raw(data.euler.heading * kRadToDeg, rammp::DiagId::IMU_TILT, 2),
+    };
+    diagnostics.items[static_cast<size_t>(rammp::DiagId::IMU_STATUS)].values = {
+        to_raw(data.gyro_radps.z * kRadToDeg, rammp::DiagId::IMU_STATUS, 0),
+        to_raw(data.calibration.gyro, rammp::DiagId::IMU_STATUS, 1),
+        to_raw(data.temperature_c, rammp::DiagId::IMU_STATUS, 2),
+    };
+  }
+
+  if (!diagnostics_publisher_->publish(diagnostics)) {
+    logger_.warn("Failed to publish diagnostics");
+  }
+}
+
 void MibSystem::publish_motor_commands() {
   if (!endpoints_ready_.load()) {
     return;
   }
+  const auto now = std::chrono::steady_clock::now();
+  const auto current_state = state_.load();
   // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
-  const auto state = state_.load();
-  const bool estop = latch_.is_active();
-  const bool drive = state == SystemState::DRIVE_ENABLED && !estop;
+  const bool stopped = latch_.is_active();
+  const bool drive = current_state == SystemState::DRIVE_ENABLED && !stopped;
   // Panel overrides run only while the chair is IDLE: never alongside the stick.
-  const bool service = state == SystemState::IDLE && !estop;
-  const auto wheel_speeds = drive_controller_.wheel_speeds();
-  constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
-  const auto now = std::chrono::steady_clock::now();
-  const uint8_t seq = ++motor_command_sequence_;
+  const bool service = current_state == SystemState::IDLE && !stopped;
 
+  rammp::MotorJog jog{};
+  bool jog_fresh = false;
+  {
+    std::lock_guard<std::mutex> lock(jog_mutex_);
+    jog = latest_jog_;
+    jog_fresh = now - latest_jog_time_ < mib::config::motor_jog_timeout;
+  }
+  // A jog moves one board, only while IDLE: never while driving, never through the e-stop.
+  const bool jog_requested = jog_fresh && jog.direction != 0;
+  const bool jogging = jog_requested && current_state == SystemState::IDLE && !stopped;
+  if (jog_requested != jog_requested_) {
+    jog_requested_ = jog_requested;
+    if (jog_requested) {
+      logger_.info("Motor jog {} {}: {}", rammp::kAxes[jog.axis_id].label,
+                   jog.direction > 0 ? "+" : "-",
+                   jogging ? "moving" : "refused (not IDLE, or the e-stop is active)");
+    } else {
+      logger_.info("Motor jog stopped");
+    }
+  }
+
+  mib::DifferentialDrive::WheelSpeeds wheel_speeds{};
+  if (drive) {
+    wheel_speeds = drive_controller_.wheel_speeds();
+  }
+  constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
+
+  // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
+  std::array<uint8_t, rammp::kAxisCount> tuning_acks{};
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      tuning_acks[i] = motor_states_[i].tuning_ack;
+    }
+  }
+
+  const uint8_t seq = ++motor_command_sequence_;
   for (size_t i = 0; i < rammp::kAxisCount; i++) {
-    const auto id = rammp::kAxes[i].id;
+    const rammp::AxisId id = rammp::kAxes[i].id;
     rammp::MotorCommand command{};
+    command.seq = seq;
+    command.mode = rammp::ControlMode::VELOCITY;
+    command.requested_state = rammp::RequestedState::DISARMED;
     bool tuning_due = false;
     rammp::MotorTuning tuning{};
     {
@@ -504,39 +692,75 @@ void MibSystem::publish_motor_commands() {
       auto &axis = axes_[i];
       if (service && now < axis.override_until) {
         command = axis.override_command;
-      } else if (drive && (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT)) {
+        command.seq = seq;
+      } else if (drive && id == rammp::AxisId::DRIVE_LEFT) {
         command.requested_state = rammp::RequestedState::ARMED;
-        command.mode = rammp::ControlMode::VELOCITY;
-        command.velocity =
-            (id == rammp::AxisId::DRIVE_LEFT ? wheel_speeds.left_rpm : wheel_speeds.right_rpm) *
-            kRpmToRadPerSecond;
-      } else {
-        command.requested_state = rammp::RequestedState::DISARMED;
-        command.mode = rammp::ControlMode::VELOCITY;
+        command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+      } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
+        command.requested_state = rammp::RequestedState::ARMED;
+        command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+      } else if (jogging && jog.axis_id == i) {
+        command.requested_state = rammp::RequestedState::ARMED;
+        command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
+                                             : -mib::config::motor_jog_velocity_radps;
       }
-      command.seq = seq;
       command.clear_fault_req_id = axis.clear_fault_req;
       axis.last_command = command;
       // Tuning is a one-shot by req id over best-effort transport: resend until echoed.
       if (axis.tuning.tuning_req_id != 0 && now < axis.tuning_until &&
-          !(axis.state_seen && axis.state.tuning_ack == axis.tuning.tuning_req_id)) {
+          tuning_acks[i] != axis.tuning.tuning_req_id) {
         tuning_due = true;
         tuning = axis.tuning;
       }
     }
-    if (!axes_[i].command_publisher->publish(command)) {
-      logger_.warn("Failed to publish {} motor command", rammp::kAxes[i].segment);
+    if (!motor_publishers_[i]->publish(command)) {
+      logger_.warn("Failed to publish {} motor command", rammp::kAxes[i].label);
     }
     if (tuning_due && !axes_[i].tuning_publisher->publish(tuning)) {
-      logger_.warn("Failed to publish {} motor tuning", rammp::kAxes[i].segment);
+      logger_.warn("Failed to publish {} motor tuning", rammp::kAxes[i].label);
     }
+  }
+}
+
+void MibSystem::publish_motor_states() {
+  const auto now = std::chrono::steady_clock::now();
+  last_motor_state_publish_timestamp_ = now;
+  rammp::Motors message{};
+  message.seq = ++motor_states_sequence_;
+  message.motors.reserve(rammp::kAxisCount);
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      const rammp::MotorState &state = motor_states_[i];
+      const bool online = motor_state_times_[i] != std::chrono::steady_clock::time_point{} &&
+                          now - motor_state_times_[i] < mib::config::motor_state_timeout;
+      if (online != motor_online_[i]) {
+        motor_online_[i] = online;
+        logger_.info("Motor {} {}", rammp::kAxes[i].label, online ? "online" : "offline");
+      }
+      message.motors.push_back(rammp::MotorSummary{
+          .axis_id = static_cast<uint8_t>(i),
+          .online = static_cast<uint8_t>(online ? 1 : 0),
+          .state = state.state,
+          .fault_code = state.fault_code,
+          .position = state.position,
+          .velocity = state.velocity,
+          .label = rammp::kAxes[i].label,
+      });
+    }
+  }
+  if (!motor_states_publisher_->publish(message)) {
+    logger_.warn("Failed to publish Motors");
   }
 }
 
 void MibSystem::run_state_step() {
   // E-stop: the latch has no callback, so check it every step. ESTOP while it is active.
-  if (latch_.is_active() && state_.load() != SystemState::ESTOP) {
-    enter_estop(); // ignored in INIT (it enters ESTOP itself for the boot latch) and in ERROR
+  // Not from INIT (it enters ESTOP itself for the boot latch) or ERROR (not operational).
+  const auto state = state_.load();
+  if (latch_.is_active() && state != SystemState::ESTOP && state != SystemState::INIT &&
+      state != SystemState::ERROR) {
+    enter_estop();
   }
   switch (state_.load()) {
   case SystemState::INIT:
@@ -546,6 +770,8 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
+
+    start_imu_task();
 
     // The TCP/IP stack is up: open the panel's Ethernet port (it listens without a link).
     if (service_) {

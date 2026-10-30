@@ -418,15 +418,24 @@ std::string MibSystem::status_json() {
                   latch.releases, stick_live ? "true" : "false", fin(seat.front_back_tilt),
                   fin(seat.lateral_tilt), fin(seat.elevation), fin(seat.translation));
 
+  // Each board's last MotorState (copied out of handle_motor_state()'s cache first, so the
+  // two mutexes are never held together).
+  std::array<rammp::MotorState, rammp::kAxisCount> states{};
+  std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> state_times{};
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    states = motor_states_;
+    state_times = motor_state_times_;
+  }
   std::lock_guard<std::mutex> lock(axes_mutex_);
   for (size_t i = 0; i < rammp::kAxisCount; i++) {
     const auto &a = axes_[i];
-    const auto &s = a.state;
+    const auto &s = states[i];
+    const bool seen = state_times[i] != std::chrono::steady_clock::time_point{};
     const auto age_ms =
-        a.state_seen
-            ? std::chrono::duration_cast<std::chrono::milliseconds>(now - a.state_time).count()
-            : -1;
-    const bool online = a.state_seen && age_ms < mib::config::motor_state_timeout.count();
+        seen ? std::chrono::duration_cast<std::chrono::milliseconds>(now - state_times[i]).count()
+             : -1;
+    const bool online = seen && age_ms < mib::config::motor_state_timeout.count();
     const float tmax = *std::max_element(s.temps.begin(), s.temps.end());
     json += fmt::format(
         "{}{{\"axis\":{},\"segment\":\"{}\",\"label\":\"{}\",\"online\":{},\"age_ms\":{},"
@@ -473,10 +482,21 @@ void MibSystem::emit_telemetry() {
     v.push_back(seat_state_.translation);
   }
   const auto now = std::chrono::steady_clock::now();
+  // Each board's last MotorState (copied out of handle_motor_state()'s cache first, so the
+  // two mutexes are never held together).
+  std::array<rammp::MotorState, rammp::kAxisCount> states{};
+  std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> state_times{};
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    states = motor_states_;
+    state_times = motor_state_times_;
+  }
   std::lock_guard<std::mutex> lock(axes_mutex_);
-  for (const auto &a : axes_) {
-    const auto &s = a.state;
-    const bool online = a.state_seen && now - a.state_time < mib::config::motor_state_timeout;
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const auto &a = axes_[i];
+    const auto &s = states[i];
+    const bool online = state_times[i] != std::chrono::steady_clock::time_point{} &&
+                        now - state_times[i] < mib::config::motor_state_timeout;
     v.push_back(a.last_command.velocity);
     v.push_back(a.last_command.torque);
     v.push_back(online ? s.velocity : NAN);

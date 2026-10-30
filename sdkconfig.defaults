@@ -39,8 +39,10 @@ CONFIG_TINYUSB_VENDOR_COUNT=1
 CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
 
-# RTPS endpoints: four PACE RACER axes, each with command + tuning writers and a
-# state reader, on top of the joystick, status and e-stop endpoints.
+# RTPS endpoint pool (espp/rtps). Writers: a command and a tuning per motor board, status,
+# Diagnostics, Motors, estop-core's, SPDP. Readers: a state per motor board, the joystick's
+# four inputs, estop-core's, SPDP. Per participant adds SEDP's two of each. mib_system.cpp
+# checks these against the axis table.
 CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
 CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
 CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
