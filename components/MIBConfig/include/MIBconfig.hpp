@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 
@@ -13,6 +14,10 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
+
+/// @brief Wheel odometry update and /odom, /tf publication period. Matches the
+///        20 Hz rate the drive motor controllers report their state at.
+inline constexpr auto odometry_task_interval = std::chrono::milliseconds{50};
 
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;
@@ -40,6 +45,21 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_left = false,
     .invert_right = true,
 };
+
+/// @brief REP-105 frame the odometry pose is expressed in.
+inline constexpr const char *odom_frame_id = "odom";
+
+/// @brief REP-105 frame rigidly attached to the chair base.
+inline constexpr const char *base_frame_id = "base_link";
+
+/// @brief Diagonal of the published pose covariance: x, y, z, roll, pitch, yaw.
+///        A planar base cannot observe z, roll, or pitch, so they carry a large variance.
+inline constexpr std::array<double, 6> odometry_pose_covariance_diagonal{0.001, 0.001, 1e6,
+                                                                         1e6,   1e6,   0.03};
+
+/// @brief Diagonal of the published twist covariance: vx, vy, vz, wx, wy, wz.
+inline constexpr std::array<double, 6> odometry_twist_covariance_diagonal{0.001, 0.001, 1e6,
+                                                                          1e6,   1e6,   0.03};
 
 /// @brief Trajectory limits for one MIB drive response profile.
 struct DriveProfileConfig {

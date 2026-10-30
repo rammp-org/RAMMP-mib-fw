@@ -1,17 +1,42 @@
 #include "mib_system.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 #include "MIBconfig.hpp"
 
 using namespace std::chrono_literals;
 
+namespace {
+
+/// Current time as a ROS 2 stamp, from the system clock.
+/// TODO(#48): nothing syncs the MIB clock to the ROS host yet, so this is time
+/// since boot. Once the clock is set, the stamps are wall time with no change here.
+mib::ros::builtin_interfaces::Time ros_time_now() {
+  const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
+  const auto nanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch - seconds);
+  return {.sec = static_cast<int32_t>(seconds.count()),
+          .nanosec = static_cast<uint32_t>(nanoseconds.count())};
+}
+
+} // namespace
+
 MibSystem::MibSystem()
-    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-  mib_(mib::bsp::MIB::instance()), drive_controller_() {}
+    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
+    , mib_(mib::bsp::MIB::instance())
+    , drive_controller_()
+    , odometry_({
+          .wheel_diameter_m = mib::config::differential_drive.wheel_diameter_m,
+          .wheel_separation_m = mib::config::differential_drive.wheel_separation_m,
+          .invert_left = mib::config::differential_drive.invert_left,
+          .invert_right = mib::config::differential_drive.invert_right,
+      }) {}
 
 void MibSystem::start() {
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
@@ -67,6 +92,18 @@ void MibSystem::start() {
       },
   });
   motor_command_task_->start();
+
+  odometry_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        publish_odometry();
+
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_for(lock, mib::config::odometry_task_interval);
+        return false;
+      },
+      .task_config = {.name = "MIB odometry", .stack_size_bytes = 8 * 1024},
+  });
+  odometry_task_->start();
 
   while (true) {
     std::this_thread::sleep_for(2s);
@@ -149,6 +186,48 @@ bool MibSystem::initialize_pubsub() {
 
   if (!left_motor_publisher_->is_valid() || !right_motor_publisher_->is_valid()) {
     logger_.error("Failed to create drive motor command publisher");
+    return false;
+  }
+
+  left_motor_state_subscriber_ = std::make_unique<espp::Subscriber<rammp::MotorState>>(
+      mib_.rtps_participant(), espp::Subscriber<rammp::MotorState>::Config{
+                                   .topic = rammp::axis(rammp::AxisId::DRIVE_LEFT).state.name,
+                                   .type_name = rammp::axis(rammp::AxisId::DRIVE_LEFT).state.type,
+                                   .reliability = Reliability::BEST_EFFORT,
+                                   .on_message = [this](const rammp::MotorState &state) {
+                                     handle_motor_status(rammp::AxisId::DRIVE_LEFT, state);
+                                   }});
+
+  right_motor_state_subscriber_ = std::make_unique<espp::Subscriber<rammp::MotorState>>(
+      mib_.rtps_participant(), espp::Subscriber<rammp::MotorState>::Config{
+                                   .topic = rammp::axis(rammp::AxisId::DRIVE_RIGHT).state.name,
+                                   .type_name = rammp::axis(rammp::AxisId::DRIVE_RIGHT).state.type,
+                                   .reliability = Reliability::BEST_EFFORT,
+                                   .on_message = [this](const rammp::MotorState &state) {
+                                     handle_motor_status(rammp::AxisId::DRIVE_RIGHT, state);
+                                   }});
+
+  if (!left_motor_state_subscriber_->is_valid() || !right_motor_state_subscriber_->is_valid()) {
+    logger_.error("Failed to create drive motor state subscriber");
+    return false;
+  }
+
+  // RELIABLE: tf2 listeners subscribe reliable, and a best-effort writer never
+  // matches a reliable reader. A reliable writer still serves best-effort readers.
+  odometry_publisher_ = std::make_unique<espp::Publisher<mib::ros::nav_msgs::Odometry>>(
+      mib_.rtps_participant(),
+      espp::Publisher<mib::ros::nav_msgs::Odometry>::Config{.topic = mib::ros::kOdom.name,
+                                                            .type_name = mib::ros::kOdom.type,
+                                                            .reliability = Reliability::RELIABLE});
+
+  tf_publisher_ = std::make_unique<espp::Publisher<mib::ros::tf2_msgs::TFMessage>>(
+      mib_.rtps_participant(),
+      espp::Publisher<mib::ros::tf2_msgs::TFMessage>::Config{.topic = mib::ros::kTf.name,
+                                                             .type_name = mib::ros::kTf.type,
+                                                             .reliability = Reliability::RELIABLE});
+
+  if (!odometry_publisher_->is_valid() || !tf_publisher_->is_valid()) {
+    logger_.error("Failed to create odometry publisher");
     return false;
   }
 
@@ -245,8 +324,17 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   }
 }
 
-void MibSystem::handle_motor_status() {
-  logger_.info("Motor status received - placeholder");
+void MibSystem::handle_motor_status(rammp::AxisId axis, const rammp::MotorState &state) {
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  auto &latest = axis == rammp::AxisId::DRIVE_LEFT ? left_motor_state_ : right_motor_state_;
+  // A board counts its shaft angle from boot, so a first report or a reboot
+  // (uptime going backwards) restarts the angle. uptime_ms wrapping also looks
+  // like a reboot, which only costs one odometry step.
+  if (!latest || state.uptime_ms < latest->uptime_ms) {
+    odometry_resync_ = true;
+  }
+  latest = state;
+  motor_state_updated_ = true;
 }
 
 void MibSystem::publish_system_state() {
@@ -353,6 +441,66 @@ void MibSystem::publish_motor_commands() {
   }
   if (!right_motor_publisher_->publish(command)) {
     logger_.warn("Failed to publish right motor stop command");
+  }
+}
+
+void MibSystem::publish_odometry() {
+  rammp::MotorState left{};
+  rammp::MotorState right{};
+  bool resync = false;
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    // Publish nothing until both wheels have reported, and nothing new while
+    // neither has, so ROS sees /odom go quiet rather than a stale velocity.
+    if (!left_motor_state_ || !right_motor_state_ || !motor_state_updated_) {
+      return;
+    }
+    left = *left_motor_state_;
+    right = *right_motor_state_;
+    resync = std::exchange(odometry_resync_, false);
+    motor_state_updated_ = false;
+  }
+
+  if (resync) {
+    odometry_.resync();
+  }
+  odometry_.update(left.position, right.position);
+  const auto &pose = odometry_.pose();
+  const auto velocity = odometry_.velocity(left.velocity, right.velocity);
+
+  // Planar base: the only rotation is yaw about z.
+  const mib::ros::geometry_msgs::Quaternion orientation{
+      .z = std::sin(pose.yaw_rad / 2.0),
+      .w = std::cos(pose.yaw_rad / 2.0),
+  };
+  const mib::ros::std_msgs::Header header{
+      .stamp = ros_time_now(),
+      .frame_id = mib::config::odom_frame_id,
+  };
+
+  mib::ros::nav_msgs::Odometry odometry{};
+  odometry.header = header;
+  odometry.child_frame_id = mib::config::base_frame_id;
+  odometry.pose.pose.position = {.x = pose.x_m, .y = pose.y_m};
+  odometry.pose.pose.orientation = orientation;
+  odometry.twist.twist.linear.x = velocity.linear_mps;
+  odometry.twist.twist.angular.z = velocity.angular_radps;
+  for (size_t i = 0; i < 6; i++) {
+    odometry.pose.covariance[i * 7] = mib::config::odometry_pose_covariance_diagonal[i];
+    odometry.twist.covariance[i * 7] = mib::config::odometry_twist_covariance_diagonal[i];
+  }
+  if (!odometry_publisher_->publish(odometry)) {
+    logger_.warn("Failed to publish odometry");
+  }
+
+  mib::ros::tf2_msgs::TFMessage tf{};
+  tf.transforms.push_back({
+      .header = header,
+      .child_frame_id = mib::config::base_frame_id,
+      .transform = {.translation = {.x = pose.x_m, .y = pose.y_m}, .rotation = orientation},
+  });
+  if (!tf_publisher_->publish(tf)) {
+    logger_.warn("Failed to publish odom -> base_link transform");
   }
 }
 

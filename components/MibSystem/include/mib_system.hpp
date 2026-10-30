@@ -3,11 +3,14 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 
-#include "bsp.hpp"
 #include "base_component.hpp"
+#include "bsp.hpp"
+#include "diff_drive_odometry.hpp"
 #include "drive_controller.hpp"
 #include "messages.hpp"
+#include "ros_messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "task.hpp"
 
@@ -25,7 +28,7 @@ public:
 
   /// Bring the system up and run it.
   /// Starts the state task, waits for initialization to finish, then starts the
-  /// publication task.
+  /// publication, motor command, and odometry tasks.
   /// \note Blocks the calling thread for the lifetime of the application, and
   ///       returns early if initialization fails (state becomes ERROR).
   void start();
@@ -64,8 +67,11 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_drive_command(const rammp::DriveCommand &command);
 
-  /// Handle a motor controller status report.
-  void handle_motor_status();
+  /// Handle a drive motor controller state report.
+  /// \param axis The drive axis whose state topic the report arrived on.
+  /// \param state The reported shaft position, velocity, and board status.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_motor_status(rammp::AxisId axis, const rammp::MotorState &state);
 
   /// Publish the current system state.
   /// \note Runs on the publication task.
@@ -79,6 +85,11 @@ private:
   /// \note Runs on the publication task and feeds only the motor command topics.
   void publish_motor_commands();
 
+  /// Advance wheel odometry and publish it to ROS 2 as /odom and the
+  /// odom -> base_link transform on /tf (REP-105).
+  /// \note Runs on the odometry task.
+  void publish_odometry();
+
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
@@ -91,15 +102,26 @@ private:
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
   rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
+  mib::DiffDriveOdometry odometry_;            ///< Wheel odometry; used only on the odometry task.
+  std::optional<rammp::MotorState> left_motor_state_;  ///< Latest Drive L report, once one arrives.
+  std::optional<rammp::MotorState> right_motor_state_; ///< Latest Drive R report, once one arrives.
+  bool motor_state_updated_{false};      ///< A drive report arrived since the last odometry step.
+  bool odometry_resync_{false};          ///< A drive wheel's angle restarted; resync odometry.
+  mutable std::mutex motor_state_mutex_; ///< Protects the drive reports and flags above.
   uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> left_motor_publisher_; ///< Drive L output.
   std::unique_ptr<espp::Publisher<rammp::MotorCommand>> right_motor_publisher_; ///< Drive R output.
+  std::unique_ptr<espp::Publisher<mib::ros::nav_msgs::Odometry>> odometry_publisher_; ///< /odom.
+  std::unique_ptr<espp::Publisher<mib::ros::tf2_msgs::TFMessage>> tf_publisher_;      ///< /tf.
+  std::unique_ptr<espp::Subscriber<rammp::MotorState>> left_motor_state_subscriber_;  ///< Drive L.
+  std::unique_ptr<espp::Subscriber<rammp::MotorState>> right_motor_state_subscriber_; ///< Drive R.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
+  std::unique_ptr<espp::Task> odometry_task_;      ///< Publishes odometry at 20 Hz.
 };
