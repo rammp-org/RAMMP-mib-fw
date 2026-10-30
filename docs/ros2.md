@@ -8,7 +8,7 @@ The MIB speaks RTPS through espp, not ROS 2. Its other endpoints, which the joys
 
 | ROS 2 topic | Type | Direction | QoS | What it is |
 |---|---|---|---|---|
-| `/rammp/mib/status` | `rammp_base_interfaces/msg/MibState` | MIB → ROS 2 | best-effort, volatile | The MIB's state, every 500 ms. `AUTONOMOUS` and `SHARED` are reported as `ENABLED`; an e-stop is `ERROR`, with `error_message` saying why. |
+| `/rammp/mib/status` | `rammp_base_interfaces/msg/MibState` | MIB → ROS 2 | best-effort, volatile | The MIB's state, every 500 ms. `AUTONOMOUS`, `SHARED` and `PUSH_ASSIST` are reported as `ENABLED`; an e-stop is `ERROR`, with `error_message` saying why. |
 | `/rammp/joystick/xy_twist` | `rammp_peripheral_interfaces/msg/XYTwist` | ROS 2 → MIB | best-effort | **Logged only:** the MIB's console prints each sample, and it never drives on it. Driving from ROS 2 goes through arbitration (`/base/setpoint/twist`, #42). |
 
 On the wire, ROS 2 adds the prefix `rt/` to topic names and turns `pkg/msg/T` into `pkg::msg::dds_::T_`. So the MIB publishes `rt/rammp/mib/status` with type `rammp_base_interfaces::msg::dds_::MibState_`.
@@ -21,7 +21,7 @@ ros2 topic echo --qos-reliability best_effort /rammp/mib/status
 
 ## Requirements
 
-- **espp/rtps with esp-cpp/espp#862.** The Jetson runs ROS 2 on `rmw_cyclonedds_cpp`, and espp/rtps 1.3.10 and older exchange no samples with CycloneDDS. ROS 2 lists the MIB's topics, but `echo` stays silent, and the Jetson logs `malformed packet received from vendor 13.37`. `main/idf_component.yml` names the release to use.
+- **espp/rtps 1.3.11 or newer** (`main/idf_component.yml`). The Jetson runs ROS 2 on `rmw_cyclonedds_cpp`, and 1.3.10 and older exchange no samples with CycloneDDS (esp-cpp/espp#862). ROS 2 lists the MIB's topics, but `echo` stays silent, and the Jetson logs `malformed packet received from vendor 13.37`.
 - **Domain 0:** `ROS_DOMAIN_ID` unset, or `0`.
 - **The two type packages** on the ROS 2 side: `rammp_base_interfaces` and `rammp_peripheral_interfaces` from rammp-interfaces-ros2, built and sourced. Without them, `ros2 topic echo` can't decode the samples.
 - **Services don't work yet on CycloneDDS.** rmw_cyclonedds_cpp puts its request header in the payload; espp follows rmw_fastrtps_cpp, which doesn't. Topics are not affected.
@@ -76,8 +76,8 @@ The MIB's console then shows `ROS 2 joystick (not driven on): x=0.1 y=0.4 twist=
 |---|---|
 | The Jetson has no `192.168.4.x` address | The wired interface isn't on DHCP, or the link is down (PoE power, cable). |
 | `ros2 topic list` doesn't show the MIB | A stale daemon, CycloneDDS on the wrong interface (`echo $CYCLONEDDS_URI`), or the multicast is blocked (a firewall on UDP 7400 and up, or a switch's IGMP snooping). |
-| Topic listed, `echo` silent | A reliable subscription (add `--qos-reliability best_effort`); the MIB's interface not first in CycloneDDS's list; or the MIB built with espp/rtps older than #862. |
-| `malformed packet received from vendor 13.37` on the Jetson | The MIB was built with espp/rtps older than #862. |
+| Topic listed, `echo` silent | A reliable subscription (add `--qos-reliability best_effort`); the MIB's interface not first in CycloneDDS's list; or the MIB built with espp/rtps older than 1.3.11. |
+| `malformed packet received from vendor 13.37` on the Jetson | The MIB was built with espp/rtps older than 1.3.11. |
 | `The message type ... is invalid` | The rammp-interfaces-ros2 packages aren't sourced in this shell. |
 
 Credit: @ewang360 got the MIB and the Jetson talking (`ewang360/MIB-to-Jetson-Communication`). The topic names, the CycloneDDS setup and most of the troubleshooting table are hers.
