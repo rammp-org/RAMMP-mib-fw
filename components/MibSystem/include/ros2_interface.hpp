@@ -35,8 +35,8 @@ inline constexpr uint8_t SYSTEM_STATE_ERROR = 3;
 
 /// @brief MibState's coarser state for one of the MIB's own states.
 /// @param state The state the MIB reports to the joystick.
-/// @return One of the SYSTEM_STATE_* values. Another node driving (AUTONOMOUS, SHARED)
-///         is ENABLED; an e-stop is ERROR, with error_message saying so.
+/// @return One of the SYSTEM_STATE_* values. Anyone else driving (AUTONOMOUS, SHARED,
+///         PUSH_ASSIST) is ENABLED; an e-stop is ERROR, with error_message saying so.
 constexpr uint8_t to_mib_state(MIB::MibSystemState state) {
   switch (state) {
   case MIB::MibSystemState::INITIALIZING:
@@ -46,6 +46,7 @@ constexpr uint8_t to_mib_state(MIB::MibSystemState state) {
   case MIB::MibSystemState::ENABLED:
   case MIB::MibSystemState::AUTONOMOUS:
   case MIB::MibSystemState::SHARED:
+  case MIB::MibSystemState::PUSH_ASSIST:
     return SYSTEM_STATE_ENABLED;
   case MIB::MibSystemState::ERROR:
   case MIB::MibSystemState::ESTOP:

@@ -16,6 +16,13 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
 
+/// @brief How long ESTOP holds before the MIB asks the e-stop latch to clear.
+inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
+
+/// @brief How often that clear is re-requested while the latch refuses it (a switch still
+/// held, or the joystick not heard yet). Matches the latch's clear window.
+inline constexpr auto estop_clear_retry = std::chrono::seconds{1};
+
 /// @brief Motor debug list (rammp::Motors) publication period.
 inline constexpr auto motor_states_publish_interval = std::chrono::milliseconds{200};
 

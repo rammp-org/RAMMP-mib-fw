@@ -61,7 +61,7 @@ void MibSystem::start() {
     std::this_thread::sleep_for(10ms);
   }
 
-  if (state_.load() == SystemState::ERROR && !estop_error_.load()) {
+  if (state_.load() == SystemState::ERROR) {
     return;
   }
 
@@ -247,9 +247,22 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
     // The MIB maps y to linear velocity and x to angular velocity.
     drive_controller_.set_target(sample.y, sample.x);
     break;
+  case SystemState::AUTONOMOUS:
+    // Touching the joystick ends autonomy and hands control back to the joystick.
+    if (joystick_touched(sample)) {
+      leave_autonomy("joystick touched in AUTONOMOUS");
+    }
+    break;
+  case SystemState::SHARED:
+    // The joystick commands nothing in shared mode, even when touched. Drive input
+    // comes from the Jetson through handle_autonomy_setpoint().
+    break;
+  case SystemState::CALIBRATE:
+    // The joystick is ignored while calibrating.
+    break;
   case SystemState::INIT:
   case SystemState::IDLE:
-  case SystemState::CALIBRATE:
+  case SystemState::ESTOP:
   case SystemState::ERROR:
     drive_controller_.stop();
     break;
@@ -261,6 +274,57 @@ void MibSystem::handle_ros2_joystick_message(const rammp::XYTwist &sample) {
   std::lock_guard<std::mutex> lock(joystick_mutex_);
   latest_ros2_joystick_ = sample;
   latest_ros2_joystick_time_ = std::chrono::steady_clock::now();
+}
+
+bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
+  const auto current_state = state_.load();
+  if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
+    logger_.warn("Ignoring {} request outside IDLE or DRIVE_ENABLED", name);
+    return false;
+  }
+  drive_controller_.stop();
+  state_.store(autonomy_state);
+  logger_.info("Entering {} - placeholder", name);
+  return true;
+}
+
+void MibSystem::leave_autonomy(const char *reason) {
+  drive_controller_.stop();
+  state_.store(SystemState::IDLE);
+  logger_.info("Autonomy ended ({}) - back to IDLE", reason);
+}
+
+void MibSystem::handle_autonomous_request() { enter_autonomy(SystemState::AUTONOMOUS, "AUTONOMOUS"); }
+
+void MibSystem::handle_autonomous_stop() {
+  if (state_.load() != SystemState::AUTONOMOUS) {
+    logger_.warn("Ignoring autonomous stop outside AUTONOMOUS state");
+    return;
+  }
+  leave_autonomy("AutonomousStop");
+}
+
+void MibSystem::handle_shared_request() { enter_autonomy(SystemState::SHARED, "SHARED"); }
+
+void MibSystem::handle_shared_stop() {
+  if (state_.load() != SystemState::SHARED) {
+    logger_.warn("Ignoring shared stop outside SHARED state");
+    return;
+  }
+  leave_autonomy("SharedStop");
+}
+
+void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) {
+  switch (state_.load()) {
+  case SystemState::AUTONOMOUS:
+  case SystemState::SHARED:
+    // Placeholder: the Jetson setpoint drives the base in both autonomy states.
+    logger_.debug("Autonomy setpoint linear={} angular={} - placeholder", linear_mps,
+                  angular_radps);
+    break;
+  default:
+    break;
+  }
 }
 
 void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
@@ -295,8 +359,8 @@ void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
 
 void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   const auto current_state = state_.load();
-  switch (command.request) {
-  case rammp::DriveRequest::ENABLE:
+  if (drive_enable_requested(command)) {
+    // In DRIVE_ENABLED this is profile_change_requested(): same request, profile only.
     if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
       logger_.warn("Ignoring drive enable command outside IDLE state");
       return;
@@ -312,19 +376,17 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     } else {
       logger_.info("Drive profile updated to {}", static_cast<uint8_t>(command.profile));
     }
-    break;
-  case rammp::DriveRequest::DISABLE:
-    if (current_state != SystemState::DRIVE_ENABLED) {
-      logger_.warn("Ignoring drive disable command outside DRIVE_ENABLED state");
+  } else if (drive_disable_requested(command)) {
+    if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
+        current_state != SystemState::SHARED) {
+      logger_.warn("Ignoring drive disable command outside a drive state");
       return;
     }
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
-    break;
-  default:
+  } else {
     logger_.warn("Ignoring unknown drive request {}", static_cast<uint8_t>(command.request));
-    return;
   }
 }
 
@@ -357,6 +419,16 @@ void MibSystem::publish_system_state() {
     break;
   case SystemState::DRIVE_ENABLED:
     status.systemState = MIB::MibSystemState::ENABLED;
+    break;
+  case SystemState::AUTONOMOUS:
+    status.systemState = MIB::MibSystemState::AUTONOMOUS;
+    break;
+  case SystemState::SHARED:
+    status.systemState = MIB::MibSystemState::SHARED;
+    break;
+  case SystemState::ESTOP:
+    status.systemState = MIB::MibSystemState::ESTOP;
+    status.error_message = "Emergency stop";
     break;
   case SystemState::ERROR:
     status.systemState = MIB::MibSystemState::ERROR;
@@ -410,6 +482,15 @@ void MibSystem::log_drive_status() {
   case SystemState::DRIVE_ENABLED:
     state_name = "DRIVE_ENABLED";
     break;
+  case SystemState::AUTONOMOUS:
+    state_name = "AUTONOMOUS";
+    break;
+  case SystemState::SHARED:
+    state_name = "SHARED";
+    break;
+  case SystemState::ESTOP:
+    state_name = "ESTOP";
+    break;
   case SystemState::ERROR:
     state_name = "ERROR";
     break;
@@ -439,8 +520,8 @@ void MibSystem::log_drive_status() {
 void MibSystem::publish_motor_commands() {
   const auto now = std::chrono::steady_clock::now();
   const auto current_state = state_.load();
-  // The e-stop puts state_ in ERROR; latch_.is_active() is a backstop until #37:
-  // state_ has two writers, so an RTPS ENABLE can overwrite ERROR for one state step.
+  // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
+  // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool stopped = latch_.is_active();
   const bool drive = current_state == SystemState::DRIVE_ENABLED && !stopped;
 
@@ -528,12 +609,12 @@ void MibSystem::publish_motor_states() {
 }
 
 void MibSystem::run_state_step() {
-  // E-stop: ERROR while the latch is active, then IDLE once it clears (drive must be re-enabled).
+  // E-stop: the latch has no callback, so check it every step. ESTOP while it is active.
+  // Not from INIT (it enters ESTOP itself for the boot latch) or ERROR (not operational).
   const auto state = state_.load();
-  if (latch_.is_active() && state != SystemState::INIT && state != SystemState::ERROR) {
-    estop_error_.store(true);
-    drive_controller_.stop();
-    state_.store(SystemState::ERROR);
+  if (latch_.is_active() && state != SystemState::ESTOP && state != SystemState::INIT &&
+      state != SystemState::ERROR) {
+    enter_estop();
   }
   switch (state_.load()) {
   case SystemState::INIT:
@@ -563,25 +644,83 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
-    state_.store(initialize_pubsub() ? SystemState::IDLE : SystemState::ERROR);
+    if (!initialize_pubsub()) {
+      state_.store(SystemState::ERROR);
+      return;
+    }
+    // The latch starts latched ("boot"): straight to ESTOP, with no hold, until it clears.
+    state_.store(latch_.is_active() ? SystemState::ESTOP : SystemState::IDLE);
     break;
   case SystemState::IDLE:
     logger_.debug("System state: IDLE - running idle placeholder");
     break;
   case SystemState::CALIBRATE:
-    logger_.debug("System state: CALIBRATE - running calibration placeholder");
+    // Placeholder routine: completes at once. A real calibration stays here until done.
+    logger_.info("System state: CALIBRATE - calibration placeholder done, returning to IDLE");
+    state_.store(SystemState::IDLE);
     break;
   case SystemState::DRIVE_ENABLED:
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
     break;
+  case SystemState::AUTONOMOUS:
+    logger_.debug("System state: AUTONOMOUS - running autonomous placeholder");
+    break;
+  case SystemState::SHARED:
+    logger_.debug("System state: SHARED - running shared control placeholder");
+    break;
+  case SystemState::ESTOP:
+    run_estop_step();
+    break;
   case SystemState::ERROR:
-    if (estop_error_.load() && !latch_.is_active()) {
-      estop_error_.store(false);
-      state_.store(SystemState::IDLE);
-      break;
-    }
     logger_.error("System state: ERROR - running error placeholder");
     break;
   }
+}
 
+void MibSystem::enter_estop() {
+  const auto current_state = state_.load();
+  if (current_state == SystemState::INIT || current_state == SystemState::ERROR) {
+    logger_.warn("Ignoring e-stop while system is in INIT or ERROR");
+    return;
+  }
+
+  drive_controller_.stop();
+  estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
+  state_.store(SystemState::ESTOP);
+  logger_.warn("E-stop: entering ESTOP, asking the latch to clear after {} ms",
+               std::chrono::duration_cast<std::chrono::milliseconds>(
+                   mib::config::estop_hold_duration)
+                   .count());
+}
+
+void MibSystem::enter_calibrate() {
+  if (state_.load() != SystemState::IDLE) {
+    logger_.warn("Ignoring calibrate request outside IDLE state");
+    return;
+  }
+  drive_controller_.stop();
+  state_.store(SystemState::CALIBRATE);
+  logger_.info("Entering CALIBRATE - placeholder");
+}
+
+void MibSystem::run_estop_step() {
+  if (!latch_.is_active()) {
+    state_.store(SystemState::IDLE);
+    logger_.info("E-stop: latch cleared - back to IDLE (drive must be re-enabled)");
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now < estop_hold_until_) {
+    return;
+  }
+  // Hold elapsed: ask the latch to clear. The latch refuses while a node's switch is held
+  // or a watched node has not been heard (the boot latch, before the joystick is discovered),
+  // so keep asking; the state leaves ESTOP once the latch has cleared.
+  if (latch_.status().clear_attempt_running ||
+      now - estop_last_clear_attempt_ < mib::config::estop_clear_retry) {
+    return;
+  }
+  estop_last_clear_attempt_ = now;
+  latch_.start_clear_attempt();
+  logger_.info("E-stop: hold elapsed, asking the latch to clear");
 }
