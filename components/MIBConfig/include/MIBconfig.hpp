@@ -23,6 +23,18 @@ inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
 /// held, or the joystick not heard yet). Matches the latch's clear window.
 inline constexpr auto estop_clear_retry = std::chrono::seconds{1};
 
+/// @brief Motor debug list (rammp::Motors) publication period.
+inline constexpr auto motor_states_publish_interval = std::chrono::milliseconds{200};
+
+/// @brief A board whose last MotorState is older than this is reported offline.
+inline constexpr auto motor_state_timeout = std::chrono::milliseconds{500};
+
+/// @brief A jog stops this long after the last MotorJog (rammp::MotorJog's contract).
+inline constexpr auto motor_jog_timeout = std::chrono::milliseconds{300};
+
+/// @brief Output-shaft speed of a motor debug jog, in rad/s.
+inline constexpr float motor_jog_velocity_radps = 1.0f;
+
 /// @brief Enable DHCP server mode for the MIB Ethernet interface.
 inline constexpr bool ethernet_dhcp_server = true;
 
