@@ -441,8 +441,11 @@ void MibSystem::publish_motor_commands() {
 
 void MibSystem::run_state_step() {
   // E-stop: the latch has no callback, so check it every step. ESTOP while it is active.
-  if (latch_.is_active() && state_.load() != SystemState::ESTOP) {
-    enter_estop(); // ignored in INIT (it enters ESTOP itself for the boot latch) and in ERROR
+  // Not from INIT (it enters ESTOP itself for the boot latch) or ERROR (not operational).
+  const auto state = state_.load();
+  if (latch_.is_active() && state != SystemState::ESTOP && state != SystemState::INIT &&
+      state != SystemState::ERROR) {
+    enter_estop();
   }
   switch (state_.load()) {
   case SystemState::INIT:
