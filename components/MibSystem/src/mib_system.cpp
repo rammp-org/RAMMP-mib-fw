@@ -4,6 +4,8 @@
 #include <cmath>
 #include <condition_variable>
 #include <mutex>
+#include <span>
+#include <string_view>
 #include <thread>
 
 #include "MIBconfig.hpp"
@@ -11,9 +13,10 @@
 
 using namespace std::chrono_literals;
 
-// The RTPS endpoint pool in sdkconfig.defaults: one MotorCommand writer and one MotorState
-// reader per axis-table board, plus the fixed endpoints below. A row added to the axis
-// table needs the limits raised; these checks fail the build until they are.
+// The RTPS endpoint pool in sdkconfig.defaults: a MotorCommand and a MotorTuning writer and a
+// MotorState reader per axis-table board, plus the fixed endpoints below. A row added to the
+// axis table needs the limits raised; these checks fail the build until they are. An sdkconfig
+// made before the limits were raised keeps its old values: delete it.
 namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
@@ -22,28 +25,35 @@ constexpr size_t kFixedWriters = 5;
 constexpr size_t kFixedReaders = 6;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
+constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
+constexpr size_t kReaders = rammp::kAxisCount + kFixedReaders;
+/// No watched nodes: estop-core's default watches the HMI as a deadman.
+constexpr std::string_view kNoWatchedNodes[] = {""};
 } // namespace
 
-static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= rammp::kAxisCount + kFixedWriters,
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= rammp::kAxisCount + kFixedReaders,
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= kReaders,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= rammp::kAxisCount + kFixedReaders,
+static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= kReaders,
               "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >=
-                  rammp::kAxisCount + kFixedWriters + kSedpEndpoints,
+static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >= kWriters + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >=
-                  rammp::kAxisCount + kFixedReaders + kSedpEndpoints,
+static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= kReaders + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
 
 MibSystem::MibSystem()
-    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO),
-  mib_(mib::bsp::MIB::instance()), drive_controller_(),
-  latch_({.clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
+    : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
+    , mib_(mib::bsp::MIB::instance())
+    , drive_controller_()
+    , latch_({.watched = mib::config::estop_watch_hmi
+                             ? std::span<const std::string_view>(estop::kDefaultWatched)
+                             : std::span<const std::string_view>(kNoWatchedNodes, 0),
+              .clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
 
 void MibSystem::start() {
   latch_.start(); // first: it starts latched, so nothing moves until a clear succeeds
+  start_service_link(); // before INIT, which waits on the Ethernet link
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
@@ -196,7 +206,14 @@ bool MibSystem::initialize_pubsub() {
             .on_message = [this, i](const rammp::MotorState &state) {
               handle_motor_state(i, state);
             }});
-    if (!motor_publishers_[i]->is_valid() || !motor_state_subscribers_[i]->is_valid()) {
+    // The control panel's gains (MotorTuning), resent by publish_motor_commands().
+    axes_[i].tuning_publisher = std::make_unique<espp::Publisher<rammp::MotorTuning>>(
+        mib_.rtps_participant(),
+        espp::Publisher<rammp::MotorTuning>::Config{.topic = axis.tuning.name,
+                                                    .type_name = axis.tuning.type,
+                                                    .reliability = Reliability::BEST_EFFORT});
+    if (!motor_publishers_[i]->is_valid() || !motor_state_subscribers_[i]->is_valid() ||
+        !axes_[i].tuning_publisher->is_valid()) {
       logger_.error("Failed to create the {} motor endpoints", axis.label);
       return false;
     }
@@ -219,6 +236,7 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
+  endpoints_ready_.store(true);
   return true;
 }
 
@@ -231,6 +249,17 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
   logger_.debug("Joystick x={} y={} twist={} buttons={}", sample.x, sample.y, sample.twist,
                 static_cast<uint32_t>(sample.buttons));
 
+  {
+    // The control panel's stick, while it is live, drives instead of the HMI's.
+    std::lock_guard<std::mutex> lock(joystick_mutex_);
+    if (std::chrono::steady_clock::now() < panel_stick_until_) {
+      return;
+    }
+  }
+  apply_stick(sample);
+}
+
+void MibSystem::apply_stick(const rammp::XYTwist &sample) {
   switch (state_.load()) {
   case SystemState::DRIVE_ENABLED:
     // The MIB maps y to linear velocity and x to angular velocity.
@@ -309,10 +338,10 @@ void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) 
   }
 }
 
-void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
+bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
   if (state_.load() != SystemState::IDLE) {
     logger_.warn("Ignoring seat control command while system is not IDLE");
-    return;
+    return false;
   }
 
   std::lock_guard<std::mutex> lock(seat_state_mutex_);
@@ -331,25 +360,34 @@ void MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
     break;
   default:
     logger_.warn("Ignoring unknown seat axis {}", static_cast<uint8_t>(command.axis));
-    return;
+    return false;
   }
 
   drive_controller_.set_seat_target(static_cast<uint8_t>(command.axis), command.target);
   logger_.info("Seat control command applied: axis={} target={} - placeholder",
                static_cast<uint8_t>(command.axis), command.target);
+  return true;
 }
 
-void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
+bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   const auto current_state = state_.load();
   if (drive_enable_requested(command)) {
     // In DRIVE_ENABLED this is profile_change_requested(): same request, profile only.
     if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
       logger_.warn("Ignoring drive enable command outside IDLE state");
-      return;
+      return false;
+    }
+    if (any_override_active()) {
+      logger_.warn("Ignoring drive enable while the control panel overrides a motor");
+      return false;
+    }
+    if (ota_active_.load()) {
+      logger_.warn("Ignoring drive enable during a firmware update");
+      return false;
     }
     if (!drive_controller_.update_drive_profile(command.profile)) {
       logger_.error("Failed to update drive profile");
-      return;
+      return false;
     }
     drive_profile_.store(command.profile);
     if (current_state == SystemState::IDLE) {
@@ -362,14 +400,16 @@ void MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
         current_state != SystemState::SHARED) {
       logger_.warn("Ignoring drive disable command outside a drive state");
-      return;
+      return false;
     }
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
   } else {
     logger_.warn("Ignoring unknown drive request {}", static_cast<uint8_t>(command.request));
+    return false;
   }
+  return true;
 }
 
 void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
@@ -590,12 +630,17 @@ void MibSystem::publish_diagnostics() {
 }
 
 void MibSystem::publish_motor_commands() {
+  if (!endpoints_ready_.load()) {
+    return;
+  }
   const auto now = std::chrono::steady_clock::now();
   const auto current_state = state_.load();
   // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool stopped = latch_.is_active();
   const bool drive = current_state == SystemState::DRIVE_ENABLED && !stopped;
+  // Panel overrides run only while the chair is IDLE: never alongside the stick.
+  const bool service = current_state == SystemState::IDLE && !stopped;
 
   rammp::MotorJog jog{};
   bool jog_fresh = false;
@@ -624,26 +669,55 @@ void MibSystem::publish_motor_commands() {
   }
   constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
 
-  rammp::MotorCommand command{};
-  command.seq = ++motor_command_sequence_;
-  command.mode = rammp::ControlMode::VELOCITY;
+  // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
+  std::array<uint8_t, rammp::kAxisCount> tuning_acks{};
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      tuning_acks[i] = motor_states_[i].tuning_ack;
+    }
+  }
+
+  const uint8_t seq = ++motor_command_sequence_;
   for (size_t i = 0; i < rammp::kAxisCount; i++) {
     const rammp::AxisId id = rammp::kAxes[i].id;
+    rammp::MotorCommand command{};
+    command.seq = seq;
+    command.mode = rammp::ControlMode::VELOCITY;
     command.requested_state = rammp::RequestedState::DISARMED;
-    command.velocity = 0.0f;
-    if (drive && id == rammp::AxisId::DRIVE_LEFT) {
-      command.requested_state = rammp::RequestedState::ARMED;
-      command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
-    } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
-      command.requested_state = rammp::RequestedState::ARMED;
-      command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
-    } else if (jogging && jog.axis_id == i) {
-      command.requested_state = rammp::RequestedState::ARMED;
-      command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
-                                           : -mib::config::motor_jog_velocity_radps;
+    bool tuning_due = false;
+    rammp::MotorTuning tuning{};
+    {
+      std::lock_guard<std::mutex> lock(axes_mutex_);
+      auto &axis = axes_[i];
+      if (service && now < axis.override_until) {
+        command = axis.override_command;
+        command.seq = seq;
+      } else if (drive && id == rammp::AxisId::DRIVE_LEFT) {
+        command.requested_state = rammp::RequestedState::ARMED;
+        command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+      } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
+        command.requested_state = rammp::RequestedState::ARMED;
+        command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+      } else if (jogging && jog.axis_id == i) {
+        command.requested_state = rammp::RequestedState::ARMED;
+        command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
+                                             : -mib::config::motor_jog_velocity_radps;
+      }
+      command.clear_fault_req_id = axis.clear_fault_req;
+      axis.last_command = command;
+      // Tuning is a one-shot by req id over best-effort transport: resend until echoed.
+      if (axis.tuning.tuning_req_id != 0 && now < axis.tuning_until &&
+          tuning_acks[i] != axis.tuning.tuning_req_id) {
+        tuning_due = true;
+        tuning = axis.tuning;
+      }
     }
     if (!motor_publishers_[i]->publish(command)) {
       logger_.warn("Failed to publish {} motor command", rammp::kAxes[i].label);
+    }
+    if (tuning_due && !axes_[i].tuning_publisher->publish(tuning)) {
+      logger_.warn("Failed to publish {} motor tuning", rammp::kAxes[i].label);
     }
   }
 }
@@ -699,6 +773,11 @@ void MibSystem::run_state_step() {
 
     start_imu_task();
 
+    // The TCP/IP stack is up: open the panel's Ethernet port (it listens without a link).
+    if (service_) {
+      service_->start_tcp();
+    }
+
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");
     while (!mib_.ethernet_connected()) {
@@ -718,9 +797,19 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
+    if (!mib::config::estop_watch_hmi) {
+      // Bench mode (MIBconfig.hpp): no HMI deadman, so clear the boot latch here.
+      logger_.warn("E-stop: not watching the HMI (estop_watch_hmi = false); clearing the boot "
+                   "latch");
+      latch_.start_clear_attempt();
+    }
     if (!initialize_pubsub()) {
       state_.store(SystemState::ERROR);
       return;
+    }
+    // RTPS and the endpoints are up: a new image that got this far is a keeper.
+    if (service_) {
+      service_->confirm_image_after(std::chrono::seconds{20});
     }
     // The latch starts latched ("boot"): straight to ESTOP, with no hold, until it clears.
     state_.store(latch_.is_active() ? SystemState::ESTOP : SystemState::IDLE);
@@ -733,9 +822,24 @@ void MibSystem::run_state_step() {
     logger_.info("System state: CALIBRATE - calibration placeholder done, returning to IDLE");
     state_.store(SystemState::IDLE);
     break;
-  case SystemState::DRIVE_ENABLED:
+  case SystemState::DRIVE_ENABLED: {
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
+    // A panel stick that went quiet (tab closed, cable pulled) stops the chair.
+    bool lapsed = false;
+    {
+      std::lock_guard<std::mutex> lock(joystick_mutex_);
+      if (panel_stick_until_.time_since_epoch().count() != 0 &&
+          std::chrono::steady_clock::now() >= panel_stick_until_) {
+        panel_stick_until_ = {};
+        lapsed = true;
+      }
+    }
+    if (lapsed) {
+      drive_controller_.stop();
+      logger_.warn("Control panel stick went quiet: stopping");
+    }
     break;
+  }
   case SystemState::AUTONOMOUS:
     logger_.debug("System state: AUTONOMOUS - running autonomous placeholder");
     break;
@@ -746,8 +850,14 @@ void MibSystem::run_state_step() {
     run_estop_step();
     break;
   case SystemState::ERROR:
-    logger_.error("System state: ERROR - running error placeholder");
+    // Once per entry into ERROR: this runs every 20 ms.
+    if (!error_reported_.exchange(true)) {
+      logger_.error("System state: ERROR - not operational; see the first error above");
+    }
     break;
+  }
+  if (state_.load() != SystemState::ERROR) {
+    error_reported_.store(false);
   }
 }
 

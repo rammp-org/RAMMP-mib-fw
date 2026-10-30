@@ -32,12 +32,34 @@ CONFIG_LV_MEM_SIZE=65536
 CONFIG_LV_MEM_SIZE_KILOBYTES=0
 CONFIG_LV_DISABLE_ASSERT_HANDLER_INCLUDE_WARNING=y
 
-# RTPS endpoint pool (espp/rtps). Writers: a command per motor board, status, Diagnostics,
-# Motors, estop-core's, SPDP. Readers: a state per motor board, the joystick's four inputs,
-# estop-core's, SPDP. Per participant adds SEDP's two of each. mib_system.cpp checks
-# these against the axis table.
-CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=9
-CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=10
-CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=10
-CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=11
-CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=12
+# Control panel service link (components/ServiceLink). TinyUSB serves one WebUSB
+# vendor interface on the P4's USB 2.0 HS port (J3 on the ESP32-P4-ETH). The USB-C
+# is a CH343 UART bridge and keeps the console and flashing.
+CONFIG_TINYUSB_VENDOR_COUNT=1
+CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
+CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
+
+# RTPS endpoint pool (espp/rtps). Writers: a command and a tuning per motor board, status,
+# Diagnostics, Motors, estop-core's, SPDP. Readers: a state per motor board, the joystick's
+# four inputs, estop-core's, SPDP. Per participant adds SEDP's two of each. mib_system.cpp
+# checks these against the axis table.
+CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
+CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
+CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
+CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=20
+CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
+
+# Firmware updates over the service link (Ethernet, UART or WebUSB): two 3 MB OTA slots
+# (partitions.csv) and bootloader rollback. The ESP32-P4-ETH has 32 MB of flash; 16 MB is
+# declared, which is all the table needs. Moving to this table takes one USB flash
+# (idf.py flash: bootloader, partition table and app); updates go over the panel after that.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# The panel's TCP service port (a listener and one client) beside the RTPS sockets;
+# the PACE RACER raised the same limit for its EthLink.
+CONFIG_LWIP_MAX_SOCKETS=16

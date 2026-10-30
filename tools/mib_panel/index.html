@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAMMP MIB · control panel</title>
+<link rel="icon" href="data:,">
+<!--
+  RAMMP MIB control panel. Connects over WebUSB (the MIB's J3 HS USB port, which
+  also makes Chrome offer this page when it is plugged in) or Web Serial (the
+  USB-C console), or runs against an in-page simulated MIB.
+  Protocol: components/MibSystem/include/mib_panel_protocol.hpp.
+  Plotting: uPlot v1.6.31 (MIT), vendored from espp components/telemetry/web.
+-->
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Condensed:wght@500;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ax-tokens.css">
+<style>
+/* ---- vendored uPlot v1.6.31 CSS (MIT, https://github.com/leeoniya/uPlot), restyled ---- */
+.uplot, .uplot *, .uplot *::before, .uplot *::after { box-sizing: border-box; }
+.uplot { font-family: var(--ax-font-mono); line-height: 1.5; width: min-content; }
+.u-wrap { position: relative; user-select: none; }
+.u-over, .u-under { position: absolute; }
+.u-under { overflow: hidden; }
+.uplot canvas { display: block; position: relative; width: 100%; height: 100%; }
+.u-axis { position: absolute; }
+.u-legend { font: 11px var(--ax-font-mono); margin: 0 0 4px; text-align: left; color: var(--ax-muted); }
+.u-inline { display: block; } .u-inline * { display: inline-block; } .u-inline tr { margin-right: 14px; }
+.u-legend th { font-weight: 500; } .u-legend th > * { vertical-align: middle; display: inline-block; }
+.u-legend .u-marker { width: 10px; height: 10px; margin-right: 5px; border-radius: 0 !important; background-clip: padding-box !important; }
+.u-inline.u-live th::after { content: ":"; vertical-align: middle; }
+.u-inline:not(.u-live) .u-value { display: none; }
+.u-legend .u-value { color: var(--ax-ink); min-width: 6ch; }
+.u-series > * { padding: 2px; } .u-series th { cursor: pointer; } .u-legend .u-off > * { opacity: 0.3; }
+.u-select { background: rgba(var(--ax-accent-rgb), 0.08); position: absolute; pointer-events: none; }
+.u-cursor-x, .u-cursor-y { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform; }
+.u-hz .u-cursor-x, .u-vt .u-cursor-y { height: 100%; border-right: 1px dashed var(--ax-axis); }
+.u-hz .u-cursor-y, .u-vt .u-cursor-x { width: 100%; border-bottom: 1px dashed var(--ax-axis); }
+.u-cursor-pt { position: absolute; top: 0; left: 0; border-radius: 50%; border: 0 solid; pointer-events: none; will-change: transform; background-clip: padding-box !important; }
+.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
+
+/* ---- page ---- */
+.ax-page { max-width: 1440px; padding: 20px 24px 64px; }
+.ax-mast { position: sticky; top: 0; z-index: 20; background: var(--ax-bg); padding-top: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.estop-btn { font: 700 15px/1 var(--ax-font-mono); letter-spacing: 0.14em; padding: 13px 20px; background: var(--ax-critical); color: #0e0f10; border: 1px solid var(--ax-critical); cursor: pointer; }
+.estop-btn:hover { box-shadow: 0 0 18px rgba(255, 90, 74, 0.5); }
+.estop-btn:active { transform: translateY(1px); }
+.estop-btn:disabled { opacity: 0.35; cursor: not-allowed; box-shadow: none; }
+.ax-tiles { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.ax-value { font-size: 26px; }
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--ax-border); margin: 14px 0 12px; overflow-x: auto; }
+.tabs button { font: 500 12px var(--ax-font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ax-muted); background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; cursor: pointer; white-space: nowrap; }
+.tabs button:hover { color: var(--ax-ink); }
+.tabs button.on { color: var(--ax-ink); border-bottom-color: var(--ax-accent); }
+.tab { display: none; } .tab.on { display: block; }
+.cols-2 { grid-template-columns: minmax(300px, 380px) 1fr; }
+.cols-even { grid-template-columns: 1fr 1fr; }
+@media (max-width: 900px) { .cols-2, .cols-even { grid-template-columns: 1fr; } .ax-page { padding: 12px 10px 48px; } .ax-mast { position: static; } .ax-value { font-size: 22px; } }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.row .ax-label { min-width: 92px; }
+.field { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+.field .unit { font: 11px var(--ax-font-mono); color: var(--ax-muted); min-width: 52px; }
+.ax-input { width: 100%; min-width: 0; }
+.ax-input[type=number] { text-align: right; }
+.chart { margin-top: 6px; min-height: 180px; }
+.chart-wrap + .chart-wrap { margin-top: 14px; }
+.empty { color: var(--ax-muted); font-size: 13px; padding: 18px 0; }
+.hint { font-size: 12px; color: var(--ax-muted); margin-top: 8px; }
+.hint b { color: var(--ax-ink); font-weight: 500; }
+.warnbox { border: 1px solid var(--ax-warning); color: var(--ax-ink); padding: 8px 10px; font-size: 12px; margin-top: 10px; }
+.warnbox b { color: var(--ax-warning); }
+.hold { user-select: none; touch-action: none; }
+.hold.active { background: var(--ax-accent); color: var(--ax-on-accent); border-color: var(--ax-accent); }
+pre.out { font: 12px/1.45 var(--ax-font-mono); background: var(--ax-bg); border: 1px solid var(--ax-border); margin: 10px 0 0; padding: 8px; height: 520px; overflow: auto; white-space: pre-wrap; color: var(--ax-ink); }
+pre.out .sys { color: var(--ax-muted); } pre.out .err { color: var(--ax-critical); } pre.out .warn { color: var(--ax-warning); }
+.steps { list-style: none; margin: 10px 0 0; padding: 0; font: 12px var(--ax-font-mono); }
+.steps li { padding: 6px 0; border-bottom: 1px solid var(--ax-rule); display: grid; grid-template-columns: 14px 1fr; gap: 6px; color: var(--ax-muted); }
+.steps li .d { grid-column: 2; font-family: var(--ax-font); color: var(--ax-muted); }
+.steps li.now { color: var(--ax-ink); } .steps li.ok { color: var(--ax-good); } .steps li.bad { color: var(--ax-critical); } .steps li.skip { color: var(--ax-off); }
+.steps li::before { content: "·"; } .steps li.ok::before, .steps li.bad::before { content: "■"; } .steps li.now::before { content: "▸"; }
+.pad { position: relative; width: 100%; max-width: 320px; aspect-ratio: 1; border: 1px solid var(--ax-border-strong); background:
+  linear-gradient(var(--ax-grid), var(--ax-grid)) center / 1px 100% no-repeat, linear-gradient(var(--ax-grid), var(--ax-grid)) center / 100% 1px no-repeat, var(--ax-bg);
+  touch-action: none; user-select: none; cursor: crosshair; }
+.pad .knob { position: absolute; width: 34px; height: 34px; margin: -17px; left: 50%; top: 50%; border: 2px solid var(--ax-accent); background: rgba(var(--ax-accent-rgb), 0.2); pointer-events: none; }
+.pad.live { border-color: var(--ax-accent); }
+.seatgrid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.nc { text-transform: none; letter-spacing: 0.02em; }
+.chk { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-top: 8px; }
+.chk input { accent-color: var(--ax-accent); margin-top: 3px; }
+.pill-off { color: var(--ax-off); }
+td .ax-btn { padding: 5px 8px; font-size: 10px; }
+.chanlist { max-height: 300px; overflow: auto; border: 1px solid var(--ax-border); margin-top: 8px; }
+.chanlist label { display: flex; gap: 8px; align-items: center; padding: 3px 8px; font: 12px var(--ax-font-mono); border-bottom: 1px solid var(--ax-rule); cursor: pointer; }
+.chanlist label:hover { background: rgba(var(--ax-accent-rgb), 0.06); }
+.bar { height: 6px; background: var(--ax-rule); margin-top: 12px; }
+.bar > div { height: 100%; width: 0; background: var(--ax-accent); transition: width 0.2s; }
+.bar.done > div { background: var(--ax-good); } .bar.failed > div { background: var(--ax-critical); }
+.toast { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 6px; }
+.toast div { background: var(--ax-panel); border: 1px solid var(--ax-border-strong); border-left: 3px solid var(--ax-warning); padding: 8px 12px; font: 12px var(--ax-font-mono); max-width: 420px; }
+.toast div.err { border-left-color: var(--ax-critical); }
+.toast div.ok { border-left-color: var(--ax-good); }
+</style>
+</head>
+<body class="ax">
+<main class="ax-page">
+  <header class="ax-mast">
+    <div>
+      <h1>RAMMP MIB control panel</h1>
+      <div class="ax-meta"><span id="mFw">fw –</span><span id="mIp">ip –</span><span id="mRate">– Hz</span><span class="ax-status" id="mLink">Disconnected</span></div>
+    </div>
+    <div class="ctl">
+      <select class="ax-input" id="transport" style="width:auto">
+        <option value="eth">Ethernet (eth_bridge.py)</option>
+        <option value="serial">Web Serial (USB-C)</option>
+        <option value="usb">WebUSB (J3 header)</option>
+        <option value="sim">Simulated MIB</option>
+      </select>
+      <input class="ax-input" id="ethTarget" value="192.168.4.1" title="The MIB's address" style="width:130px">
+      <input class="ax-input" id="ethBridge" value="ws://localhost:8765" title="eth_bridge.py's address" style="width:180px">
+      <button class="ax-btn primary" id="connectBtn" data-fx="ripple">Connect</button>
+      <button class="ax-btn" id="resetBtn" disabled>Reset MIB</button>
+      <button class="estop-btn" id="estopBtn" disabled title="Latch the robot-wide e-stop">E-STOP</button>
+    </div>
+  </header>
+
+  <section class="ax-tiles">
+    <div class="ax-tile"><div class="ax-label">MIB state</div><div class="ax-value" id="tState">–</div><div class="ax-sub" id="tStateSub">not connected</div></div>
+    <div class="ax-tile"><div class="ax-label">E-stop</div><div class="ax-value" id="tEstop">–</div><div class="ax-sub" id="tEstopSub">–</div>
+      <div class="row" style="margin-top:8px"><button class="ax-btn hold" id="clearBtn" disabled title="Hold for 2 s">Hold to clear</button></div></div>
+    <div class="ax-tile"><div class="ax-label">Drive profile</div><div class="ax-value" id="tProfile">–</div><div class="ax-sub" id="tProfileSub">–</div></div>
+    <div class="ax-tile"><div class="ax-label">Network</div><div class="ax-value" id="tNet" style="font-size:20px">–</div><div class="ax-sub" id="tNetSub">–</div></div>
+    <div class="ax-tile"><div class="ax-label">Motors online</div><div class="ax-value" id="tMotors">–</div><div class="ax-sub" id="tMotorsSub">–</div></div>
+    <div class="ax-tile"><div class="ax-label">MIB chip</div><div class="ax-value" id="tChip">–<small>°C</small></div><div class="ax-sub" id="tChipSub">ESP32-P4 die temperature</div></div>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="tune">Motor tuning</button>
+    <button data-tab="auto">Auto-tune</button>
+    <button data-tab="drive">Drive</button>
+    <button data-tab="seat">Seat actuators</button>
+    <button data-tab="sensors">Sensors &amp; data</button>
+    <button data-tab="firmware">Firmware</button>
+    <button data-tab="log">Log</button>
+  </nav>
+
+  <!-- ============================================================ OVERVIEW -->
+  <section class="tab on" id="tab-overview">
+    <div class="ax-panel">
+      <h2>PACE RACER motors</h2>
+      <div class="ax-cap">Each board's last MotorState, as the MIB hears it over RTPS, and the command the MIB is sending it.</div>
+      <div style="overflow-x:auto"><table id="axesTable">
+        <thead><tr><th>Axis</th><th>Link</th><th>Board</th><th>Fault</th><th class="num">Vel, rad/s</th><th class="num">Cmd, rad/s</th><th class="num"><span class="nc">iq</span>, A</th><th class="num"><span class="nc">Vbus</span>, V</th><th class="num">Temp, °C</th><th class="num"><span class="nc">kp</span></th><th class="num"><span class="nc">ki</span></th><th class="num">PLL, Hz</th><th>FW</th><th></th></tr></thead>
+        <tbody><tr><td colspan="14" class="empty">Not connected. Pick a link above and press Connect.</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="ax-grid cols-even" style="margin-top:8px">
+      <div class="ax-panel chart-wrap"><h2>Wheel speed</h2><div class="ax-cap">Measured drive-wheel speed against the MIB's command.</div><div class="chart" id="cOvVel"></div></div>
+      <div class="ax-panel chart-wrap"><h2>Motor current</h2><div class="ax-cap">Torque-producing current i<sub>q</sub> on the drive wheels.</div><div class="chart" id="cOvIq"></div></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ TUNE -->
+  <section class="tab" id="tab-tune">
+    <div class="ax-grid cols-2">
+      <div>
+        <div class="ax-panel">
+          <h2>Speed-loop gains</h2>
+          <div class="ax-cap">Sent as a MotorTuning to the board through the MIB, and resent until the board echoes it.</div>
+          <div class="field"><span class="ax-label">Axis</span><select class="ax-input" id="tuAxis"></select><span></span></div>
+          <div class="field"><span class="ax-label"><span class="nc">kp</span></span><input class="ax-input" id="tuKp" type="number" step="0.01"><span class="unit">A/(rad/s)</span></div>
+          <div class="field"><span class="ax-label"><span class="nc">ki</span></span><input class="ax-input" id="tuKi" type="number" step="0.05"><span class="unit">A/rad</span></div>
+          <div class="field"><span class="ax-label">Hall PLL</span><input class="ax-input" id="tuPll" type="number" step="0.5"><span class="unit">Hz</span></div>
+          <label class="chk"><input type="checkbox" id="tuPersist"> Save to the board's NVS (survives a reboot)</label>
+          <div class="row"><button class="ax-btn primary" id="tuApply" disabled>Apply gains</button><button class="ax-btn" id="tuLoad" disabled>Load in force</button></div>
+          <div class="hint" id="tuInForce">In force: –</div>
+          <div class="hint">0 leaves a gain unchanged; a negative k<sub>p</sub> or k<sub>i</sub> sets it to exactly 0 (API v3 boards).</div>
+        </div>
+        <div class="ax-panel" style="margin-top:8px">
+          <h2>Test drive</h2>
+          <div class="ax-cap">The MIB sends this command instead of its own while you hold the button, and stops 300 ms after you let go. IDLE only.</div>
+          <div class="field"><span class="ax-label">Mode</span><select class="ax-input" id="tdMode"><option value="2">Velocity</option><option value="1">Torque</option><option value="3">Position</option><option value="4">Hold</option></select><span></span></div>
+          <div class="field"><span class="ax-label">Setpoint</span><input class="ax-input" id="tdSet" type="number" value="2" step="0.1"><span class="unit" id="tdUnit">rad/s</span></div>
+          <div class="field"><span class="ax-label">Torque limit</span><input class="ax-input" id="tdTl" type="number" value="10" step="0.5"><span class="unit">N·m</span></div>
+          <div class="field"><span class="ax-label">Speed limit</span><input class="ax-input" id="tdVl" type="number" value="4" step="0.5"><span class="unit">rad/s</span></div>
+          <div class="field"><span class="ax-label">Accel limit</span><input class="ax-input" id="tdAl" type="number" value="0" step="1"><span class="unit">rad/s², 0 = step</span></div>
+          <div class="row"><button class="ax-btn hold" id="tdHold" disabled>Hold to run</button><button class="ax-btn hold" id="tdRev" disabled>Hold to run reversed</button></div>
+          <div class="row" style="margin-top:14px"><span class="ax-label">Step test</span>
+            <input class="ax-input" id="stDur" type="number" value="2" step="0.5" style="width:70px"><span class="unit">s at setpoint</span>
+            <button class="ax-btn" id="stRun" disabled data-fx="sparks">Run step test</button></div>
+          <div class="warnbox"><b>Wheels off the ground</b> for anything above a crawl, someone on the e-stop. The MIB caps panel commands at 8 rad/s and 20 N·m.</div>
+        </div>
+      </div>
+      <div>
+        <div class="ax-panel chart-wrap"><h2>Speed</h2><div class="ax-cap">Command and measured speed of the selected axis.</div><div class="chart" id="cTuVel"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Current</h2><div class="ax-cap">i<sub>q</sub> of the selected axis.</div><div class="chart" id="cTuIq"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Step tests</h2><div class="ax-cap" id="stCap">Each run's response, aligned on the step. Run one on the left.</div>
+          <div class="chart" id="cSteps"></div>
+          <table id="stTable" style="margin-top:8px"><thead><tr><th>Run</th><th class="num"><span class="nc">kp</span></th><th class="num"><span class="nc">ki</span></th><th class="num">Rise 10–90, s</th><th class="num">Overshoot, %</th><th class="num">Settle 5 %, s</th><th class="num">SS error, %</th><th class="num">IAE</th></tr></thead><tbody><tr><td colspan="8" class="empty">No runs yet.</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ AUTO-TUNE -->
+  <section class="tab" id="tab-auto">
+    <div class="ax-grid cols-2">
+      <div class="ax-panel">
+        <h2>Speed-loop auto-tune</h2>
+        <div class="ax-cap">The PACE dyno's pole placement, run live through the MIB: measure drag and the wheel's response to a torque step, place both closed-loop poles at ω<sub>n</sub> (ζ = 1), verify each candidate with a speed step, and keep the fastest one that stays under the overshoot limit.</div>
+        <div class="field"><span class="ax-label">Axes</span><select class="ax-input" id="atAxis"><option value="2">Drive L</option><option value="3">Drive R</option><option value="both">Both drive wheels</option></select><span></span></div>
+        <div class="field"><span class="ax-label">Setup</span><select class="ax-input" id="atSetup"><option value="blocks">Wheels on blocks</option><option value="ground">On the ground, chair free to roll</option></select><span></span></div>
+        <div class="field"><span class="ax-label">Speed step</span><input class="ax-input" id="atStep" type="number" value="2" step="0.5"><span class="unit">rad/s</span></div>
+        <div class="field"><span class="ax-label">First torque</span><input class="ax-input" id="atTorque" type="number" value="3" step="0.5"><span class="unit">N·m</span></div>
+        <div class="field"><span class="ax-label"><span class="nc">ωn</span> tries</span><input class="ax-input" id="atWn" value="2, 3.5, 5, 7"><span class="unit">rad/s</span></div>
+        <div class="field"><span class="ax-label">Max overshoot</span><input class="ax-input" id="atOvs" type="number" value="15" step="1"><span class="unit">%</span></div>
+        <label class="chk"><input type="checkbox" id="atSafe"> <span>The wheels are clear and someone is on the e-stop. On the ground: the chair has room to roll about <b id="atRoll">1 m</b> each way.</span></label>
+        <div class="row"><button class="ax-btn primary" id="atStart" disabled data-fx="orbit">Start auto-tune</button><button class="ax-btn danger" id="atAbort" disabled>Abort</button></div>
+        <ol class="steps" id="atSteps"></ol>
+        <div class="row" id="atResultRow" style="display:none"><button class="ax-btn primary" id="atSave">Save to board</button><button class="ax-btn" id="atRevert">Revert to previous gains</button></div>
+      </div>
+      <div>
+        <div class="ax-panel chart-wrap"><h2>Plant identification</h2><div class="ax-cap" id="atIdCap">Wheel speed during the torque step; the slope gives the plant gain K = α / i<sub>q</sub>.</div><div class="chart" id="cAtId"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Candidate steps</h2><div class="ax-cap">Speed response for each ω<sub>n</sub>, aligned on the step.</div><div class="chart" id="cAtSteps"></div>
+          <table id="atTable" style="margin-top:8px"><thead><tr><th>Axis</th><th class="num"><span class="nc">ωn</span>, rad/s</th><th class="num"><span class="nc">kp</span></th><th class="num"><span class="nc">ki</span></th><th class="num">Rise, s</th><th class="num">Overshoot, %</th><th class="num">SS error, %</th><th>Verdict</th></tr></thead><tbody><tr><td colspan="8" class="empty">No runs yet.</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ DRIVE -->
+  <section class="tab" id="tab-drive">
+    <div class="ax-grid cols-2">
+      <div class="ax-panel">
+        <h2>Drive</h2>
+        <div class="ax-cap">The same DriveCommand the HMI sends. The pad drives instead of the HMI's stick while you hold it; let go and the MIB brakes to a stop within 300 ms.</div>
+        <div class="field"><span class="ax-label">Profile</span><select class="ax-input" id="drProfile"><option value="0">LOW</option><option value="1" selected>NORMAL</option><option value="2">HIGH</option></select><span></span></div>
+        <div class="row"><button class="ax-btn primary" id="drEnable" disabled data-fx="sparks">Enable drive</button><button class="ax-btn" id="drDisable" disabled>Disable drive</button></div>
+        <div class="row" style="margin-top:14px"><div class="pad" id="pad"><div class="knob" id="knob"></div></div></div>
+        <div class="hint" id="padHint">Enable drive, then hold and drag on the pad. Up is forward, right is a right turn.</div>
+        <div class="field"><span class="ax-label">Pad gain</span><input class="ax-range" id="padGain" type="range" min="0.1" max="1" step="0.05" value="0.4"><span class="unit" id="padGainV">40 %</span></div>
+        <div class="hint" id="padScale">–</div>
+        <section class="ax-tiles" style="margin-top:12px;grid-template-columns:1fr 1fr">
+          <div class="ax-tile"><div class="ax-label">Drive L current</div><div class="ax-value" id="drIqL">–<small>A</small></div><div class="ax-sub" id="drVelL">–</div></div>
+          <div class="ax-tile"><div class="ax-label">Drive R current</div><div class="ax-value" id="drIqR">–<small>A</small></div><div class="ax-sub" id="drVelR">–</div></div>
+        </section>
+      </div>
+      <div>
+        <div class="ax-panel chart-wrap"><h2>Drive current</h2><div class="ax-cap">Torque-producing current i<sub>q</sub> of each drive wheel, from its MotorState.</div><div class="chart" id="cDrIq"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Stick</h2><div class="ax-cap">The stick the MIB is driving on (the panel's while you hold the pad, else the HMI's).</div><div class="chart" id="cDrStick"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Wheel speed</h2><div class="ax-cap">Command and measured speed, both drive wheels.</div><div class="chart" id="cDrVel"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ SEAT -->
+  <section class="tab" id="tab-seat">
+    <div class="warnbox" style="margin:0 0 8px"><b>Placeholder on the MIB:</b> seat commands are accepted and reported back, but the MIB has no actuator driver yet (DriveController::set_seat_target). The MCP266 path lives on feature/2-actuator-control and feature/21-mib-debugger.</div>
+    <div class="ax-grid seatgrid" id="seatGrid"></div>
+    <div class="ax-panel chart-wrap"><h2>Seat targets</h2><div class="ax-cap">Seat position the MIB reports for each axis.</div><div class="chart" id="cSeat"></div></div>
+  </section>
+
+  <!-- ============================================================ SENSORS -->
+  <section class="tab" id="tab-sensors">
+    <div class="ax-cap">Every telemetry channel the MIB declares shows up here. Channels named <code>sensor.*</code> get a tile; any channel can be plotted.</div>
+    <section class="ax-tiles" id="sensorTiles"><div class="empty">No sensors reported. A sensor appears here when the MIB's firmware adds a <code>sensor.*</code> channel.</div></section>
+    <div class="ax-grid cols-2">
+      <div class="ax-panel">
+        <h2>Channels</h2>
+        <div class="ax-cap">Tick up to six to plot. Plotted channels share one y-axis, so pick ones with the same unit.</div>
+        <input class="ax-input" id="chFilter" placeholder="filter, e.g. drive_left">
+        <div class="chanlist" id="chList"><div class="empty" style="padding:8px">Not connected.</div></div>
+        <div class="row"><button class="ax-btn" id="csvBtn" disabled>Export CSV</button><span class="ax-label">window</span>
+          <select class="ax-input" id="csvWin" style="width:auto"><option value="10">10 s</option><option value="30" selected>30 s</option><option value="120">120 s</option></select></div>
+      </div>
+      <div class="ax-panel chart-wrap"><h2>Plot</h2><div class="ax-cap" id="cCustomCap">Pick channels on the left.</div>
+        <div class="field" style="grid-template-columns:110px 1fr"><span class="ax-label">Y-axis title</span><input class="ax-input" id="cCustomY" placeholder="set from the channels' units"></div>
+        <div class="chart" id="cCustom"></div></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ FIRMWARE -->
+  <section class="tab" id="tab-firmware">
+    <div class="ax-grid cols-even">
+      <div class="ax-panel" id="fwPanel">
+        <h2>Flash firmware</h2>
+        <div class="ax-cap">Over the air, the way the PACE RACER dashboard flashes a wheel: the board makes itself safe, writes its other app slot and reboots into it, and the panel reconnects and marks the new image valid. The MIB goes over the link you are connected with; a PACE RACER goes over Ethernet through <code>eth_bridge.py</code>.</div>
+        <div class="field"><span class="ax-label">Target</span><select class="ax-input" id="fwTarget"><option value="mib">MIB (the connected link)</option></select><button class="ax-btn" id="fwFind" title="Ask the network who answers PACE?">Find RACERs</button></div>
+        <div class="field"><span class="ax-label">RACER by IP</span><input class="ax-input" id="fwRacerIp" placeholder="192.168.4.x"><button class="ax-btn" id="fwAddRacer">Add</button></div>
+        <div class="field"><span class="ax-label">Build</span><select class="ax-input" id="fwBuild"><option value="">none found (needs eth_bridge.py)</option></select><span></span></div>
+        <div class="field"><span class="ax-label">Or a file</span><input class="ax-input" id="fwFile" type="file" accept=".bin"><span></span></div>
+        <div class="hint" id="fwHint">Drop a <code>.bin</code> anywhere on this panel too. RACER builds are listed when the bridge runs with <code>--racer &lt;pace-racer-fw&gt;/components/pace-racer-board/atos-drive</code>.</div>
+        <div class="row"><button class="ax-btn primary" id="fwFlash" disabled data-fx="sparks">Flash</button><button class="ax-btn danger" id="fwAbort" disabled>Abort</button></div>
+        <div class="bar" id="fwBar"><div></div></div>
+        <div class="row"><span class="ax-status" id="fwStatus">No image chosen</span></div>
+      </div>
+      <div class="ax-panel">
+        <h2>Running image</h2>
+        <div class="ax-cap" id="fwInfoCap">The target's firmware. A new image boots pending verify; an image that is never confirmed loses to the previous one at the next reset.</div>
+        <table><tbody id="fwInfo"><tr><td class="empty">Not connected.</td></tr></tbody></table>
+        <div class="row"><button class="ax-btn" id="fwRead">Read</button><button class="ax-btn" id="fwValid" disabled>Mark valid</button><button class="ax-btn danger" id="fwRollback" disabled>Roll back</button></div>
+        <div class="warnbox"><b>Once, over USB:</b> a MIB still on the old partition table (one factory app, no rollback) has nowhere to write an update. Flash this firmware with <code>idf.py flash</code> over the USB-C one last time; it writes the bootloader, the two-slot table and the app. A PACE RACER's first ethernet-capable image also goes over USB (<code>tools/provision.py</code>).</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ LOG -->
+  <section class="tab" id="tab-log">
+    <div class="ax-panel">
+      <h2>MIB log</h2>
+      <div class="ax-cap">The MIB's console: over Web Serial, the UART itself; over WebUSB, a copy of stdout while the panel streams.</div>
+      <div class="row"><input class="ax-input" id="logFilter" placeholder="filter" style="max-width:280px"><label class="chk" style="margin:0"><input type="checkbox" id="logPause"> Pause</label>
+        <button class="ax-btn" id="logClear">Clear</button><button class="ax-btn" id="logSave">Download</button></div>
+      <pre class="out" id="logOut"></pre>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="ax-fx.js"></script>
+<script src="uPlot.iife.min.js"></script>
+<script src="mib_link.js"></script>
+<script src="mib_sim.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>
