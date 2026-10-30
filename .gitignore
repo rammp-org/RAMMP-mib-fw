@@ -36,3 +36,8 @@ sdkconfig.old
 dependencies.lock
 managed_components/
 .vscode/
+
+# Python
+__pycache__/
+.venv/
+drive_fit_out/

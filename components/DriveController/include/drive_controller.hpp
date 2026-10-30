@@ -4,6 +4,7 @@
 
 #include "base_component.hpp"
 #include "differential_drive.hpp"
+#include "drive_profile.hpp"
 #include "MIBconfig.hpp"
 #include "messages.hpp"
 #include "trajectory_planner.hpp"
@@ -37,6 +38,8 @@ public:
   /// @brief Apply one of the predefined trajectory-planner drive profiles.
   /// @param profile The desired drive response profile.
   /// @return True if the planner accepted the profile configuration.
+  /// @note The planner keeps its current velocity, so switching while driving
+  ///       ramps to the new limits instead of stepping to zero.
   bool update_drive_profile(MIB::DriveProfile profile);
 
   /// @brief Get the current trajectory-limited wheel speeds.
@@ -56,6 +59,7 @@ public:
 private:
   static Config default_config();
   static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
+  static const config::DriveProfileConfig &profile_values(MIB::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
