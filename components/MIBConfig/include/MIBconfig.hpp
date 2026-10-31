@@ -88,6 +88,9 @@ inline constexpr std::uint8_t ethernet_netmask[4] = {255, 255, 255, 0};
 /// @brief IPv4 gateway address advertised by the MIB DHCP server.
 inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
 
+/// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
+inline constexpr const char *ntp_server = "snorlax.local";
+
 /// @brief E-stop clear button: normally open to GND, held 2 s. Any GPIO the board leaves free.
 /// GPIO_NUM_NC: no button wired, so only MibSystem calling latch_.start_clear_attempt() clears it.
 inline constexpr gpio_num_t estop_clear_gpio = GPIO_NUM_NC;

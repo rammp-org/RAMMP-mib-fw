@@ -1,5 +1,7 @@
 #include "bsp.hpp"
 
+#include "esp_netif_sntp.h"
+
 namespace mib::bsp {
 
 bool MIB::init_imu() {
@@ -24,6 +26,28 @@ bool MIB::init_imu() {
     return false;
   }
   imu_ = std::move(imu);
+  return true;
+}
+
+bool MIB::init_time_sync() {
+  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(mib::config::ntp_server);
+  // The first sync steps the clock; later ones slew it so stamps never go backwards.
+  config.smooth_sync = true;
+  config.wait_for_sync = false;
+  config.sync_cb = [](struct timeval *) {
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      MIB::instance().logger_.info("System clock synced to {}", mib::config::ntp_server);
+    }
+  };
+
+  esp_err_t err = esp_netif_sntp_init(&config);
+  if (err != ESP_OK) {
+    logger_.error("Failed to start SNTP: {}", esp_err_to_name(err));
+    return false;
+  }
+  logger_.info("SNTP syncing to {}", mib::config::ntp_server);
   return true;
 }
 

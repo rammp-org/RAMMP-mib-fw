@@ -48,6 +48,12 @@ public:
   /// @return True if the RTPS participant was started.
   bool init_rtps();
 
+  /// @brief Start syncing the system clock to the ROS host over SNTP.
+  /// @details Returns without waiting for the first sync; until it lands, the
+  ///          system clock is time since boot.
+  /// @return True if the SNTP client was started.
+  bool init_time_sync();
+
   /// @brief Check whether Ethernet is connected and has an IP address.
   /// @return True if Ethernet has an active link and a valid IP address.
   bool ethernet_connected() const {
