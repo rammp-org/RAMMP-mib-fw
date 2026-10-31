@@ -21,7 +21,7 @@ namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// the Jetson's TwistSetpoint, estop-core's EStop and SPDP.
+/// the external controller's TwistSetpoint, estop-core's EStop and SPDP.
 constexpr size_t kFixedReaders = 7;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
@@ -344,7 +344,7 @@ void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) 
   switch (state_.load()) {
   case SystemState::AUTONOMOUS:
   case SystemState::SHARED: {
-    // The Jetson setpoint drives the base in both autonomy states.
+    // The external controller setpoint drives the base in both autonomy states.
     if (!std::isfinite(linear_mps) || !std::isfinite(angular_radps)) {
       logger_.warn("Dropping non-finite twist setpoint");
       break;
