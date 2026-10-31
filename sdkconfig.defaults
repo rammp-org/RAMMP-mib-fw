@@ -27,6 +27,10 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 # FreeRTOS configuration 
 CONFIG_FREERTOS_HZ=1000
 
+# SNTP: lwIP does not correct the crystal's frequency error, so resync often
+# (15 s is the RFC 4330 minimum) to keep drift between syncs to a few ms.
+CONFIG_LWIP_SNTP_UPDATE_DELAY=15000
+
 # LVGL compatibility settings for ESP-IDF 6 warning-as-error builds.
 CONFIG_LV_MEM_SIZE=65536
 CONFIG_LV_MEM_SIZE_KILOBYTES=0
