@@ -277,7 +277,7 @@ private:
   float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.
   float panel_stick_y_{0.0f};
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
-  std::mutex twist_mutex_;                                    ///< Protects twist_until_.
+  std::mutex twist_mutex_; ///< Orders setpoints against leaving autonomy; guards twist_until_.
   std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
   std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.

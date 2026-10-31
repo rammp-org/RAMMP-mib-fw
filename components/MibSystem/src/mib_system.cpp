@@ -315,6 +315,7 @@ bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
 }
 
 void MibSystem::leave_autonomy(const char *reason) {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   drive_controller_.stop();
   state_.store(SystemState::IDLE);
   logger_.info("Autonomy ended ({}) - back to IDLE", reason);
@@ -341,6 +342,8 @@ void MibSystem::handle_shared_stop() {
 }
 
 void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) {
+  // Leaving autonomy takes this lock too, so no setpoint lands after it.
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   switch (state_.load()) {
   case SystemState::AUTONOMOUS:
   case SystemState::SHARED: {
@@ -349,7 +352,6 @@ void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) 
       logger_.warn("Dropping non-finite twist setpoint");
       break;
     }
-    std::lock_guard<std::mutex> lock(twist_mutex_);
     drive_controller_.set_velocity(linear_mps, angular_radps);
     twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
     break;
@@ -433,6 +435,7 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.warn("Ignoring drive disable command outside a drive state");
       return false;
     }
+    std::lock_guard<std::mutex> lock(twist_mutex_);
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
@@ -905,6 +908,7 @@ void MibSystem::enter_estop() {
     return;
   }
 
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   drive_controller_.stop();
   estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
   state_.store(SystemState::ESTOP);
