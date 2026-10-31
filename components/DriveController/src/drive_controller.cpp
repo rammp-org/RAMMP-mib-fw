@@ -28,7 +28,8 @@ void DriveController::set_velocity(float linear_mps, float angular_radps) {
                                ? config.max_reverse_linear_velocity
                                : config.max_linear_velocity;
   const float linear = linear_mps / max_linear;
-  const float angular = angular_radps / config.max_angular_velocity;
+  // A positive planner angular turns this chair right (#34), so counter-clockwise is negated.
+  const float angular = -angular_radps / config.max_angular_velocity;
   const float scale = std::max({1.0f, std::abs(linear), std::abs(angular)});
   trajectory_planner_.set_target(linear / scale, angular / scale);
 }
