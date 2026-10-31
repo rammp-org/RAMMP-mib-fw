@@ -341,17 +341,32 @@ void MibSystem::handle_shared_stop() {
 }
 
 void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) {
-  const auto state = state_.load();
-  if (state != SystemState::AUTONOMOUS && state != SystemState::SHARED) {
-    return;
+  switch (state_.load()) {
+  case SystemState::AUTONOMOUS:
+  case SystemState::SHARED: {
+    // The Jetson setpoint drives the base in both autonomy states.
+    if (!std::isfinite(linear_mps) || !std::isfinite(angular_radps)) {
+      logger_.warn("Dropping non-finite twist setpoint");
+      break;
+    }
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    drive_controller_.set_velocity(linear_mps, angular_radps);
+    twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
+    break;
   }
-  if (!std::isfinite(linear_mps) || !std::isfinite(angular_radps)) {
-    logger_.warn("Dropping non-finite twist setpoint");
-    return;
+  default:
+    break;
   }
+}
+
+void MibSystem::stop_if_twist_lapsed() {
   std::lock_guard<std::mutex> lock(twist_mutex_);
-  drive_controller_.set_velocity(linear_mps, angular_radps);
-  twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
+  if (twist_until_.time_since_epoch().count() != 0 &&
+      std::chrono::steady_clock::now() >= twist_until_) {
+    twist_until_ = {};
+    drive_controller_.stop();
+    logger_.warn("Twist setpoints went quiet: stopping");
+  }
 }
 
 bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
@@ -861,17 +876,13 @@ void MibSystem::run_state_step() {
     break;
   }
   case SystemState::AUTONOMOUS:
-  case SystemState::SHARED: {
-    // Setpoints that went quiet stop the chair until the next one.
-    std::lock_guard<std::mutex> lock(twist_mutex_);
-    if (twist_until_.time_since_epoch().count() != 0 &&
-        std::chrono::steady_clock::now() >= twist_until_) {
-      twist_until_ = {};
-      drive_controller_.stop();
-      logger_.warn("Twist setpoints went quiet: stopping");
-    }
+    logger_.debug("System state: AUTONOMOUS - running autonomous placeholder");
+    stop_if_twist_lapsed();
     break;
-  }
+  case SystemState::SHARED:
+    logger_.debug("System state: SHARED - running shared control placeholder");
+    stop_if_twist_lapsed();
+    break;
   case SystemState::ESTOP:
     run_estop_step();
     break;
