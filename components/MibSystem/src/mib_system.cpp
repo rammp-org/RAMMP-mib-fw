@@ -787,6 +787,10 @@ void MibSystem::run_state_step() {
     logger_.info("ESP32-P4-ETH init complete");
     logger_.info("Board Ethernet status: connected={}", mib_.ethernet_connected());
     logger_.info("Board IP: {}", mib_.ethernet_ip_string());
+    // Stamps fall back to time since boot without a synced clock, so this is not fatal.
+    if (!mib_.init_time_sync()) {
+      logger_.warn("Clock will not be synced to the ROS host");
+    }
     if (!mib_.init_rtps()) {
       logger_.error("Failed to initialize RTPS");
       state_.store(SystemState::ERROR);

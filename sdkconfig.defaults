@@ -27,6 +27,13 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 # FreeRTOS configuration 
 CONFIG_FREERTOS_HZ=1000
 
+# SNTP: lwIP does not correct the crystal's frequency error, so resync often
+# (15 s is the RFC 4330 minimum) to keep drift between syncs under 1 ms.
+CONFIG_LWIP_SNTP_UPDATE_DELAY=15000
+# UDP PCBs: SNTP takes one, and resolving snorlax.local up to four (lwIP's DNS randomizes its
+# source port). With DHCPS and up to 10 RTPS channels, that's the default 16 with no headroom.
+CONFIG_LWIP_MAX_UDP_PCBS=20
+
 # LVGL compatibility settings for ESP-IDF 6 warning-as-error builds.
 CONFIG_LV_MEM_SIZE=65536
 CONFIG_LV_MEM_SIZE_KILOBYTES=0
