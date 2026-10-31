@@ -1,5 +1,8 @@
 #include "drive_controller.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include "MIBconfig.hpp"
 
 namespace mib {
@@ -17,6 +20,18 @@ DriveController::DriveController(const Config &config)
 
 void DriveController::set_target(float linear, float angular) {
   trajectory_planner_.set_target(linear, angular);
+}
+
+void DriveController::set_velocity(float linear_mps, float angular_radps) {
+  const auto config = trajectory_planner_.get_config();
+  const float max_linear = linear_mps < 0.0f && config.max_reverse_linear_velocity > 0.0f
+                               ? config.max_reverse_linear_velocity
+                               : config.max_linear_velocity;
+  const float linear = linear_mps / max_linear;
+  // A positive planner angular turns this chair right (#34), so counter-clockwise is negated.
+  const float angular = -angular_radps / config.max_angular_velocity;
+  const float scale = std::max({1.0f, std::abs(linear), std::abs(angular)});
+  trajectory_planner_.set_target(linear / scale, angular / scale);
 }
 
 void DriveController::stop() {

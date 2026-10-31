@@ -152,9 +152,11 @@ private:
   /// Handle one drive setpoint from the Jetson (autonomy).
   /// \param linear_mps Forward velocity in metres per second.
   /// \param angular_radps Angular velocity in radians per second, positive counter-clockwise.
-  /// \note Acted on in AUTONOMOUS and SHARED only. The RTPS topic for this is not defined
-  ///       yet, so nothing calls this. Runs on an RTPS receive thread once it does.
+  /// \note Acted on in AUTONOMOUS and SHARED only. Runs on an RTPS receive thread.
   void handle_autonomy_setpoint(float linear_mps, float angular_radps);
+
+  /// Stop the drive once external controller setpoints go quiet. State task only.
+  void stop_if_twist_lapsed();
 
   /// Enter CALIBRATE from IDLE.
   /// \note The trigger (a joystick command or another source) is not finalized; nothing
@@ -275,11 +277,14 @@ private:
   float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.
   float panel_stick_y_{0.0f};
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
+  std::mutex twist_mutex_; ///< Orders setpoints against leaving autonomy; guards twist_until_.
+  std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
   std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
+  std::unique_ptr<espp::Subscriber<rammp::TwistSetpoint>> twist_subscriber_; ///< External input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
