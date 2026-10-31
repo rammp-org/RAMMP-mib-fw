@@ -262,8 +262,13 @@ void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
 void MibSystem::apply_stick(const rammp::XYTwist &sample) {
   switch (state_.load()) {
   case SystemState::DRIVE_ENABLED:
-    // The MIB maps y to linear velocity and x to angular velocity.
-    drive_controller_.set_target(sample.y, sample.x);
+    // y is linear velocity. x becomes angular velocity with its sign flipped: XYTwist
+    // defines x as positive to the right, and the drive maths follows REP 103, where
+    // positive angular is counter-clockwise (a left turn). This is the only place the
+    // stick frame is converted to the base frame. If the chair turns the wrong way, the
+    // cause is on the chair (the HMI's "Stick left/right" mirror, which must stay off, a
+    // swapped drive board, or the wheel invert flags), not this sign. See #59.
+    drive_controller_.set_target(sample.y, -sample.x);
     break;
   case SystemState::AUTONOMOUS:
     // Touching the joystick ends autonomy and hands control back to the joystick.
