@@ -447,7 +447,6 @@ void MibSystem::publish_motor_commands() {
 void MibSystem::publish_odometry() {
   rammp::MotorState left{};
   rammp::MotorState right{};
-  bool resync = false;
   {
     std::lock_guard<std::mutex> lock(motor_state_mutex_);
     // Publish nothing until both wheels have reported, and nothing new while
@@ -457,13 +456,12 @@ void MibSystem::publish_odometry() {
     }
     left = *left_motor_state_;
     right = *right_motor_state_;
-    resync = std::exchange(odometry_resync_, false);
+    if (std::exchange(odometry_resync_, false)) {
+      odometry_.resync();
+    }
     motor_state_updated_ = false;
   }
 
-  if (resync) {
-    odometry_.resync();
-  }
   odometry_.update(left.position, right.position);
   const auto &pose = odometry_.pose();
   const auto velocity = odometry_.velocity(left.velocity, right.velocity);
