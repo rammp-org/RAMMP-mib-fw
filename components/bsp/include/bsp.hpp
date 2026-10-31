@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 #include "bno055.hpp"
 #include "esp32-p4-eth.hpp"
 #include "rtps_participant.hpp"
+#include "timer.hpp"
 
 namespace mib::bsp {
 
@@ -50,7 +52,8 @@ public:
 
   /// @brief Start syncing the system clock to the ROS host over SNTP.
   /// @details Returns without waiting for the first sync; until it lands, the
-  ///          system clock is time since boot.
+  ///          system clock is time since boot, and the client is restarted
+  ///          every mib::config::time_sync_retry_interval.
   /// @return True if the SNTP client was started.
   bool init_time_sync();
 
@@ -112,6 +115,8 @@ private:
   espp::Esp32P4Eth *board_{nullptr};
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_{nullptr};
   std::unique_ptr<espp::Bno055> imu_{nullptr};
+  std::unique_ptr<espp::Timer> time_sync_retry_timer_{nullptr};
+  std::atomic<bool> time_synced_{false};
   std::string ethernet_ip_address_;
 };
 
