@@ -825,27 +825,25 @@ void MibSystem::publish_motor_states() {
 void MibSystem::publish_odometry() {
   rammp::MotorState left{};
   rammp::MotorState right{};
-  bool resync = false;
   {
     std::lock_guard<std::mutex> lock(motor_state_mutex_);
-    // Publish nothing until both wheels have reported, and nothing new while
-    // neither has, so ROS sees /odom go quiet rather than a stale velocity.
     constexpr auto kLeft = static_cast<size_t>(rammp::AxisId::DRIVE_LEFT);
     constexpr auto kRight = static_cast<size_t>(rammp::AxisId::DRIVE_RIGHT);
     constexpr std::chrono::steady_clock::time_point kNever{};
+    // Publish nothing until both wheels have reported, and nothing new while
+    // neither has, so ROS sees /odom go quiet rather than a stale velocity.
     if (motor_state_times_[kLeft] == kNever || motor_state_times_[kRight] == kNever ||
         !drive_state_updated_) {
       return;
     }
     left = motor_states_[kLeft];
     right = motor_states_[kRight];
-    resync = std::exchange(odometry_resync_, false);
+    if (std::exchange(odometry_resync_, false)) {
+      odometry_.resync();
+    }
     drive_state_updated_ = false;
   }
 
-  if (resync) {
-    odometry_.resync();
-  }
   odometry_.update(left.position, right.position);
   const auto &pose = odometry_.pose();
   const auto velocity = odometry_.velocity(left.velocity, right.velocity);
