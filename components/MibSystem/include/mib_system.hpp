@@ -160,7 +160,7 @@ private:
   /// \note Acted on in AUTONOMOUS and SHARED only. Runs on an RTPS receive thread.
   void handle_autonomy_setpoint(float linear_mps, float angular_radps);
 
-  /// Stop the drive once Jetson setpoints go quiet. State task only.
+  /// Stop the drive once external controller setpoints go quiet. State task only.
   void stop_if_twist_lapsed();
 
   /// Enter CALIBRATE from IDLE.
@@ -283,13 +283,13 @@ private:
   float panel_stick_y_{0.0f};
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
   std::mutex twist_mutex_;                                    ///< Protects twist_until_.
-  std::chrono::steady_clock::time_point twist_until_{};       ///< Jetson setpoints lapse here.
+  std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
   std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
-  std::unique_ptr<espp::Subscriber<rammp::TwistSetpoint>> twist_subscriber_; ///< Jetson input.
+  std::unique_ptr<espp::Subscriber<rammp::TwistSetpoint>> twist_subscriber_; ///< External input.
   std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
   std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
   std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
