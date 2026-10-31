@@ -31,16 +31,13 @@ bool MIB::init_imu() {
 
 bool MIB::init_time_sync() {
   // Every sync steps the clock (no smooth_sync). After the first, a step is the drift over one
-  // sync interval, well under 1 ms. Smooth sync slews at 1/64: following a 10 s step of the host's
-  // clock would take ~10 min.
+  // sync interval plus the one-way network delay, well under 1 ms on the direct link. Smooth sync
+  // slews at 1/64: following a 10 s step of the host's clock would take ~10 min.
   esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(mib::config::ntp_server);
   config.wait_for_sync = false;
-  config.sync_cb = [](struct timeval *) {
-    auto &mib = MIB::instance();
-    if (!mib.time_synced_.exchange(true)) {
-      mib.logger_.info("System clock synced to {}", mib::config::ntp_server);
-    }
-  };
+  // Runs on lwIP's tcpip thread, at the bottom of its receive path on a 3 KB stack: only set the
+  // flag, and let the retry timer log.
+  config.sync_cb = [](struct timeval *) { MIB::instance().time_synced_ = true; };
 
   esp_err_t err = esp_netif_sntp_init(&config);
   if (err != ESP_OK) {
@@ -49,13 +46,15 @@ bool MIB::init_time_sync() {
   }
   logger_.info("SNTP syncing to {}", mib::config::ntp_server);
 
-  // A restart resets lwIP's retry backoff. Once synced, the regular sync interval takes over.
+  // A restart resets lwIP's retry backoff. Once synced, the regular sync interval takes over. A
+  // host that goes away after that gets lwIP's backoff (up to 150 s), and the clock free-runs.
   time_sync_retry_timer_ = std::make_unique<espp::Timer>(espp::Timer::Config{
       .name = "SNTP retry",
       .period = mib::config::time_sync_retry_interval,
       .delay = mib::config::time_sync_retry_interval,
       .callback = [this]() -> bool {
         if (time_synced_) {
+          logger_.info("System clock synced to {}", mib::config::ntp_server);
           return true;
         }
         esp_netif_sntp_start();
