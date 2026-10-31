@@ -160,6 +160,9 @@ private:
   /// \note Acted on in AUTONOMOUS and SHARED only. Runs on an RTPS receive thread.
   void handle_autonomy_setpoint(float linear_mps, float angular_radps);
 
+  /// Stop the drive once Jetson setpoints go quiet. State task only.
+  void stop_if_twist_lapsed();
+
   /// Enter CALIBRATE from IDLE.
   /// \note The trigger (a joystick command or another source) is not finalized; nothing
   ///       calls this yet. Only valid from IDLE.
