@@ -12,5 +12,6 @@ idf_component_register(
     "logger"
     "MIBConfig"
     "bno055"
+    "timer"
   REQUIRED_IDF_TARGETS "esp32p4"
 )
