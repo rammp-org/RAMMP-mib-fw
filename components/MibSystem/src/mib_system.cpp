@@ -779,6 +779,16 @@ void MibSystem::publish_motor_commands() {
   // instead of stepping to each one; the planner already keeps inside it.
   const float wheel_accel_limit = mib::config::drive_wheel_accel_limit_margin *
                                   drive_controller_.max_wheel_acceleration_radps2();
+  // Inside wheel of a tight turn: the slower wheel, under a third of the other's speed.
+  const float left_radps = std::fabs(wheel_speeds.left_rpm * kRpmToRadPerSecond);
+  const float right_radps = std::fabs(wheel_speeds.right_rpm * kRpmToRadPerSecond);
+  const auto inside = [](float self, float other) {
+    return mib::config::drive_inside_wheel_torque_limit_nm > 0.0f &&
+           other >= mib::config::drive_inside_wheel_min_outer_radps &&
+           self < mib::config::drive_inside_wheel_speed_ratio * other;
+  };
+  const bool cap_left = drive && inside(left_radps, right_radps);
+  const bool cap_right = drive && inside(right_radps, left_radps);
 
   // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
   std::array<uint8_t, rammp::kAxisCount> tuning_acks{};
@@ -808,10 +818,16 @@ void MibSystem::publish_motor_commands() {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
         command.accel_limit = wheel_accel_limit;
+        if (cap_left) {
+          command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
+        }
       } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
         command.accel_limit = wheel_accel_limit;
+        if (cap_right) {
+          command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
+        }
       } else if (jogging && jog.axis_id == i) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
@@ -832,6 +848,14 @@ void MibSystem::publish_motor_commands() {
     if (tuning_due && !axes_[i].tuning_publisher->publish(tuning)) {
       logger_.warn("Failed to publish {} motor tuning", rammp::kAxes[i].label);
     }
+  }
+  // The inside-wheel cap engaging and releasing, so the logs show how often it bites.
+  if (cap_left != inside_cap_left_ || cap_right != inside_cap_right_) {
+    inside_cap_left_ = cap_left;
+    inside_cap_right_ = cap_right;
+    logger_.info("Inside-wheel torque cap: drive_left {} drive_right {} (cmd {:.2f} / {:.2f} rad/s)",
+                 cap_left ? "CAPPED" : "full", cap_right ? "CAPPED" : "full", left_radps,
+                 right_radps);
   }
 }
 

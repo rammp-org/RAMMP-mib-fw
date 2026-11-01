@@ -144,6 +144,18 @@ struct DriveProfileConfig {
 /// steps its speed reference to every new command).
 inline constexpr float drive_wheel_accel_limit_margin = 1.25f;
 
+/// @brief Inside-wheel torque cap for tight turns (TEST 2026-11-01). In a tight arc the
+/// planner asks the inside wheel for a crawl (0.4 rad/s against 2.7 outside); scrub holds it
+/// still and the board's speed loop wound up to 20-30 A trying to move it. A wheel commanded
+/// below drive_inside_wheel_speed_ratio of the other wheel's speed, with the other wheel at
+/// least drive_inside_wheel_min_outer_radps, is sent this torque_limit instead of 0 (the
+/// board's 30 A burst ceiling): 23.4 N.m is 15 A on the hub20 (Kt 1.56), the boards'
+/// continuous rating. It lets that wheel stall and the chair pivot round it. Straight
+/// driving and spins (equal wheel speeds) are never capped. 0 turns the cap off.
+inline constexpr float drive_inside_wheel_torque_limit_nm = 23.4f;
+inline constexpr float drive_inside_wheel_speed_ratio = 0.33f;
+inline constexpr float drive_inside_wheel_min_outer_radps = 0.5f;
+
 inline constexpr DriveProfileConfig drive_profile_low{
     .max_linear_velocity_mps = 0.35f,
     .max_angular_velocity_radps = 1.0f,

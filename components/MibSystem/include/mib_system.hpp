@@ -262,6 +262,9 @@ private:
   std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
   /// drive_boards_ready() as the state task last saw it, to log only its changes.
   bool drive_boards_were_ready_{true};
+  /// Inside-wheel torque cap as last sent, to log only its changes (motor command task).
+  bool inside_cap_left_{false};
+  bool inside_cap_right_{false};
   /// Largest |iq| each board reported since the last drive status line, in A.
   std::array<float, rammp::kAxisCount> motor_peak_iq_{};
   mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
