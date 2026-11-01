@@ -313,7 +313,12 @@ bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
     logger_.warn("Ignoring {} request outside IDLE or DRIVE_ENABLED", name);
     return false;
   }
-  drive_controller_.stop();
+  {
+    // A lapse deadline left over from the last autonomy session would fire at once.
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    twist_until_ = {};
+    drive_controller_.stop();
+  }
   state_.store(autonomy_state);
   logger_.info("Entering {} - placeholder", name);
   return true;
