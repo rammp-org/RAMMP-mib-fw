@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cmath>
-#include <cstdio>
 
+#include "check_reporter.hpp"
 #include "seat_kinematics.hpp"
 
 namespace mib::test {
@@ -16,17 +16,7 @@ namespace mib::test {
 /// @return Number of failed checks (0 = all passed).
 inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
                                       void (*report)(const char *line)) {
-  int failures = 0;
-  char line[160];
-
-  auto check = [&](bool passed, const char *name) {
-    std::snprintf(line, sizeof(line), "%s %s", passed ? "PASS" : "FAIL", name);
-    report(line);
-    if (!passed) {
-      ++failures;
-    }
-  };
-  auto near = [](float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; };
+  CheckReporter check(report);
   constexpr float angle_tolerance_deg = 0.01f;
   constexpr float length_tolerance_mm = 0.01f;
 
@@ -291,7 +281,7 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
   check(!kinematics.from_actuators({.main_left_deg = std::nanf("")}),
         "from_actuators rejects a NaN reading");
 
-  return failures;
+  return check.failures();
 }
 
 } // namespace mib::test
