@@ -77,6 +77,17 @@ std::optional<float> arm_deg_on_ground(const SwingArmLeg &leg, float carriage_mm
   return *q * rad_to_deg;
 }
 
+/// True if this leg's swing-arm pivot is at least `min_clearance_mm` above the ground.
+///
+///     height = elevation + up · (pivot + (carriage, 0, 0))
+///
+/// Written as "clear" rather than "too low" so that NaN is rejected too.
+bool pivot_clear_of_ground(const SwingArmLeg &leg, float carriage_mm, const PointMm &up,
+                           float elevation_mm, float min_clearance_mm) {
+  const PointMm pivot = {leg.pivot_mm.x_mm + carriage_mm, leg.pivot_mm.y_mm, leg.pivot_mm.z_mm};
+  return elevation_mm + dot(up, pivot) >= min_clearance_mm;
+}
+
 } // namespace
 
 std::optional<JointConfig> SeatKinematics::inverse(const SeatPose &pose) const {
@@ -87,6 +98,17 @@ std::optional<JointConfig> SeatKinematics::inverse(const SeatPose &pose) const {
   }
   const PointMm up = world_up(pose.pitch_deg, pose.roll_deg);
   const float carriage_mm = *translation_mm;
+
+  // The arm limits alone accept poses that put the chassis into the floor (a level seat at
+  // -64.9 mm reaches, with the rear caster pivot 56 mm underground). Keep every pivot clear.
+  const float clearance_mm = geometry_.min_pivot_clearance_mm;
+  if (!pivot_clear_of_ground(geometry_.main_left, carriage_mm, up, pose.elevation_mm,
+                             clearance_mm) ||
+      !pivot_clear_of_ground(geometry_.main_right, carriage_mm, up, pose.elevation_mm,
+                             clearance_mm) ||
+      !pivot_clear_of_ground(geometry_.rear_caster, 0.0f, up, pose.elevation_mm, clearance_mm)) {
+    return std::nullopt;
+  }
 
   auto main_left = arm_deg_on_ground(geometry_.main_left, carriage_mm, up, pose.elevation_mm);
   auto main_right = arm_deg_on_ground(geometry_.main_right, carriage_mm, up, pose.elevation_mm);

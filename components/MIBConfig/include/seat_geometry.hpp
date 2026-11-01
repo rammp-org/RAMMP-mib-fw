@@ -67,6 +67,11 @@ struct SeatGeometry {
   float min_carriage_mm{0.0f};
   float max_carriage_mm{0.0f};
 
+  /// Lowest a swing-arm pivot may be above flat ground. SeatKinematics::inverse() rejects a pose
+  /// that puts any of the three pivots (the main ones moved by carriage travel) lower than this,
+  /// which keeps the chassis and carriage plates off the floor.
+  float min_pivot_clearance_mm{0.0f};
+
   // Joint-side quantity -> actuator degrees, one per actuator.
   Transmission main_left_transmission;      ///< Input: actuator stroke, mm.
   Transmission main_right_transmission;     ///< Input: actuator stroke, mm.
