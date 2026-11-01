@@ -67,6 +67,9 @@ inline constexpr auto motor_jog_timeout = std::chrono::milliseconds{300};
 /// @brief Output-shaft speed of a motor debug jog, in rad/s.
 inline constexpr float motor_jog_velocity_radps = 1.0f;
 
+/// @brief Joystick driving needs both drive boards reporting MotorState and neither in
+/// FAULT; otherwise the MIB stops both wheels. false drives on whatever answers (bench use).
+inline constexpr bool drive_requires_both_boards = true;
 /// @brief IMU read task period.
 inline constexpr auto imu_task_interval = std::chrono::milliseconds{10};
 
@@ -116,12 +119,27 @@ inline constexpr DifferentialDriveConfig differential_drive{
 };
 
 /// @brief Trajectory limits for one MIB drive response profile.
+///
+/// The planner limits linear and angular acceleration separately, but a wheel sees their
+/// sum: a / r + alpha * (separation / 2) / r. Slowing from straight driving into a sharp
+/// turn asks the inside wheel for both at once, and that is where the hub boards tripped
+/// on overcurrent (2026-11-01). Jerk limits shape the start of each ramp (S-curve, espp
+/// trajectory_planner >= 1.3.9); 0 keeps that axis trapezoidal. Stopping stays
+/// trapezoidal so a stop lands without overshoot.
 struct DriveProfileConfig {
   float max_linear_velocity_mps;
   float max_angular_velocity_radps;
   float max_linear_acceleration_mps2;
   float max_angular_acceleration_radps2;
+  float max_linear_jerk_mps3{0.0f};
+  float max_angular_jerk_radps3{0.0f};
 };
+
+/// @brief MotorCommand.accel_limit sent to each drive board, as a multiple of the
+/// profile's worst-case wheel acceleration. Above 1 so the board's ramp keeps up with
+/// the planner and only smooths the 20 Hz command steps; 0 sends no limit (the board
+/// steps its speed reference to every new command).
+inline constexpr float drive_wheel_accel_limit_margin = 1.25f;
 
 inline constexpr DriveProfileConfig drive_profile_low{
     .max_linear_velocity_mps = 0.35f,
@@ -130,11 +148,16 @@ inline constexpr DriveProfileConfig drive_profile_low{
     .max_angular_acceleration_radps2 = 1.0f,
 };
 
+/// NORMAL was 1.0 m/s^2 and 2.0 rad/s^2: up to 12.3 rad/s^2 at one wheel. These values
+/// cap it at 7.4 rad/s^2 (TEST, 2026-11-01), and the jerk limits ramp each axis up to
+/// full acceleration over 0.2 s instead of starting at full acceleration.
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 0.75f,
     .max_angular_velocity_radps = 2.0f,
-    .max_linear_acceleration_mps2 = 1.0f,
-    .max_angular_acceleration_radps2 = 2.0f,
+    .max_linear_acceleration_mps2 = 0.6f,
+    .max_angular_acceleration_radps2 = 1.2f,
+    .max_linear_jerk_mps3 = 3.0f,
+    .max_angular_jerk_radps3 = 6.0f,
 };
 
 inline constexpr DriveProfileConfig drive_profile_high{

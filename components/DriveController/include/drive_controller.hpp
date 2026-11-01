@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "base_component.hpp"
@@ -44,6 +45,11 @@ public:
   /// @note This only calculates the requested output; it does not command motors.
   DifferentialDrive::WheelSpeeds wheel_speeds() const;
 
+  /// @brief The largest acceleration the active profile can ask of one wheel: its linear
+  ///        and angular limits added, as they are on the inside wheel of a turn.
+  /// @return Wheel (output shaft) acceleration in rad/s^2.
+  float max_wheel_acceleration_radps2() const;
+
   /// @brief Check whether the differential-drive geometry is valid.
   /// @return True when both wheel dimensions are positive.
   bool is_valid() const { return differential_drive_.is_valid(); }
@@ -55,11 +61,12 @@ public:
 
 private:
   static Config default_config();
+  static const config::DriveProfileConfig &profile_values(rammp::DriveProfile profile);
   static espp::TrajectoryPlanner::Config profile_config(rammp::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
-  rammp::DriveProfile active_profile_{rammp::DriveProfile::NORMAL};
+  std::atomic<rammp::DriveProfile> active_profile_{rammp::DriveProfile::NORMAL};
 };
 
 } // namespace mib
