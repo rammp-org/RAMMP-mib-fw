@@ -62,15 +62,18 @@ inline int run_actuator_stage_checks(void (*report)(const char *line)) {
   };
 
   // Expected lengths computed independently from the URDF in Python.
-  check(near(linkage.length_mm(0.0f), 402.93f, 0.05f), "linkage: length at 0 deg = 402.93 mm");
-  check(near(linkage.length_mm(-45.0f), 287.58f, 0.05f), "linkage: length at -45 deg = 287.58 mm");
-  check(near(linkage.length_mm(45.0f), 471.13f, 0.05f), "linkage: length at +45 deg = 471.13 mm");
-  check(near(linkage.stroke_mm(-45.0f), 0.0f, 0.05f), "linkage: stroke at -45 deg = 0 mm");
+  check(near(linkage_length_mm(linkage, 0.0f), 402.93f, 0.05f),
+        "linkage: length at 0 deg = 402.93 mm");
+  check(near(linkage_length_mm(linkage, -45.0f), 287.58f, 0.05f),
+        "linkage: length at -45 deg = 287.58 mm");
+  check(near(linkage_length_mm(linkage, 45.0f), 471.13f, 0.05f),
+        "linkage: length at +45 deg = 471.13 mm");
+  check(near(linkage_stroke_mm(linkage, -45.0f), 0.0f, 0.05f), "linkage: stroke at -45 deg = 0 mm");
 
   {
     bool all_round_trip = true;
     for (float arm_deg = -45.0f; arm_deg <= 45.0f; arm_deg += 5.0f) {
-      auto back = linkage.arm_deg(linkage.stroke_mm(arm_deg), -45.0f, 45.0f);
+      auto back = linkage_arm_deg(linkage, linkage_stroke_mm(linkage, arm_deg), -45.0f, 45.0f);
       if (!back || !near(*back, arm_deg, 0.01f)) {
         all_round_trip = false;
       }
@@ -80,11 +83,12 @@ inline int run_actuator_stage_checks(void (*report)(const char *line)) {
 
   {
     // A stroke a hair past the -45 deg stop (float rounding) is snapped onto the stop.
-    auto snapped = linkage.arm_deg(linkage.stroke_mm(-45.0f) - 1e-4f, -45.0f, 45.0f);
+    auto snapped =
+        linkage_arm_deg(linkage, linkage_stroke_mm(linkage, -45.0f) - 1e-4f, -45.0f, 45.0f);
     check(snapped && *snapped == -45.0f, "linkage: stroke 1e-4 mm past -45 deg stop snaps to -45");
   }
 
-  check(!linkage.arm_deg(400.0f, -45.0f, 45.0f), "linkage: 400 mm stroke is rejected");
+  check(!linkage_arm_deg(linkage, 400.0f, -45.0f, 45.0f), "linkage: 400 mm stroke is rejected");
 
   return failures;
 }

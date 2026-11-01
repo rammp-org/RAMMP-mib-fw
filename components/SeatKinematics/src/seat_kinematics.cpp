@@ -3,6 +3,7 @@
 #include <cmath>
 #include <numbers>
 
+#include "linkage.hpp"
 #include "trig_equation.hpp"
 
 namespace mib {
@@ -190,9 +191,9 @@ std::optional<ActuatorPositions> SeatKinematics::to_actuators(const JointConfig 
   }
   const JointConfig &snapped = *checked; // joints with limit-rounding snapped
   const float main_left_stroke_mm =
-      geometry_.main_left_linkage.stroke_mm(snapped.main_left_arm_deg);
+      linkage_stroke_mm(geometry_.main_left_linkage, snapped.main_left_arm_deg);
   const float main_right_stroke_mm =
-      geometry_.main_right_linkage.stroke_mm(snapped.main_right_arm_deg);
+      linkage_stroke_mm(geometry_.main_right_linkage, snapped.main_right_arm_deg);
 
   return ActuatorPositions{
       .main_left_deg = geometry_.main_left_transmission.to_actuator_deg(main_left_stroke_mm),
@@ -213,10 +214,12 @@ SeatKinematics::from_actuators(const ActuatorPositions &actuators) const {
   const float main_right_stroke_mm =
       geometry_.main_right_transmission.from_actuator_deg(actuators.main_right_deg);
 
-  auto main_left_arm_deg = geometry_.main_left_linkage.arm_deg(
-      main_left_stroke_mm, geometry_.main_left.min_arm_deg, geometry_.main_left.max_arm_deg);
-  auto main_right_arm_deg = geometry_.main_right_linkage.arm_deg(
-      main_right_stroke_mm, geometry_.main_right.min_arm_deg, geometry_.main_right.max_arm_deg);
+  auto main_left_arm_deg =
+      linkage_arm_deg(geometry_.main_left_linkage, main_left_stroke_mm,
+                      geometry_.main_left.min_arm_deg, geometry_.main_left.max_arm_deg);
+  auto main_right_arm_deg =
+      linkage_arm_deg(geometry_.main_right_linkage, main_right_stroke_mm,
+                      geometry_.main_right.min_arm_deg, geometry_.main_right.max_arm_deg);
   if (!main_left_arm_deg || !main_right_arm_deg) {
     return std::nullopt;
   }

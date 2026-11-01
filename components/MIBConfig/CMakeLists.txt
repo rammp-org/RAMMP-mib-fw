@@ -1,6 +1,6 @@
 idf_component_register(
   INCLUDE_DIRS "include"
-  REQUIRES esp_driver_gpio Arbiter SeatKinematics
+  REQUIRES esp_driver_gpio Arbiter
 )
 
 # Robot selection (see differential_drive in MIBconfig.hpp). Default: the chair.
