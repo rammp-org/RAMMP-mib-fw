@@ -169,9 +169,10 @@ std::optional<SeatPose> SeatKinematics::forward(const JointConfig &joints) const
       .elevation_mm = left_radius - dot(up, left),
       .translation_mm = (joints.left_carriage_mm + joints.right_carriage_mm) / 2.0f,
   };
-  // A NaN or infinite joint gives a NaN pose; report nothing rather than garbage.
-  if (!std::isfinite(up.x_mm) || !std::isfinite(up.y_mm) || !std::isfinite(up.z_mm) ||
-      !std::isfinite(pose.pitch_deg) || !std::isfinite(pose.roll_deg) ||
+  // A NaN or infinite joint gives a NaN pose; report nothing rather than garbage. A non-finite
+  // `up` always shows up here too: pitch is asin(up.x), roll uses up.y and up.z, and elevation
+  // uses all three.
+  if (!std::isfinite(pose.pitch_deg) || !std::isfinite(pose.roll_deg) ||
       !std::isfinite(pose.elevation_mm) || !std::isfinite(pose.translation_mm)) {
     return std::nullopt;
   }
