@@ -55,6 +55,41 @@ The MIB acts on a new `req_id` only, so a sender repeats the command until
 changed), `SAVE_FAILED` (in use until reboot), or `BAD_REQUEST`. A change to the
 profile being driven takes effect at once and keeps the chair's current speed.
 
+`tools/drive_profile/drive_profile.py` does this from a laptop:
+
+```sh
+# CycloneDDS has wheels for Python 3.9-3.12; macOS's /usr/bin/python3 works
+/usr/bin/python3 -m venv .venv-dp && .venv-dp/bin/pip install -r tools/drive_profile/requirements.txt
+.venv-dp/bin/python tools/drive_profile/drive_profile.py --interface en7 show
+.venv-dp/bin/python tools/drive_profile/drive_profile.py set normal --max-linear-velocity-mps 1.2
+.venv-dp/bin/python tools/drive_profile/drive_profile.py show --json normal > high.json
+.venv-dp/bin/python tools/drive_profile/drive_profile.py set high --from-json high.json --persist
+.venv-dp/bin/python tools/drive_profile/drive_profile.py reset normal --persist
+```
+
+`--interface` is the laptop's interface on the MIB's Ethernet (192.168.4.x).
+
+`--from-json` reads a JSON object keyed by `DriveProfileValues` field names.
+Any subset of the fields works; the rest stay as the MIB has them. `show --json`
+prints one profile in that form, to edit and send back. With nothing saved,
+`show --json normal` prints NORMAL's `MIBconfig.hpp` default (33.239998 is
+`1.662f * 20.0f` as a float):
+
+```json
+{
+  "max_linear_velocity_mps": 1.845,
+  "max_reverse_linear_velocity_mps": 1.303,
+  "max_angular_velocity_radps": 2.114,
+  "max_linear_acceleration_mps2": 0.989,
+  "max_angular_acceleration_radps2": 2.926,
+  "max_linear_jerk_mps3": 9.89,
+  "max_angular_jerk_radps3": 29.26,
+  "stopping_linear_acceleration_mps2": 33.239998,
+  "stopping_angular_acceleration_radps2": 4.0,
+  "max_centripetal_acceleration_mps2": 1.5
+}
+```
+
 ## Changing `DriveProfileConfig`
 
 The files hold `DriveProfileConfig` as is, so once a layout has been on a
