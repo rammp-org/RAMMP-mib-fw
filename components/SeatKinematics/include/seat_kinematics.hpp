@@ -53,11 +53,14 @@ public:
   const SeatGeometry &geometry() const { return geometry_; }
 
   /// @brief Seat pose -> joint positions.
-  /// @return Empty if any leg cannot reach the ground within its arm limits, or the translation
-  ///         is outside the carriage limits.
+  /// @return Empty if any leg cannot reach the ground within its arm limits, the translation
+  ///         is outside the carriage limits, or the pose puts a swing-arm pivot closer to the
+  ///         ground than SeatGeometry::min_pivot_clearance_mm.
   std::optional<JointConfig> inverse(const SeatPose &pose) const;
 
   /// @brief Joint positions -> seat pose (for reporting seat state from feedback).
+  ///
+  /// No clearance check: this reports where the seat is, even if inverse() would refuse it.
   /// @return Empty if no ground plane touches all three wheels (degenerate geometry), or a joint
   ///         is not finite.
   std::optional<SeatPose> forward(const JointConfig &joints) const;

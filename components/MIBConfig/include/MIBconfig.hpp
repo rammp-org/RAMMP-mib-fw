@@ -218,6 +218,13 @@ inline constexpr SeatGeometry seat_geometry{
     .min_carriage_mm = -400.0f,
     .max_carriage_mm = 400.0f,
 
+    // Ground clearance of the swing-arm pivots, from the pivot heights above. 0 only keeps the
+    // pivots themselves out of the floor (with a level seat, elevation down to -8.89 mm, the rear
+    // caster pivot's height).
+    // TODO(bench): measure the lowest chassis / carriage-plate point below each pivot and the
+    // margin wanted, and raise this to match.
+    .min_pivot_clearance_mm = 0.0f,
+
     // TODO(bench): every transmission below is a placeholder (1 mm per rev, 1:1, no offset)
     // until the actuator lead, gear ratios and directions are measured.
     .main_left_transmission = Transmission::linear(1.0f, 1.0f),

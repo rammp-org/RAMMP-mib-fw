@@ -99,21 +99,58 @@ inline int run_seat_kinematics_checks(const SeatKinematics &kinematics,
     check(all_round_trip, "joints at their limits: joints -> actuators -> joints");
   }
 
+  // --- Ground clearance --------------------------------------------------------------------
+  // With a level seat, a pivot's height above ground is elevation + pivot z. The rear caster
+  // pivot is the lowest (8.89 mm vs 113.42 mm), so it sets the bottom of the reachable range.
+
+  auto level_seat = [](float elevation_mm) {
+    return SeatPose{
+        .pitch_deg = 0.0f, .roll_deg = 0.0f, .elevation_mm = elevation_mm, .translation_mm = 0.0f};
+  };
+  const SeatGeometry &base_geometry = kinematics.geometry();
+  const float lowest_level_mm =
+      base_geometry.min_pivot_clearance_mm - base_geometry.rear_caster.pivot_mm.z_mm;
+
   {
-    // The edges of the reachable range (level seat, found by sweeping on the host).
+    // The edges of the reachable range: the rear pivot at its clearance at the bottom, the arm
+    // limits at the top (231.3 mm, found by sweeping on the host).
     bool all_round_trip = true;
-    for (float elevation_mm : {-64.9f, 231.3f}) {
-      const SeatPose requested{.pitch_deg = 0.0f,
-                               .roll_deg = 0.0f,
-                               .elevation_mm = elevation_mm,
-                               .translation_mm = 0.0f};
-      auto joints = kinematics.inverse(requested);
+    for (float elevation_mm : {lowest_level_mm + 0.01f, 231.3f}) {
+      auto joints = kinematics.inverse(level_seat(elevation_mm));
       auto pose = joints ? kinematics.forward(*joints) : std::nullopt;
-      if (!pose || !same_pose(*pose, requested)) {
+      if (!pose || !same_pose(*pose, level_seat(elevation_mm))) {
         all_round_trip = false;
       }
     }
-    check(all_round_trip, "elevation -64.9 and 231.3 mm (edges of reach): pose -> joints -> pose");
+    check(all_round_trip, "level seat, rear pivot at its clearance and at 231.3 mm (edges of "
+                          "reach): pose -> joints -> pose");
+  }
+
+  check(!kinematics.inverse(level_seat(lowest_level_mm - 0.01f)),
+        "level seat 0.01 mm below the rear pivot's clearance is rejected");
+  // The arms alone reach this, with the rear caster pivot 56 mm below the ground.
+  check(!kinematics.inverse(level_seat(-64.9f)), "level seat at -64.9 mm is rejected");
+
+  {
+    // Joints at the hard stops forward() to a pose (elevation -118 mm, pitch -23 deg) that
+    // inverse() must not hand back as a command.
+    auto pose = kinematics.forward({.main_left_arm_deg = 45.0f,
+                                    .main_right_arm_deg = 45.0f,
+                                    .rear_caster_arm_deg = -45.0f,
+                                    .left_carriage_mm = -400.0f,
+                                    .right_carriage_mm = -400.0f});
+    check(pose && !kinematics.inverse(*pose),
+          "pose from joints at the stops (pivots underground) is rejected by inverse()");
+  }
+
+  {
+    // The clearance is honoured, not just zero: raising it raises the bottom of the range.
+    SeatGeometry raised = base_geometry;
+    raised.min_pivot_clearance_mm = base_geometry.min_pivot_clearance_mm + 50.0f;
+    const SeatKinematics clearer(raised);
+    check(clearer.inverse(level_seat(lowest_level_mm + 50.01f)) &&
+              !clearer.inverse(level_seat(lowest_level_mm + 49.99f)),
+          "50 mm more clearance raises the lowest level elevation by 50 mm");
   }
 
   {
