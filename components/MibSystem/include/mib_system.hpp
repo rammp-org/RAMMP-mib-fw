@@ -166,6 +166,18 @@ private:
   ///       calls this yet. Only valid from IDLE.
   void enter_calibrate();
 
+  /// Relay the e-stop latch onto the ROS 2 /estop (rammp::EStopBroadcast), where the arm
+  /// and the Jetson listen: `true` with the latch's cause when the stop engages and every
+  /// mib::config::estop_broadcast_repeat while it holds, `false` exactly once when the latch
+  /// has cleared. The ROS message's `false` clears, so it is never repeated.
+  /// \note Runs on the state task, every step, once the endpoints exist.
+  void publish_estop_broadcast();
+
+  /// Obey the ROS 2 /estop: a `true` from any source other than the MIB engages the latch;
+  /// `false` is ignored, since only the MIB clears.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_estop_broadcast(const rammp::EStopBroadcast &message);
+
   /// Leave ESTOP for IDLE once the e-stop latch has cleared. Until then, after the hold,
   /// ask the latch to clear every mib::config::estop_clear_retry. Nothing is resumed:
   /// driving must be re-enabled and the Jetson must request control again.
@@ -242,6 +254,8 @@ private:
   std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
   std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
   std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
+  bool estop_broadcast_engaged_{false}; ///< What the ROS 2 /estop was last told. State task only.
+  std::chrono::steady_clock::time_point estop_broadcast_last_{}; ///< When. State task only.
   std::atomic<rammp::DriveProfile> drive_profile_{rammp::DriveProfile::NORMAL}; ///< Active drive profile.
   rammp::SeatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
@@ -264,6 +278,9 @@ private:
   bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<rammp::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
+  /// The robot-wide ROS 2 /estop, out and in (rammp::EStopBroadcast).
+  std::unique_ptr<espp::Publisher<rammp::EStopBroadcast>> estop_broadcast_publisher_;
+  std::unique_ptr<espp::Subscriber<rammp::EStopBroadcast>> estop_broadcast_subscriber_;
   /// One command output per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>
       motor_publishers_;

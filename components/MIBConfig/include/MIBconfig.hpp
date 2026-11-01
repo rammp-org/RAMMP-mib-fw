@@ -55,6 +55,16 @@ inline constexpr auto estop_hold_duration = std::chrono::seconds{3};
 /// held, or the joystick not heard yet). Matches the latch's clear window.
 inline constexpr auto estop_clear_retry = std::chrono::seconds{1};
 
+/// @brief While the e-stop latch holds, the MIB repeats `engaged: true` on the ROS 2 /estop
+/// this often, so a Jetson that connects late still learns the stop is on. `false` goes out
+/// once, on release, never periodically: on that robot-wide topic a repeated `false` would
+/// clear a stop another node engaged.
+inline constexpr auto estop_broadcast_repeat = std::chrono::seconds{1};
+
+/// @brief The MIB's `source` on the ROS 2 /estop; a `true` from any other source engages
+/// the latch, and the MIB's own echoes are told apart by it.
+inline constexpr const char *estop_broadcast_source = "mib";
+
 /// @brief Motor debug list (rammp::Motors) publication period.
 inline constexpr auto motor_states_publish_interval = std::chrono::milliseconds{200};
 

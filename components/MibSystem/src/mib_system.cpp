@@ -6,6 +6,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <sys/time.h>
 #include <thread>
 
 #include "MIBconfig.hpp"
@@ -18,11 +19,12 @@ using namespace std::chrono_literals;
 // axis table needs the limits raised; these checks fail the build until they are. An sdkconfig
 // made before the limits were raised keeps its old values: delete it.
 namespace {
-/// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
-constexpr size_t kFixedWriters = 5;
-/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// estop-core's EStop and SPDP.
-constexpr size_t kFixedReaders = 6;
+/// Fixed writers: MibStatus, Diagnostics, Motors, the ROS 2 EStopBroadcast, estop-core's
+/// EStop and SPDP.
+constexpr size_t kFixedWriters = 6;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog, the ROS 2
+/// EStopBroadcast, estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 7;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
@@ -187,6 +189,28 @@ bool MibSystem::initialize_pubsub() {
 
   if (!diagnostics_publisher_->is_valid()) {
     logger_.error("Failed to create MIB diagnostics publisher");
+    return false;
+  }
+
+  // The robot-wide ROS 2 /estop the arm serves and obeys. RELIABLE: ROS 2 subscribers
+  // default to reliable, and a best-effort writer never matches one. The reader stays
+  // best-effort, which matches writers of either kind.
+  estop_broadcast_publisher_ = std::make_unique<espp::Publisher<rammp::EStopBroadcast>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::EStopBroadcast>::Config{.topic = rammp::kEStopBroadcast.name,
+                                                     .type_name = rammp::kEStopBroadcast.type,
+                                                     .reliability = Reliability::RELIABLE});
+  estop_broadcast_subscriber_ = std::make_unique<espp::Subscriber<rammp::EStopBroadcast>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::EStopBroadcast>::Config{
+          .topic = rammp::kEStopBroadcast.name,
+          .type_name = rammp::kEStopBroadcast.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::EStopBroadcast &message) {
+            handle_estop_broadcast(message);
+          }});
+  if (!estop_broadcast_publisher_->is_valid() || !estop_broadcast_subscriber_->is_valid()) {
+    logger_.error("Failed to create the ROS 2 /estop endpoints");
     return false;
   }
 
@@ -893,6 +917,7 @@ void MibSystem::run_state_step() {
   if (state_.load() != SystemState::ERROR) {
     error_reported_.store(false);
   }
+  publish_estop_broadcast();
 }
 
 void MibSystem::enter_estop() {
@@ -941,4 +966,53 @@ void MibSystem::run_estop_step() {
   estop_last_clear_attempt_ = now;
   latch_.start_clear_attempt();
   logger_.info("E-stop: hold elapsed, asking the latch to clear");
+}
+
+void MibSystem::publish_estop_broadcast() {
+  if (!endpoints_ready_.load()) {
+    return;
+  }
+  const bool latched = latch_.is_active();
+  const auto now = std::chrono::steady_clock::now();
+  if (latched) {
+    if (estop_broadcast_engaged_ &&
+        now - estop_broadcast_last_ < mib::config::estop_broadcast_repeat) {
+      return;
+    }
+  } else if (!estop_broadcast_engaged_) {
+    return; // `false` clears on this topic: it goes out once, on release, never periodically
+  }
+  rammp::EStopBroadcast message{};
+  timeval tv{};
+  gettimeofday(&tv, nullptr);
+  // Before the clock is set (SNTP) it counts from 1970: send all-zero, "unstamped".
+  if (tv.tv_sec > 1'600'000'000) {
+    message.header.stamp = {static_cast<int32_t>(tv.tv_sec),
+                            static_cast<uint32_t>(tv.tv_usec) * 1000};
+  }
+  message.engaged = latched;
+  message.source = mib::config::estop_broadcast_source;
+  message.reason = latched ? std::string(latch_.status().cause) : std::string("released");
+  if (!estop_broadcast_publisher_->publish(message)) {
+    logger_.warn("Failed to publish the ROS 2 /estop");
+    return; // try again next step
+  }
+  if (latched != estop_broadcast_engaged_) {
+    logger_.info("ROS 2 /estop: {} ({})", latched ? "engaged" : "released", message.reason);
+  }
+  estop_broadcast_engaged_ = latched;
+  estop_broadcast_last_ = now;
+}
+
+void MibSystem::handle_estop_broadcast(const rammp::EStopBroadcast &message) {
+  if (message.source == mib::config::estop_broadcast_source) {
+    return; // our own
+  }
+  if (!message.engaged) {
+    return; // only the MIB clears
+  }
+  // The latch takes a reason of 15 characters or fewer: the sender's name.
+  const std::string reason = message.source.substr(0, 15);
+  logger_.warn("ROS 2 /estop engaged by '{}': {}", message.source, message.reason);
+  latch_.engage(reason.c_str());
 }
