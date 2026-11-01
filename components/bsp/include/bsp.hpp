@@ -1,13 +1,16 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
 
-#include "rtps_participant.hpp"
 #include "MIBconfig.hpp"
 #include "base_component.hpp"
+#include "bno055.hpp"
 #include "esp32-p4-eth.hpp"
+#include "rtps_participant.hpp"
+#include "timer.hpp"
 
 namespace mib::bsp {
 
@@ -34,9 +37,25 @@ public:
     return init_ethernet();
   }
 
+  /// @brief Bring up the BNO055 IMU on the board's internal I2C bus.
+  /// @return True if the IMU responded and entered its fusion mode.
+  /// @note Blocks for roughly 700 ms while the IMU resets.
+  bool init_imu();
+
+  /// @brief Access the IMU.
+  /// @return Pointer to the IMU, or nullptr if init_imu() has not succeeded.
+  espp::Bno055 *imu() { return imu_.get(); }
+
   /// @brief Start RTPS after Ethernet has an active link.
   /// @return True if the RTPS participant was started.
   bool init_rtps();
+
+  /// @brief Start syncing the system clock to the ROS host over SNTP.
+  /// @details Returns without waiting for the first sync; until it lands, the
+  ///          system clock is time since boot, and the client is restarted
+  ///          every mib::config::time_sync_retry_interval.
+  /// @return True if the SNTP client was started.
+  bool init_time_sync();
 
   /// @brief Check whether Ethernet is connected and has an IP address.
   /// @return True if Ethernet has an active link and a valid IP address.
@@ -95,6 +114,9 @@ private:
   MIB() : BaseComponent("MIB", espp::Logger::Verbosity::INFO) {}
   espp::Esp32P4Eth *board_{nullptr};
   std::unique_ptr<espp::RtpsParticipant> rtps_participant_{nullptr};
+  std::unique_ptr<espp::Bno055> imu_{nullptr};
+  std::unique_ptr<espp::Timer> time_sync_retry_timer_{nullptr};
+  std::atomic<bool> time_synced_{false};
   std::string ethernet_ip_address_;
 };
 

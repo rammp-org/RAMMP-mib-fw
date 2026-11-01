@@ -1,6 +1,69 @@
 #include "bsp.hpp"
 
+#include "esp_netif_sntp.h"
+
 namespace mib::bsp {
+
+bool MIB::init_imu() {
+  auto &i2c = board_->internal_i2c();
+  auto imu = std::make_unique<espp::Bno055>(espp::Bno055::Config{
+      .device_address = mib::config::imu_i2c_address,
+      .probe = [&i2c](uint8_t address) { return i2c.probe_device(address); },
+      .write = [&i2c](uint8_t address, const uint8_t *data,
+                      size_t length) { return i2c.write(address, data, length); },
+      .write_then_read =
+          [&i2c](uint8_t address, const uint8_t *write_data, size_t write_length,
+                 uint8_t *read_data, size_t read_length) {
+            return i2c.write_read(address, write_data, write_length, read_data, read_length);
+          },
+      .auto_init = false,
+      .log_level = espp::Logger::Verbosity::INFO,
+  });
+
+  std::error_code ec;
+  if (!imu->init(ec)) {
+    logger_.error("Failed to initialize BNO055 IMU: {}", ec.message());
+    return false;
+  }
+  imu_ = std::move(imu);
+  return true;
+}
+
+bool MIB::init_time_sync() {
+  // Every sync steps the clock (no smooth_sync). After the first, a step is the drift over one
+  // sync interval plus the one-way network delay, well under 1 ms on the direct link. Smooth sync
+  // slews at 1/64: following a 10 s step of the host's clock would take ~10 min.
+  esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(mib::config::ntp_server);
+  config.wait_for_sync = false;
+  // Runs on lwIP's tcpip thread, at the bottom of its receive path on a 3 KB stack: only set the
+  // flag, and let the retry timer log.
+  config.sync_cb = [](struct timeval *) { MIB::instance().time_synced_ = true; };
+
+  esp_err_t err = esp_netif_sntp_init(&config);
+  if (err != ESP_OK) {
+    logger_.error("Failed to start SNTP: {}", esp_err_to_name(err));
+    return false;
+  }
+  logger_.info("SNTP syncing to {}", mib::config::ntp_server);
+
+  // A restart resets lwIP's retry backoff. Once synced, the regular sync interval takes over. A
+  // host that goes away after that gets lwIP's backoff (up to 150 s), and the clock free-runs.
+  time_sync_retry_timer_ = std::make_unique<espp::Timer>(espp::Timer::Config{
+      .name = "SNTP retry",
+      .period = mib::config::time_sync_retry_interval,
+      .delay = mib::config::time_sync_retry_interval,
+      .callback = [this]() -> bool {
+        if (time_synced_) {
+          logger_.info("System clock synced to {}", mib::config::ntp_server);
+          return true;
+        }
+        esp_netif_sntp_start();
+        return false;
+      },
+      .stack_size_bytes = 3 * 1024,
+  });
+  return true;
+}
 
 bool MIB::init_rtps() {
 	std::string interface_address = ethernet_ip_address_;
