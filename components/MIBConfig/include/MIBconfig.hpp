@@ -133,6 +133,9 @@ struct DriveProfileConfig {
   float max_angular_acceleration_radps2;
   float max_linear_jerk_mps3{0.0f};
   float max_angular_jerk_radps3{0.0f};
+  /// Stick released: decelerations toward (0, 0). 0 = the driving accelerations.
+  float stopping_linear_acceleration_mps2{0.0f};
+  float stopping_angular_acceleration_radps2{0.0f};
 };
 
 /// @brief MotorCommand.accel_limit sent to each drive board, as a multiple of the
@@ -148,16 +151,22 @@ inline constexpr DriveProfileConfig drive_profile_low{
     .max_angular_acceleration_radps2 = 1.0f,
 };
 
-/// NORMAL was 1.0 m/s^2 and 2.0 rad/s^2: up to 12.3 rad/s^2 at one wheel. These values
-/// cap it at 7.4 rad/s^2 (TEST, 2026-11-01), and the jerk limits ramp each axis up to
-/// full acceleration over 0.2 s instead of starting at full acceleration.
+/// NORMAL was 0.75 m/s, 2.0 rad/s, 1.0 m/s^2 and 2.0 rad/s^2: up to 12.3 rad/s^2 at one
+/// wheel. TEST 2026-11-01, second step: steady turning costs ~11 A of scrub plus ~2.5 A per
+/// rad/s of wheel turn speed, and accelerating out of a turn stacked ~10 A on top of that
+/// (drive_left tripped at 25 A of iq). So the turn rate is halved (wheel turn component at
+/// most 2.2 rad/s, ~13 A steady) and both accelerations halved again: at most 3.7 rad/s^2
+/// per wheel while driving. Jerk keeps the 0.2 s ramp-in. Stopping keeps the first step's
+/// 0.6 m/s^2 and 1.2 rad/s^2, which ran clean, so releasing the stick still stops briskly.
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 0.75f,
-    .max_angular_velocity_radps = 2.0f,
-    .max_linear_acceleration_mps2 = 0.6f,
-    .max_angular_acceleration_radps2 = 1.2f,
-    .max_linear_jerk_mps3 = 3.0f,
-    .max_angular_jerk_radps3 = 6.0f,
+    .max_angular_velocity_radps = 1.0f,
+    .max_linear_acceleration_mps2 = 0.3f,
+    .max_angular_acceleration_radps2 = 0.6f,
+    .max_linear_jerk_mps3 = 1.5f,
+    .max_angular_jerk_radps3 = 3.0f,
+    .stopping_linear_acceleration_mps2 = 0.6f,
+    .stopping_angular_acceleration_radps2 = 1.2f,
 };
 
 inline constexpr DriveProfileConfig drive_profile_high{

@@ -45,8 +45,8 @@ public:
   /// @note This only calculates the requested output; it does not command motors.
   DifferentialDrive::WheelSpeeds wheel_speeds() const;
 
-  /// @brief The largest acceleration the active profile can ask of one wheel: its linear
-  ///        and angular limits added, as they are on the inside wheel of a turn.
+  /// @brief The largest acceleration the active profile can ask of one wheel, driving or
+  ///        stopping: its linear and angular limits added, as on the inside wheel of a turn.
   /// @return Wheel (output shaft) acceleration in rad/s^2.
   float max_wheel_acceleration_radps2() const;
 
