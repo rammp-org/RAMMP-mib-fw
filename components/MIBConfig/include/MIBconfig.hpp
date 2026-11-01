@@ -131,7 +131,15 @@ inline constexpr DifferentialDriveConfig differential_drive{
 /// resting stick to zero. Jerk limits apply to driving only (S-curve starts);
 /// stopping stays trapezoidal so stops land without overshoot. A jerk of 0
 /// makes that axis trapezoidal.
+///
+/// DriveProfileStore saves this struct to flash as is. Changing its fields
+/// (adding, removing, reordering, or changing what one means) needs a new
+/// VERSION, with the old layout kept as a frozen struct that migrate() converts
+/// from; see components/DriveProfileStore/README.md.
 struct DriveProfileConfig {
+  /// Schema version of the saved drive profile files.
+  static constexpr uint32_t VERSION = 1;
+
   float max_linear_velocity_mps;
   float max_reverse_linear_velocity_mps;
   float max_angular_velocity_radps;
