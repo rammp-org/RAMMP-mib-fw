@@ -1,8 +1,6 @@
 #pragma once
 
-#include <cmath>
-#include <cstdio>
-
+#include "check_reporter.hpp"
 #include "linkage.hpp"
 #include "transmission.hpp"
 
@@ -15,17 +13,7 @@ namespace mib::test {
 /// @param report Called with each result line, e.g. "PASS transmission: linear 2 mm lead, 10:1".
 /// @return Number of failed checks (0 = all passed).
 inline int run_actuator_stage_checks(void (*report)(const char *line)) {
-  int failures = 0;
-  char line[160];
-
-  auto check = [&](bool passed, const char *name) {
-    std::snprintf(line, sizeof(line), "%s %s", passed ? "PASS" : "FAIL", name);
-    report(line);
-    if (!passed) {
-      ++failures;
-    }
-  };
-  auto near = [](float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; };
+  CheckReporter check(report);
 
   // --- Transmission ------------------------------------------------------------------------
 
@@ -90,7 +78,7 @@ inline int run_actuator_stage_checks(void (*report)(const char *line)) {
 
   check(!linkage_arm_deg(linkage, 400.0f, -45.0f, 45.0f), "linkage: 400 mm stroke is rejected");
 
-  return failures;
+  return check.failures();
 }
 
 } // namespace mib::test
