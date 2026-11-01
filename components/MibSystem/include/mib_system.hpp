@@ -194,6 +194,9 @@ private:
   /// \param state The received state.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_motor_state(size_t index, const rammp::MotorState &state);
+  /// @brief Both drive boards have sent a MotorState within motor_state_timeout and
+  ///        neither is in FAULT (always true when drive_requires_both_boards is off).
+  bool drive_boards_ready() const;
 
   /// Handle a motor jog request from the joystick (hold-to-run, motor debug).
   /// \param jog The requested board and direction.
@@ -257,6 +260,10 @@ private:
   std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
   std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
   std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
+  /// drive_boards_ready() as the state task last saw it, to log only its changes.
+  bool drive_boards_were_ready_{true};
+  /// Largest |iq| each board reported since the last drive status line, in A.
+  std::array<float, rammp::kAxisCount> motor_peak_iq_{};
   mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
   rammp::MotorJog latest_jog_{};               ///< Most recent jog request.
   std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
