@@ -28,6 +28,13 @@ jobs:
         path: "."
         target: ${{ env.IDF_TARGET }}
 
+    - name: Build SeatKinematics example
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: ${{ env.IDF_VERSION }}
+        path: "components/SeatKinematics/example"
+        target: ${{ env.IDF_TARGET }}
+
     - name: Determine Size Delta
       uses: esp-cpp/esp-idf-size-delta@v1
       with:
@@ -37,3 +44,14 @@ jobs:
         idf_version: ${{ env.IDF_VERSION }}
         idf_component_manager: ${{ env.IDF_COMPONENT_MANAGER }}
         flash_total_override: ${{ env.FLASH_TOTAL_OVERRIDE }}
+
+  host-tests:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v7
+
+    - name: SeatKinematics host checks
+      run: components/SeatKinematics/test/host/run.sh
