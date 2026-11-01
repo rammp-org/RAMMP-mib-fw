@@ -1,6 +1,5 @@
 #pragma once
 
-#include "linkage.hpp"
 #include "transmission.hpp"
 
 namespace mib {
@@ -29,9 +28,31 @@ struct SwingArmLeg {
   float max_arm_deg{0.0f}; ///< Swing-arm travel limit.
 };
 
+/// @brief A linear actuator pinned between a swing arm and a fixed plate (main legs).
+///
+/// Side view, in the swing arm's plane (x forward, z up), origin at the arm's pivot O:
+///
+///                      B  pin on the carriage plate (does not move)
+///                     /
+///       actuator, length L
+///                   /
+///        A  pin on the swing arm (rotates with the arm about O)
+///         \  swing arm, A to O
+///          O ─────────────────── wheel
+///
+/// Plain data: the stroke <-> arm angle math is in SeatKinematics (linkage.hpp).
+struct TriangleLinkage {
+  float arm_pin_x_mm{0.0f};        ///< A, on the swing arm, relative to the pivot, at q = 0.
+  float arm_pin_z_mm{0.0f};        ///< A, on the swing arm, relative to the pivot, at q = 0.
+  float plate_pin_x_mm{0.0f};      ///< B, on the carriage plate, relative to the pivot.
+  float plate_pin_z_mm{0.0f};      ///< B, on the carriage plate, relative to the pivot.
+  float retracted_length_mm{0.0f}; ///< Pin-to-pin length when the actuator reads zero stroke.
+};
+
 /// @brief Everything SeatKinematics needs to know about the chair.
 ///
-/// Values live in MIBconfig.hpp (mib::config::seat_geometry).
+/// Plain data, so it lives in MIBConfig next to its values (mib::config::seat_geometry in
+/// MIBconfig.hpp) and MIBConfig does not depend on SeatKinematics.
 struct SeatGeometry {
   // Legs. The main legs ride on the carriages, so their pivots move with carriage travel.
   SwingArmLeg main_left;
