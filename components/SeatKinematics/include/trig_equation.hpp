@@ -6,6 +6,30 @@
 
 namespace mib {
 
+inline constexpr float deg_to_rad = std::numbers::pi_v<float> / 180.0f;
+inline constexpr float rad_to_deg = 180.0f / std::numbers::pi_v<float>;
+
+/// @brief A point in a swing arm's side-view plane (x forward, z up).
+struct PointXz {
+  float x{0.0f};
+  float z{0.0f};
+};
+
+/// @brief Rotate a point in the side-view plane about −y, the URDF's swing-arm rotation:
+///
+///     (x, z) -> (x·cos q − z·sin q, x·sin q + z·cos q)
+///
+/// A positive q raises a point in front of the axis (+x) and lowers one behind it.
+///
+/// The one place the rotation sense is written down: the wheel legs and the actuator linkage
+/// both turn through it. The a·cos q + b·sin q coefficients in arm_deg_on_ground() and
+/// linkage_arm_deg() are its expansion; the round-trip checks fail if the two disagree.
+inline PointXz rotate_about_minus_y(float x, float z, float q_rad) {
+  const float c = std::cos(q_rad);
+  const float s = std::sin(q_rad);
+  return {.x = x * c - z * s, .z = x * s + z * c};
+}
+
 /// Rounding tolerance at a hard stop, see within_limits(). Far smaller than any real resolution.
 inline constexpr float limit_tolerance_deg = 1e-3f;
 inline constexpr float limit_tolerance_mm = 1e-3f;
@@ -56,7 +80,7 @@ inline std::optional<float> solve_cos_sin_equation(float a, float b, float c, fl
   const float root_minus = wrap(phase - spread);
 
   // A root just past a limit is snapped onto it (float rounding), see within_limits().
-  constexpr float tolerance_rad = limit_tolerance_deg * std::numbers::pi_v<float> / 180.0f;
+  constexpr float tolerance_rad = limit_tolerance_deg * deg_to_rad;
   const auto plus = within_limits(root_plus, min_rad, max_rad, tolerance_rad);
   const auto minus = within_limits(root_minus, min_rad, max_rad, tolerance_rad);
   if (plus && minus) {
