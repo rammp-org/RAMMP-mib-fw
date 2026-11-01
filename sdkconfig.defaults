@@ -48,6 +48,11 @@ CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
 CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
 CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=20
 CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
+# SEDP keeps one sample per endpoint in a stateful history, and the esp32 profile's depth
+# is 10: with 12 writers the first two announcements (estop-core's EStop, MibStatus) fell
+# out, so a participant that joined after the MIB never saw them. Match the per-participant
+# endpoint limit above.
+CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL=20
 
 # Firmware updates over the service link (Ethernet, UART or WebUSB): two 3 MB OTA slots
 # (partitions.csv) and bootloader rollback. The ESP32-P4-ETH has 32 MB of flash; 16 MB is
