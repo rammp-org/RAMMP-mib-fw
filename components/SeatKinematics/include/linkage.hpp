@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cmath>
-#include <numbers>
 #include <optional>
 
 #include "seat_geometry.hpp"
@@ -11,21 +10,17 @@ namespace mib {
 
 // Stroke <-> swing-arm angle for a TriangleLinkage (seat_geometry.hpp has the sketch).
 //
-// As the arm turns by q, pin A moves to rotate(A, q) and the actuator length becomes
+// As the arm turns by q, pin A moves to rotate_about_minus_y(A, q), the URDF's arm rotation,
+// and the actuator length becomes
 //
-//     L(q) = | B − rotate(A, q) |
-//
-// Arm rotation follows the URDF: about −y, so (x, z) -> (x·cos q − z·sin q, x·sin q + z·cos q).
+//     L(q) = | B − rotate_about_minus_y(A, q) |
 
 /// @brief Pin-to-pin actuator length for a swing-arm angle.
 inline float linkage_length_mm(const TriangleLinkage &linkage, float arm_deg) {
-  const float q = arm_deg * std::numbers::pi_v<float> / 180.0f;
-  const float moved_arm_pin_x =
-      linkage.arm_pin_x_mm * std::cos(q) - linkage.arm_pin_z_mm * std::sin(q);
-  const float moved_arm_pin_z =
-      linkage.arm_pin_x_mm * std::sin(q) + linkage.arm_pin_z_mm * std::cos(q);
-  return std::hypot(linkage.plate_pin_x_mm - moved_arm_pin_x,
-                    linkage.plate_pin_z_mm - moved_arm_pin_z);
+  const PointXz moved_arm_pin =
+      rotate_about_minus_y(linkage.arm_pin_x_mm, linkage.arm_pin_z_mm, arm_deg * deg_to_rad);
+  return std::hypot(linkage.plate_pin_x_mm - moved_arm_pin.x,
+                    linkage.plate_pin_z_mm - moved_arm_pin.z);
 }
 
 /// @brief Actuator stroke (extension past fully retracted) for a swing-arm angle.
@@ -58,7 +53,6 @@ inline std::optional<float> linkage_arm_deg(const TriangleLinkage &linkage, floa
   const float b = bz * ax - bx * az;
   const float c = (arm_pin_sq + plate_pin_sq - length * length) / 2.0f;
 
-  constexpr float deg_to_rad = std::numbers::pi_v<float> / 180.0f;
   auto q = solve_cos_sin_equation(a, b, c, min_arm_deg * deg_to_rad, max_arm_deg * deg_to_rad);
   if (!q) {
     return std::nullopt;

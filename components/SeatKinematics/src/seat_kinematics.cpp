@@ -1,7 +1,6 @@
 #include "seat_kinematics.hpp"
 
 #include <cmath>
-#include <numbers>
 
 #include "linkage.hpp"
 #include "trig_equation.hpp"
@@ -9,9 +8,6 @@
 namespace mib {
 
 namespace {
-
-constexpr float deg_to_rad = std::numbers::pi_v<float> / 180.0f;
-constexpr float rad_to_deg = 180.0f / std::numbers::pi_v<float>;
 
 float dot(const PointMm &a, const PointMm &b) {
   return a.x_mm * b.x_mm + a.y_mm * b.y_mm + a.z_mm * b.z_mm;
@@ -35,24 +31,21 @@ PointMm world_up(float pitch_deg, float roll_deg) {
   return {std::sin(p), std::sin(r) * std::cos(p), std::cos(r) * std::cos(p)};
 }
 
-/// Wheel centre in the chassis frame for a given arm angle.
-///
-///     wheel = pivot + (carriage, 0, 0) + rotate(pivot_to_wheel, q)
-///
-/// with rotation about −y: (x, z) -> (x·cos q − z·sin q, x·sin q + z·cos q).
-PointMm wheel_centre(const SwingArmLeg &leg, float carriage_mm, float arm_deg) {
-  const float q = arm_deg * deg_to_rad;
-  const PointMm &w = leg.pivot_to_wheel_mm;
-  return {leg.pivot_mm.x_mm + carriage_mm + w.x_mm * std::cos(q) - w.z_mm * std::sin(q),
-          leg.pivot_mm.y_mm + w.y_mm,
-          leg.pivot_mm.z_mm + w.x_mm * std::sin(q) + w.z_mm * std::cos(q)};
-}
-
 /// The part of the wheel centre that does not depend on the arm angle:
 /// pivot + (carriage, 0, 0) + (0, pivot_to_wheel.y, 0).
 PointMm leg_base_point(const SwingArmLeg &leg, float carriage_mm) {
   return {leg.pivot_mm.x_mm + carriage_mm, leg.pivot_mm.y_mm + leg.pivot_to_wheel_mm.y_mm,
           leg.pivot_mm.z_mm};
+}
+
+/// Wheel centre in the chassis frame for a given arm angle.
+///
+///     wheel = pivot + (carriage, 0, 0) + rotate_about_minus_y(pivot_to_wheel, q)
+PointMm wheel_centre(const SwingArmLeg &leg, float carriage_mm, float arm_deg) {
+  const PointMm base = leg_base_point(leg, carriage_mm);
+  const PointXz arm = rotate_about_minus_y(leg.pivot_to_wheel_mm.x_mm, leg.pivot_to_wheel_mm.z_mm,
+                                           arm_deg * deg_to_rad);
+  return {base.x_mm + arm.x, base.y_mm, base.z_mm + arm.z};
 }
 
 /// Arm angle that puts this leg's wheel on the ground.
@@ -61,7 +54,8 @@ PointMm leg_base_point(const SwingArmLeg &leg, float carriage_mm) {
 ///
 ///     elevation + up · wheel(q) = radius
 ///
-/// Writing wheel(q) out (see wheel_centre) and collecting the cos q and sin q terms:
+/// Writing wheel(q) out (see wheel_centre and rotate_about_minus_y) and collecting the cos q and
+/// sin q terms:
 ///
 ///     a = up.x · w.x + up.z · w.z
 ///     b = up.z · w.x − up.x · w.z
