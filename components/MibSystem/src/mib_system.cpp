@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "MIBconfig.hpp"
+#include "file_system.hpp"
 #include "sdkconfig.h"
 
 using namespace std::chrono_literals;
@@ -18,17 +19,48 @@ using namespace std::chrono_literals;
 // axis table needs the limits raised; these checks fail the build until they are. An sdkconfig
 // made before the limits were raised keeps its old values: delete it.
 namespace {
-/// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
-constexpr size_t kFixedWriters = 5;
-/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// estop-core's EStop and SPDP.
-constexpr size_t kFixedReaders = 6;
+/// Fixed writers: MibStatus, DriveProfileState, Diagnostics, Motors, estop-core's EStop and
+/// SPDP.
+constexpr size_t kFixedWriters = 6;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand, DriveProfileCommand and
+/// MotorJog, estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 7;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
 constexpr size_t kReaders = rammp::kAxisCount + kFixedReaders;
 /// No watched nodes: estop-core's default watches the HMI as a deadman.
 constexpr std::string_view kNoWatchedNodes[] = {""};
+
+mib::config::DriveProfileConfig to_config(const MIB::DriveProfileValues &values) {
+  return {
+      .max_linear_velocity_mps = values.max_linear_velocity_mps,
+      .max_reverse_linear_velocity_mps = values.max_reverse_linear_velocity_mps,
+      .max_angular_velocity_radps = values.max_angular_velocity_radps,
+      .max_linear_acceleration_mps2 = values.max_linear_acceleration_mps2,
+      .max_angular_acceleration_radps2 = values.max_angular_acceleration_radps2,
+      .max_linear_jerk_mps3 = values.max_linear_jerk_mps3,
+      .max_angular_jerk_radps3 = values.max_angular_jerk_radps3,
+      .stopping_linear_acceleration_mps2 = values.stopping_linear_acceleration_mps2,
+      .stopping_angular_acceleration_radps2 = values.stopping_angular_acceleration_radps2,
+      .max_centripetal_acceleration_mps2 = values.max_centripetal_acceleration_mps2,
+  };
+}
+
+MIB::DriveProfileValues to_message(const mib::config::DriveProfileConfig &values) {
+  return {
+      .max_linear_velocity_mps = values.max_linear_velocity_mps,
+      .max_reverse_linear_velocity_mps = values.max_reverse_linear_velocity_mps,
+      .max_angular_velocity_radps = values.max_angular_velocity_radps,
+      .max_linear_acceleration_mps2 = values.max_linear_acceleration_mps2,
+      .max_angular_acceleration_radps2 = values.max_angular_acceleration_radps2,
+      .max_linear_jerk_mps3 = values.max_linear_jerk_mps3,
+      .max_angular_jerk_radps3 = values.max_angular_jerk_radps3,
+      .stopping_linear_acceleration_mps2 = values.stopping_linear_acceleration_mps2,
+      .stopping_angular_acceleration_radps2 = values.stopping_angular_acceleration_radps2,
+      .max_centripetal_acceleration_mps2 = values.max_centripetal_acceleration_mps2,
+  };
+}
 } // namespace
 
 static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
@@ -46,6 +78,7 @@ MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
     , mib_(mib::bsp::MIB::instance())
     , drive_controller_()
+    , drive_profiles_(espp::FileSystem::get_root_path())
     , latch_({.watched = mib::config::estop_watch_hmi
                              ? std::span<const std::string_view>(estop::kDefaultWatched)
                              : std::span<const std::string_view>(kNoWatchedNodes, 0),
@@ -80,6 +113,7 @@ void MibSystem::start() {
       .callback = [this](std::mutex &mutex,
                          std::condition_variable &condition_variable) -> bool {
         publish_system_state();
+        publish_drive_profiles();
         publish_seat_state();
         publish_diagnostics();
         log_drive_status();
@@ -164,6 +198,33 @@ bool MibSystem::initialize_pubsub() {
 
   if (!drive_command_subscriber_->is_valid()) {
     logger_.error("Failed to create MIB RTPS drive command subscriber");
+    return false;
+  }
+
+  drive_profile_command_subscriber_ =
+      std::make_unique<espp::Subscriber<rammp::DriveProfileCommand>>(
+          mib_.rtps_participant(),
+          espp::Subscriber<rammp::DriveProfileCommand>::Config{
+              .topic = rammp::kJoystickDriveProfileCommand.name,
+              .type_name = rammp::kJoystickDriveProfileCommand.type,
+              .reliability = Reliability::BEST_EFFORT,
+              .on_message = [this](const rammp::DriveProfileCommand &command) {
+                handle_drive_profile_command(command);
+              }});
+
+  if (!drive_profile_command_subscriber_->is_valid()) {
+    logger_.error("Failed to create MIB RTPS drive profile command subscriber");
+    return false;
+  }
+
+  drive_profile_publisher_ = std::make_unique<espp::Publisher<MIB::DriveProfileState>>(
+      mib_.rtps_participant(),
+      espp::Publisher<MIB::DriveProfileState>::Config{.topic = MIB::kMibDriveProfiles.name,
+                                                      .type_name = MIB::kMibDriveProfiles.type,
+                                                      .reliability = Reliability::BEST_EFFORT});
+
+  if (!drive_profile_publisher_->is_valid()) {
+    logger_.error("Failed to create MIB drive profile publisher");
     return false;
   }
 
@@ -390,7 +451,8 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.warn("Ignoring drive enable during a firmware update");
       return false;
     }
-    if (!drive_controller_.update_drive_profile(command.profile)) {
+    if (!drive_controller_.update_drive_profile(command.profile,
+                                                drive_profiles_.get(command.profile))) {
       logger_.error("Failed to update drive profile");
       return false;
     }
@@ -415,6 +477,54 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     return false;
   }
   return true;
+}
+
+void MibSystem::handle_drive_profile_command(const rammp::DriveProfileCommand &command) {
+  std::lock_guard<std::mutex> lock(drive_profile_command_mutex_);
+  // The sender repeats a command until it sees its req_id acknowledged.
+  if (command.req_id == drive_profile_command_ack_) {
+    return;
+  }
+  pending_drive_profile_command_ = command;
+}
+
+void MibSystem::apply_drive_profile_command() {
+  rammp::DriveProfileCommand command{};
+  {
+    std::lock_guard<std::mutex> lock(drive_profile_command_mutex_);
+    if (!pending_drive_profile_command_) {
+      return;
+    }
+    command = *pending_drive_profile_command_;
+    pending_drive_profile_command_.reset();
+  }
+
+  const bool persist = command.persist != 0;
+  MIB::DriveProfileResult result = MIB::DriveProfileResult::BAD_REQUEST;
+  switch (command.action) {
+  case rammp::DriveProfileAction::SET:
+    result = drive_profiles_.set(command.profile, to_config(command.values), persist);
+    break;
+  case rammp::DriveProfileAction::RESET:
+    result = drive_profiles_.reset(command.profile, persist);
+    break;
+  default:
+    logger_.warn("Ignoring unknown drive profile action {}", static_cast<uint8_t>(command.action));
+    break;
+  }
+
+  if (result == MIB::DriveProfileResult::OK || result == MIB::DriveProfileResult::SAVE_FAILED) {
+    // The new limits are in use (if not saved), so a profile being driven picks them up now.
+    if (!drive_controller_.refresh_drive_profile(command.profile,
+                                                 drive_profiles_.get(command.profile))) {
+      logger_.error("Drive profile {} changed but the planner refused it",
+                    static_cast<uint8_t>(command.profile));
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(drive_profile_command_mutex_);
+  drive_profile_command_ack_ = command.req_id;
+  drive_profile_result_ = result;
 }
 
 void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
@@ -470,6 +580,24 @@ void MibSystem::publish_system_state() {
   status.seq = ++status_sequence_;
   if (!status_publisher_->publish(status)) {
     logger_.warn("Failed to publish MIB status");
+  }
+}
+
+void MibSystem::publish_drive_profiles() {
+  MIB::DriveProfileState state{};
+  {
+    std::lock_guard<std::mutex> lock(drive_profile_command_mutex_);
+    state.command_ack = drive_profile_command_ack_;
+    state.result = drive_profile_result_;
+  }
+  for (size_t i = 0; i < MIB::kDriveProfileCount; ++i) {
+    const auto profile = static_cast<MIB::DriveProfile>(i);
+    state.sources[i] = drive_profiles_.source(profile);
+    state.profiles[i] = to_message(drive_profiles_.get(profile));
+  }
+  state.seq = ++drive_profile_state_sequence_;
+  if (!drive_profile_publisher_->publish(state)) {
+    logger_.warn("Failed to publish drive profiles");
   }
 }
 
@@ -767,9 +895,20 @@ void MibSystem::run_state_step() {
       state != SystemState::ERROR) {
     enter_estop();
   }
+  // Drive profile changes apply in every state. None can be queued before INIT
+  // has loaded the profiles, since INIT loads them before it creates the subscriber.
+  apply_drive_profile_command();
+
   switch (state_.load()) {
   case SystemState::INIT:
     logger_.info("System state: INIT - initializing MIB");
+    // Load the saved drive profiles before anything can enable driving. A missing
+    // or bad file leaves that profile on its compiled-in default.
+    drive_profiles_.load();
+    {
+      const auto profile = drive_profile_.load();
+      drive_controller_.refresh_drive_profile(profile, drive_profiles_.get(profile));
+    }
     if (!mib_.init()) {
       logger_.error("Failed to initialize ESP32-P4-ETH board");
       state_.store(SystemState::ERROR);

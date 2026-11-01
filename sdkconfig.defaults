@@ -47,9 +47,9 @@ CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
 
 # RTPS endpoint pool (espp/rtps). Writers: a command and a tuning per motor board, status,
-# Diagnostics, Motors, estop-core's, SPDP. Readers: a state per motor board, the joystick's
-# four inputs, estop-core's, SPDP. Per participant adds SEDP's two of each. mib_system.cpp
-# checks these against the axis table.
+# DriveProfileState, Diagnostics, Motors, estop-core's, SPDP. Readers: a state per motor
+# board, the joystick's five inputs (DriveProfileCommand among them), estop-core's, SPDP.
+# Per participant adds SEDP's two of each. mib_system.cpp checks these against the axis table.
 CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
 CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
 CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
@@ -57,9 +57,13 @@ CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT=20
 CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS=14
 
 # Firmware updates over the service link (Ethernet, UART or WebUSB): two 3 MB OTA slots
-# (partitions.csv) and bootloader rollback. The ESP32-P4-ETH has 32 MB of flash; 16 MB is
-# declared, which is all the table needs. Moving to this table takes one USB flash
+# (partitions.csv) and bootloader rollback, then 1 MB of LittleFS for the saved drive
+# profiles; the table ends at 7.1 MB. The ESP32-P4-ETH has 32 MB of flash; 16 MB is
+# declared, which is all the table needs (past 16 MB needs IDF's experimental 32-bit
+# flash addressing). Moving to this table takes one USB flash
 # (idf.py flash: bootloader, partition table and app); updates go over the panel after that.
+# A chair updated only over the panel since before the LittleFS partition has no place to
+# save profiles: they run, but every persistent change reports SAVE_FAILED until a USB flash.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
