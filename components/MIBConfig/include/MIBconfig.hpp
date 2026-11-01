@@ -136,6 +136,9 @@ struct DriveProfileConfig {
   /// Stick released: decelerations toward (0, 0). 0 = the driving accelerations.
   float stopping_linear_acceleration_mps2{0.0f};
   float stopping_angular_acceleration_radps2{0.0f};
+  /// |v * w| ceiling. Over it the planner scales v and w down together, so steering while
+  /// driving also cuts forward speed. 0.1 is espp's default, which LOW and HIGH keep.
+  float max_centripetal_acceleration_mps2{0.1f};
 };
 
 /// @brief MotorCommand.accel_limit sent to each drive board, as a multiple of the
@@ -143,6 +146,17 @@ struct DriveProfileConfig {
 /// the planner and only smooths the 20 Hz command steps; 0 sends no limit (the board
 /// steps its speed reference to every new command).
 inline constexpr float drive_wheel_accel_limit_margin = 1.25f;
+
+/// @brief Coast at rest (TEST 2026-11-01). With the stick centred, the planner stopped, and
+/// both wheels under drive_coast_enter_radps, the MIB sends ControlMode::COAST: the boards
+/// go Hi-Z and draw nothing, instead of a position hold that rocked the chair back and forth
+/// at ~4 A. Roll guard: if either wheel then turns faster than drive_roll_guard_radps for
+/// drive_roll_guard_ticks motor-command periods (on a slope, pushed), the MIB holds the
+/// chair at zero speed until the stick moves again. false keeps the old hold at rest.
+inline constexpr bool drive_coast_at_rest = true;
+inline constexpr float drive_coast_enter_radps = 0.2f;
+inline constexpr float drive_roll_guard_radps = 0.4f;
+inline constexpr int drive_roll_guard_ticks = 4; // x 50 ms
 
 /// @brief Inside-wheel torque cap for tight turns (TEST 2026-11-01). In a tight arc the
 /// planner asks the inside wheel for a crawl (0.4 rad/s against 2.7 outside); scrub holds it
@@ -170,15 +184,20 @@ inline constexpr DriveProfileConfig drive_profile_low{
 /// most 2.2 rad/s, ~13 A steady) and both accelerations halved again: at most 3.7 rad/s^2
 /// per wheel while driving. Jerk keeps the 0.2 s ramp-in. Stopping keeps the first step's
 /// 0.6 m/s^2 and 1.2 rad/s^2, which ran clean, so releasing the stick still stops briskly.
+/// Third step: the turn rate back up to 1.5 rad/s (spins ~16 A), and the centripetal limit
+/// set to 1.0 m/s^2. Left at espp's 0.1 it allowed 0.2 rad/s at 0.5 m/s and halved the
+/// command 938 times in an 81 s drive: steering felt dead and adding a little made the
+/// chair lurch, because the limit cuts v together with w.
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 0.75f,
-    .max_angular_velocity_radps = 1.0f,
+    .max_angular_velocity_radps = 1.5f,
     .max_linear_acceleration_mps2 = 0.3f,
     .max_angular_acceleration_radps2 = 0.6f,
     .max_linear_jerk_mps3 = 1.5f,
     .max_angular_jerk_radps3 = 3.0f,
     .stopping_linear_acceleration_mps2 = 0.6f,
     .stopping_angular_acceleration_radps2 = 1.2f,
+    .max_centripetal_acceleration_mps2 = 1.0f,
 };
 
 inline constexpr DriveProfileConfig drive_profile_high{

@@ -67,6 +67,7 @@ DriveController::profile_config(rammp::DriveProfile profile) {
   espp::TrajectoryPlanner::Config config{};
   config.max_linear_velocity = values.max_linear_velocity_mps;
   config.max_angular_velocity = values.max_angular_velocity_radps;
+  config.max_centripetal_acceleration = values.max_centripetal_acceleration_mps2;
   config.driving_profile.max_linear_acceleration = values.max_linear_acceleration_mps2;
   config.driving_profile.max_angular_acceleration = values.max_angular_acceleration_radps2;
   config.driving_profile.max_linear_jerk = values.max_linear_jerk_mps3;
@@ -84,6 +85,13 @@ DriveController::profile_config(rammp::DriveProfile profile) {
         values.stopping_angular_acceleration_radps2;
   }
   return config;
+}
+
+bool DriveController::at_rest() const {
+  const auto target = trajectory_planner_.get_target();
+  const auto command = trajectory_planner_.output();
+  return target.first == 0.0f && target.second == 0.0f && command.linear_velocity == 0.0f &&
+         command.angular_velocity == 0.0f;
 }
 
 float DriveController::max_wheel_acceleration_radps2() const {

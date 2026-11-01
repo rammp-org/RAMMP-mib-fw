@@ -45,6 +45,10 @@ public:
   /// @note This only calculates the requested output; it does not command motors.
   DifferentialDrive::WheelSpeeds wheel_speeds() const;
 
+  /// @brief The stick asks for nothing and the planner has finished slowing down.
+  /// @return True when both the target and the planner output are exactly zero.
+  bool at_rest() const;
+
   /// @brief The largest acceleration the active profile can ask of one wheel, driving or
   ///        stopping: its linear and angular limits added, as on the inside wheel of a turn.
   /// @return Wheel (output shaft) acceleration in rad/s^2.

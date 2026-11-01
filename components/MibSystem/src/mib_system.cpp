@@ -483,6 +483,35 @@ void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state)
   }
 }
 
+bool MibSystem::update_rest_mode(bool at_rest, float fastest_wheel_radps) {
+  const RestMode before = rest_mode_;
+  if (!at_rest) {
+    rest_mode_ = RestMode::DRIVING;
+    roll_ticks_ = 0;
+  } else if (rest_mode_ == RestMode::DRIVING) {
+    // Still slowing under power until both wheels have nearly stopped.
+    if (fastest_wheel_radps < mib::config::drive_coast_enter_radps) {
+      rest_mode_ = RestMode::COASTING;
+      roll_ticks_ = 0;
+    }
+  } else if (rest_mode_ == RestMode::COASTING) {
+    roll_ticks_ = fastest_wheel_radps > mib::config::drive_roll_guard_radps ? roll_ticks_ + 1 : 0;
+    if (roll_ticks_ >= mib::config::drive_roll_guard_ticks) {
+      rest_mode_ = RestMode::HOLDING;
+    }
+  }
+  if (rest_mode_ != before) {
+    if (rest_mode_ == RestMode::HOLDING) {
+      logger_.warn("Roll guard: a wheel turned at {:.2f} rad/s while coasting; holding until "
+                   "the stick moves",
+                   fastest_wheel_radps);
+    } else {
+      logger_.info("Drive at rest: {}", rest_mode_ == RestMode::COASTING ? "coasting" : "driving");
+    }
+  }
+  return rest_mode_ == RestMode::COASTING;
+}
+
 bool MibSystem::drive_boards_ready() const {
   if (!mib::config::drive_requires_both_boards) {
     return true;
@@ -790,6 +819,24 @@ void MibSystem::publish_motor_commands() {
   const bool cap_left = drive && inside(left_radps, right_radps);
   const bool cap_right = drive && inside(right_radps, left_radps);
 
+  // Coast at rest, with a roll guard (MIBconfig drive_coast_at_rest).
+  bool coast = false;
+  if (drive && mib::config::drive_coast_at_rest) {
+    float fastest_wheel = 0.0f;
+    {
+      std::lock_guard<std::mutex> lock(motor_state_mutex_);
+      for (size_t i = 0; i < rammp::kAxisCount; i++) {
+        const rammp::AxisId id = rammp::kAxes[i].id;
+        if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
+          fastest_wheel = std::max(fastest_wheel, std::fabs(motor_states_[i].velocity));
+        }
+      }
+    }
+    coast = update_rest_mode(drive_controller_.at_rest(), fastest_wheel);
+  } else {
+    update_rest_mode(false, 0.0f);
+  }
+
   // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
   std::array<uint8_t, rammp::kAxisCount> tuning_acks{};
   {
@@ -821,12 +868,20 @@ void MibSystem::publish_motor_commands() {
         if (cap_left) {
           command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
         }
+        if (coast) {
+          command.mode = rammp::ControlMode::COAST;
+          command.velocity = 0.0f;
+        }
       } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
         command.accel_limit = wheel_accel_limit;
         if (cap_right) {
           command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
+        }
+        if (coast) {
+          command.mode = rammp::ControlMode::COAST;
+          command.velocity = 0.0f;
         }
       } else if (jogging && jog.axis_id == i) {
         command.requested_state = rammp::RequestedState::ARMED;

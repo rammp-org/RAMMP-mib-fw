@@ -197,6 +197,11 @@ private:
   /// @brief Both drive boards have sent a MotorState within motor_state_timeout and
   ///        neither is in FAULT (always true when drive_requires_both_boards is off).
   bool drive_boards_ready() const;
+  /// @brief Advance the at-rest state (coast, or hold after the roll guard fired).
+  /// @param at_rest The planner's target and output are both zero.
+  /// @param fastest_wheel_radps The faster drive wheel's measured speed, magnitude.
+  /// @return True while the drive wheels should coast. Motor command task only.
+  bool update_rest_mode(bool at_rest, float fastest_wheel_radps);
 
   /// Handle a motor jog request from the joystick (hold-to-run, motor debug).
   /// \param jog The requested board and direction.
@@ -265,6 +270,10 @@ private:
   /// Inside-wheel torque cap as last sent, to log only its changes (motor command task).
   bool inside_cap_left_{false};
   bool inside_cap_right_{false};
+  /// At rest the drive coasts; the roll guard turns that into a hold (motor command task).
+  enum class RestMode { DRIVING, COASTING, HOLDING };
+  RestMode rest_mode_{RestMode::DRIVING};
+  int roll_ticks_{0}; ///< Consecutive command periods a coasting wheel was over the guard.
   /// Largest |iq| each board reported since the last drive status line, in A.
   std::array<float, rammp::kAxisCount> motor_peak_iq_{};
   mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
