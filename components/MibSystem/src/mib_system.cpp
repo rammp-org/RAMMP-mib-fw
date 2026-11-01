@@ -155,8 +155,8 @@ bool MibSystem::initialize_pubsub() {
   drive_command_subscriber_ = std::make_unique<espp::Subscriber<rammp::DriveCommand>>(
       mib_.rtps_participant(),
       espp::Subscriber<rammp::DriveCommand>::Config{
-          .topic = rammp::kJoystickDriveCommand.name,
-          .type_name = rammp::kJoystickDriveCommand.type,
+          .topic = rammp::kDriveCommand.name,
+          .type_name = rammp::kDriveCommand.type,
           .reliability = Reliability::BEST_EFFORT,
           .on_message = [this](const rammp::DriveCommand &command) {
             handle_drive_command(command);
@@ -167,11 +167,11 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
-  status_publisher_ = std::make_unique<espp::Publisher<MIB::MibStatus>>(
+  status_publisher_ = std::make_unique<espp::Publisher<rammp::MibStatus>>(
       mib_.rtps_participant(),
-      espp::Publisher<MIB::MibStatus>::Config{
-          .topic = MIB::kMibStatus.name,
-          .type_name = MIB::kMibStatus.type,
+      espp::Publisher<rammp::MibStatus>::Config{
+          .topic = rammp::kMibStatus.name,
+          .type_name = rammp::kMibStatus.type,
           .reliability = Reliability::BEST_EFFORT});
 
   if (!status_publisher_->is_valid()) {
@@ -397,6 +397,11 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.info("Drive profile updated to {}", static_cast<uint8_t>(command.profile));
     }
   } else if (drive_disable_requested(command)) {
+    // DISABLE with push_assist asks for PUSH_ASSIST (rammp-rtps#18), which the MIB does not
+    // have yet: the drive is disabled as asked, and the joystick sees IDLE, not PUSH_ASSIST.
+    if (command.push_assist) {
+      logger_.warn("Push assist requested: not implemented on the MIB, disabling drive only");
+    }
     if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
         current_state != SystemState::SHARED) {
       logger_.warn("Ignoring drive disable command outside a drive state");
@@ -405,6 +410,30 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
+  } else if (autonomy_requested(command)) {
+    // The Jetson's request (rammp-rtps#18): AUTONOMOUS or SHARED from IDLE or DRIVE_ENABLED,
+    // driving with the profile it asked for. enter_autonomy() stops the drive first.
+    if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
+      logger_.warn("Ignoring autonomy request outside IDLE or DRIVE_ENABLED");
+      return false;
+    }
+    if (any_override_active()) {
+      logger_.warn("Ignoring autonomy request while the control panel overrides a motor");
+      return false;
+    }
+    if (ota_active_.load()) {
+      logger_.warn("Ignoring autonomy request during a firmware update");
+      return false;
+    }
+    if (!drive_controller_.update_drive_profile(command.profile)) {
+      logger_.error("Failed to update drive profile");
+      return false;
+    }
+    drive_profile_.store(command.profile);
+    if (command.request == rammp::DriveRequest::AUTONOMOUS) {
+      return enter_autonomy(SystemState::AUTONOMOUS, "AUTONOMOUS");
+    }
+    return enter_autonomy(SystemState::SHARED, "SHARED");
   } else {
     logger_.warn("Ignoring unknown drive request {}", static_cast<uint8_t>(command.request));
     return false;
@@ -429,38 +458,38 @@ void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
 }
 
 void MibSystem::publish_system_state() {
-  MIB::MibStatus status{};
-  status.activeProfile = drive_profile_.load();
+  rammp::MibStatus status{};
+  status.active_profile = drive_profile_.load();
   switch (state_.load()) {
   case SystemState::INIT:
   case SystemState::CALIBRATE:  // TODO: Handle calibration state separately if needed.
-    status.systemState = MIB::MibSystemState::INITIALIZING;
+    status.system_state = rammp::MibSystemState::INITIALIZING;
     break;
   case SystemState::IDLE:
-    status.systemState = MIB::MibSystemState::IDLE;
+    status.system_state = rammp::MibSystemState::IDLE;
     break;
   case SystemState::DRIVE_ENABLED:
-    status.systemState = MIB::MibSystemState::ENABLED;
+    status.system_state = rammp::MibSystemState::ENABLED;
     break;
   case SystemState::AUTONOMOUS:
-    status.systemState = MIB::MibSystemState::AUTONOMOUS;
+    status.system_state = rammp::MibSystemState::AUTONOMOUS;
     break;
   case SystemState::SHARED:
-    status.systemState = MIB::MibSystemState::SHARED;
+    status.system_state = rammp::MibSystemState::SHARED;
     break;
   case SystemState::ESTOP:
-    status.systemState = MIB::MibSystemState::ESTOP;
+    status.system_state = rammp::MibSystemState::ESTOP;
     status.error_message = "Emergency stop";
     break;
   case SystemState::ERROR:
-    status.systemState = MIB::MibSystemState::ERROR;
+    status.system_state = rammp::MibSystemState::ERROR;
     status.error_message = "MIB system error";
     break;
   }
 
   {
     std::lock_guard<std::mutex> lock(seat_state_mutex_);
-    status.currentSeatState = seat_state_;
+    status.current_seat_state = seat_state_;
   }
   status.seq = ++status_sequence_;
   if (!status_publisher_->publish(status)) {
