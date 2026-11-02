@@ -43,13 +43,13 @@ public:
   void load();
 
   /// @brief The compiled-in MIBconfig.hpp limits of a profile.
-  static const config::DriveProfileConfig &default_values(MIB::DriveProfile profile);
+  static const config::DriveProfileConfig &default_values(rammp::DriveProfile profile);
 
   /// @brief The limits a profile is using now.
-  config::DriveProfileConfig get(MIB::DriveProfile profile) const;
+  config::DriveProfileConfig get(rammp::DriveProfile profile) const;
 
   /// @brief Where the limits a profile is using now came from.
-  MIB::DriveProfileSource source(MIB::DriveProfile profile) const;
+  rammp::DriveProfileSource source(rammp::DriveProfile profile) const;
 
   /// @brief Replace a profile's limits.
   /// @param profile The profile to change.
@@ -57,30 +57,30 @@ public:
   /// @param persist Also save them to flash, so they survive a reboot.
   /// @return OK, INVALID (nothing changed), SAVE_FAILED (in use until reboot), or
   ///         BAD_REQUEST for an unknown profile.
-  MIB::DriveProfileResult set(MIB::DriveProfile profile, const config::DriveProfileConfig &values,
+  rammp::DriveProfileResult set(rammp::DriveProfile profile, const config::DriveProfileConfig &values,
                               bool persist);
 
   /// @brief Return a profile to its compiled-in default.
   /// @param profile The profile to reset.
   /// @param persist Also delete its saved file, so the default survives a reboot.
   /// @return OK, SAVE_FAILED (the file could not be deleted), or BAD_REQUEST.
-  MIB::DriveProfileResult reset(MIB::DriveProfile profile, bool persist);
+  rammp::DriveProfileResult reset(rammp::DriveProfile profile, bool persist);
 
 private:
   struct Slot {
     std::unique_ptr<File> file; ///< The profile's file; its in-memory copy is the limits in use.
-    MIB::DriveProfileSource source{MIB::DriveProfileSource::DEFAULT};
+    rammp::DriveProfileSource source{rammp::DriveProfileSource::DEFAULT};
     bool has_saved{false}; ///< A usable saved file exists, so a reboot would load it.
   };
 
   /// @return The slot for a profile, or nullptr for a value outside the enum.
-  Slot *slot(MIB::DriveProfile profile);
-  const Slot *slot(MIB::DriveProfile profile) const;
+  Slot *slot(rammp::DriveProfile profile);
+  const Slot *slot(rammp::DriveProfile profile) const;
 
-  void load_slot(MIB::DriveProfile profile, Slot &slot);
+  void load_slot(rammp::DriveProfile profile, Slot &slot);
 
   mutable std::mutex mutex_; ///< Keeps each slot's values and source consistent.
-  std::array<Slot, MIB::kDriveProfileCount> slots_;
+  std::array<Slot, rammp::kDriveProfileCount> slots_;
 };
 
 } // namespace mib

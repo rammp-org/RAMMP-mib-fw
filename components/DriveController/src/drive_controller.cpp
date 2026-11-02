@@ -1,5 +1,8 @@
 #include "drive_controller.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 #include "MIBconfig.hpp"
 
 namespace mib {
@@ -19,6 +22,19 @@ void DriveController::set_target(float linear, float angular) {
   trajectory_planner_.set_target(linear, angular);
 }
 
+void DriveController::set_velocity(float linear_mps, float angular_radps) {
+  const auto config = trajectory_planner_.get_config();
+  const float max_linear = linear_mps < 0.0f && config.max_reverse_linear_velocity > 0.0f
+                               ? config.max_reverse_linear_velocity
+                               : config.max_linear_velocity;
+  const float linear = linear_mps / max_linear;
+  // The setpoint is already in the base frame (REP 103, positive counter-clockwise), the same
+  // frame the planner uses. The stick's right-positive x is converted in MibSystem (#59).
+  const float angular = angular_radps / config.max_angular_velocity;
+  const float scale = std::max({1.0f, std::abs(linear), std::abs(angular)});
+  trajectory_planner_.set_target(linear / scale, angular / scale);
+}
+
 void DriveController::stop() {
   trajectory_planner_.stop();
 }
@@ -35,7 +51,7 @@ DriveController::Config DriveController::default_config() {
   };
 }
 
-bool DriveController::update_drive_profile(MIB::DriveProfile profile,
+bool DriveController::update_drive_profile(rammp::DriveProfile profile,
                                            const config::DriveProfileConfig &values) {
   std::lock_guard<std::mutex> lock(profile_mutex_);
   if (!apply_locked(profile, values)) {
@@ -46,7 +62,7 @@ bool DriveController::update_drive_profile(MIB::DriveProfile profile,
   return true;
 }
 
-bool DriveController::refresh_drive_profile(MIB::DriveProfile profile,
+bool DriveController::refresh_drive_profile(rammp::DriveProfile profile,
                                             const config::DriveProfileConfig &values) {
   std::lock_guard<std::mutex> lock(profile_mutex_);
   if (profile != active_profile_) {
@@ -59,7 +75,7 @@ bool DriveController::refresh_drive_profile(MIB::DriveProfile profile,
   return true;
 }
 
-bool DriveController::apply_locked(MIB::DriveProfile profile,
+bool DriveController::apply_locked(rammp::DriveProfile profile,
                                    const config::DriveProfileConfig &values) {
   // Keep the current velocity so a profile change while driving ramps instead of
   // dropping the wheels to zero.

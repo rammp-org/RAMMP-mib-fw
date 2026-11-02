@@ -19,9 +19,9 @@
 namespace fs = std::filesystem;
 using mib::DriveProfileStore;
 using mib::config::DriveProfileConfig;
-using Profile = MIB::DriveProfile;
-using Result = MIB::DriveProfileResult;
-using Source = MIB::DriveProfileSource;
+using Profile = rammp::DriveProfile;
+using Result = rammp::DriveProfileResult;
+using Source = rammp::DriveProfileSource;
 
 static int g_failures = 0;
 static int g_checks = 0;

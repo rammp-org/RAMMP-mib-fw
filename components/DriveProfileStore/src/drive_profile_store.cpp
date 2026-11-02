@@ -7,25 +7,25 @@ namespace mib {
 
 namespace {
 
-const char *profile_name(MIB::DriveProfile profile) {
+const char *profile_name(rammp::DriveProfile profile) {
   switch (profile) {
-  case MIB::DriveProfile::LOW:
+  case rammp::DriveProfile::LOW:
     return "LOW";
-  case MIB::DriveProfile::NORMAL:
+  case rammp::DriveProfile::NORMAL:
     return "NORMAL";
-  case MIB::DriveProfile::HIGH:
+  case rammp::DriveProfile::HIGH:
     return "HIGH";
   }
   return "UNKNOWN";
 }
 
-const char *file_name(MIB::DriveProfile profile) {
+const char *file_name(rammp::DriveProfile profile) {
   switch (profile) {
-  case MIB::DriveProfile::LOW:
+  case rammp::DriveProfile::LOW:
     return "drive_profile_low.bin";
-  case MIB::DriveProfile::NORMAL:
+  case rammp::DriveProfile::NORMAL:
     return "drive_profile_normal.bin";
-  case MIB::DriveProfile::HIGH:
+  case rammp::DriveProfile::HIGH:
     return "drive_profile_high.bin";
   }
   return "drive_profile_unknown.bin";
@@ -36,7 +36,7 @@ const char *file_name(MIB::DriveProfile profile) {
 DriveProfileStore::DriveProfileStore(const std::filesystem::path &directory)
     : BaseComponent("DriveProfileStore", espp::Logger::Verbosity::INFO) {
   for (size_t i = 0; i < slots_.size(); ++i) {
-    const auto profile = static_cast<MIB::DriveProfile>(i);
+    const auto profile = static_cast<rammp::DriveProfile>(i);
     slots_[i].file = std::make_unique<File>(File::Config{
         .file_path = directory / file_name(profile),
         .auto_load = false,
@@ -53,11 +53,11 @@ void DriveProfileStore::load() {
 
   std::lock_guard<std::mutex> lock(mutex_);
   for (size_t i = 0; i < slots_.size(); ++i) {
-    load_slot(static_cast<MIB::DriveProfile>(i), slots_[i]);
+    load_slot(static_cast<rammp::DriveProfile>(i), slots_[i]);
   }
 }
 
-void DriveProfileStore::load_slot(MIB::DriveProfile profile, Slot &slot) {
+void DriveProfileStore::load_slot(rammp::DriveProfile profile, Slot &slot) {
   const char *name = profile_name(profile);
   File &file = *slot.file;
   std::error_code ec;
@@ -69,7 +69,7 @@ void DriveProfileStore::load_slot(MIB::DriveProfile profile, Slot &slot) {
                     ec.message());
     }
     file.set(default_values(profile));
-    slot.source = MIB::DriveProfileSource::DEFAULT;
+    slot.source = rammp::DriveProfileSource::DEFAULT;
     slot.has_saved = false;
     return;
   }
@@ -78,12 +78,12 @@ void DriveProfileStore::load_slot(MIB::DriveProfile profile, Slot &slot) {
   if (const char *bad = invalid_field(values)) {
     logger_.error("{}: saved profile has an invalid {}, using the compiled-in default", name, bad);
     file.set(default_values(profile));
-    slot.source = MIB::DriveProfileSource::DEFAULT;
+    slot.source = rammp::DriveProfileSource::DEFAULT;
     slot.has_saved = false;
     return;
   }
 
-  slot.source = MIB::DriveProfileSource::SAVED;
+  slot.source = rammp::DriveProfileSource::SAVED;
   slot.has_saved = true;
   if (file.was_migrated()) {
     logger_.info("{}: migrated saved profile from version {} to {}", name, file.loaded_version(),
@@ -94,31 +94,31 @@ void DriveProfileStore::load_slot(MIB::DriveProfile profile, Slot &slot) {
                values.max_angular_velocity_radps);
 }
 
-const config::DriveProfileConfig &DriveProfileStore::default_values(MIB::DriveProfile profile) {
+const config::DriveProfileConfig &DriveProfileStore::default_values(rammp::DriveProfile profile) {
   switch (profile) {
-  case MIB::DriveProfile::LOW:
+  case rammp::DriveProfile::LOW:
     return config::drive_profile_low;
-  case MIB::DriveProfile::HIGH:
+  case rammp::DriveProfile::HIGH:
     return config::drive_profile_high;
-  case MIB::DriveProfile::NORMAL:
+  case rammp::DriveProfile::NORMAL:
   default:
     return config::drive_profile_normal;
   }
 }
 
-config::DriveProfileConfig DriveProfileStore::get(MIB::DriveProfile profile) const {
+config::DriveProfileConfig DriveProfileStore::get(rammp::DriveProfile profile) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const Slot *s = slot(profile);
   return s ? s->file->get() : default_values(profile);
 }
 
-MIB::DriveProfileSource DriveProfileStore::source(MIB::DriveProfile profile) const {
+rammp::DriveProfileSource DriveProfileStore::source(rammp::DriveProfile profile) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const Slot *s = slot(profile);
-  return s ? s->source : MIB::DriveProfileSource::DEFAULT;
+  return s ? s->source : rammp::DriveProfileSource::DEFAULT;
 }
 
-MIB::DriveProfileResult DriveProfileStore::set(MIB::DriveProfile profile,
+rammp::DriveProfileResult DriveProfileStore::set(rammp::DriveProfile profile,
                                                const config::DriveProfileConfig &values,
                                                bool persist) {
   const char *name = profile_name(profile);
@@ -126,69 +126,69 @@ MIB::DriveProfileResult DriveProfileStore::set(MIB::DriveProfile profile,
   Slot *s = slot(profile);
   if (!s) {
     logger_.warn("Ignoring a change to unknown drive profile {}", static_cast<uint8_t>(profile));
-    return MIB::DriveProfileResult::BAD_REQUEST;
+    return rammp::DriveProfileResult::BAD_REQUEST;
   }
   if (const char *bad = invalid_field(values)) {
     logger_.warn("{}: rejected new limits, invalid {}", name, bad);
-    return MIB::DriveProfileResult::INVALID;
+    return rammp::DriveProfileResult::INVALID;
   }
 
   if (!persist) {
     s->file->set(values);
-    s->source = MIB::DriveProfileSource::UNSAVED;
+    s->source = rammp::DriveProfileSource::UNSAVED;
     logger_.info("{}: new limits in use until reboot", name);
-    return MIB::DriveProfileResult::OK;
+    return rammp::DriveProfileResult::OK;
   }
 
   std::error_code ec;
   if (!s->file->save(values, ec)) {
     // save() keeps the new values in memory even when the write fails
-    s->source = MIB::DriveProfileSource::UNSAVED;
+    s->source = rammp::DriveProfileSource::UNSAVED;
     logger_.error("{}: new limits in use, but saving them failed: {}", name, ec.message());
-    return MIB::DriveProfileResult::SAVE_FAILED;
+    return rammp::DriveProfileResult::SAVE_FAILED;
   }
-  s->source = MIB::DriveProfileSource::SAVED;
+  s->source = rammp::DriveProfileSource::SAVED;
   s->has_saved = true;
   logger_.info("{}: new limits saved", name);
-  return MIB::DriveProfileResult::OK;
+  return rammp::DriveProfileResult::OK;
 }
 
-MIB::DriveProfileResult DriveProfileStore::reset(MIB::DriveProfile profile, bool persist) {
+rammp::DriveProfileResult DriveProfileStore::reset(rammp::DriveProfile profile, bool persist) {
   const char *name = profile_name(profile);
   std::lock_guard<std::mutex> lock(mutex_);
   Slot *s = slot(profile);
   if (!s) {
     logger_.warn("Ignoring a reset of unknown drive profile {}", static_cast<uint8_t>(profile));
-    return MIB::DriveProfileResult::BAD_REQUEST;
+    return rammp::DriveProfileResult::BAD_REQUEST;
   }
 
   s->file->set(default_values(profile));
   if (!persist) {
     // a reboot goes back to the saved file, if there is one
-    s->source = s->has_saved ? MIB::DriveProfileSource::UNSAVED : MIB::DriveProfileSource::DEFAULT;
+    s->source = s->has_saved ? rammp::DriveProfileSource::UNSAVED : rammp::DriveProfileSource::DEFAULT;
     logger_.info("{}: compiled-in default in use until reboot", name);
-    return MIB::DriveProfileResult::OK;
+    return rammp::DriveProfileResult::OK;
   }
 
   std::error_code ec;
   if (!s->file->erase(ec)) {
-    s->source = MIB::DriveProfileSource::UNSAVED;
+    s->source = rammp::DriveProfileSource::UNSAVED;
     logger_.error("{}: compiled-in default in use, but deleting the saved profile failed: {}", name,
                   ec.message());
-    return MIB::DriveProfileResult::SAVE_FAILED;
+    return rammp::DriveProfileResult::SAVE_FAILED;
   }
-  s->source = MIB::DriveProfileSource::DEFAULT;
+  s->source = rammp::DriveProfileSource::DEFAULT;
   s->has_saved = false;
   logger_.info("{}: saved profile deleted, compiled-in default in use", name);
-  return MIB::DriveProfileResult::OK;
+  return rammp::DriveProfileResult::OK;
 }
 
-DriveProfileStore::Slot *DriveProfileStore::slot(MIB::DriveProfile profile) {
+DriveProfileStore::Slot *DriveProfileStore::slot(rammp::DriveProfile profile) {
   const auto index = static_cast<size_t>(profile);
   return index < slots_.size() ? &slots_[index] : nullptr;
 }
 
-const DriveProfileStore::Slot *DriveProfileStore::slot(MIB::DriveProfile profile) const {
+const DriveProfileStore::Slot *DriveProfileStore::slot(rammp::DriveProfile profile) const {
   const auto index = static_cast<size_t>(profile);
   return index < slots_.size() ? &slots_[index] : nullptr;
 }

@@ -31,6 +31,12 @@ public:
   /// @param angular Normalized angular command in [-1, 1].
   void set_target(float linear, float angular);
 
+  /// @brief Set a chassis velocity target, capped by the active profile.
+  /// @param linear_mps Forward velocity in m/s.
+  /// @param angular_radps Angular velocity in rad/s, positive counter-clockwise.
+  /// @note Both are scaled down together when over the cap, keeping the turn radius.
+  void set_velocity(float linear_mps, float angular_radps);
+
   /// @brief Set the chassis target to zero using the planner limits.
   /// @note This does not immediately set motor speed to zero; the planner
   ///       decelerates toward the zero target.
@@ -42,14 +48,14 @@ public:
   /// @return True if the planner accepted the profile configuration.
   /// @note The planner keeps its current velocity, so switching while driving
   ///       ramps to the new limits instead of stepping to zero.
-  bool update_drive_profile(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
+  bool update_drive_profile(rammp::DriveProfile profile, const config::DriveProfileConfig &values);
 
   /// @brief Re-apply a profile's limits after they changed, if it is the active one.
   /// @param profile The profile whose limits changed.
   /// @param values Its new limits.
   /// @return True if the profile is not active, or the planner accepted the limits.
   /// @note Like update_drive_profile(), keeps the current velocity.
-  bool refresh_drive_profile(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
+  bool refresh_drive_profile(rammp::DriveProfile profile, const config::DriveProfileConfig &values);
 
   /// @brief Get the current trajectory-limited wheel speeds.
   /// @return Left and right wheel speeds in RPM.
@@ -67,12 +73,12 @@ public:
 
 private:
   static Config default_config();
-  bool apply_locked(MIB::DriveProfile profile, const config::DriveProfileConfig &values);
+  bool apply_locked(rammp::DriveProfile profile, const config::DriveProfileConfig &values);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
   std::mutex profile_mutex_; ///< Orders profile switches against limit changes.
-  MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
+  rammp::DriveProfile active_profile_{rammp::DriveProfile::NORMAL};
 };
 
 } // namespace mib

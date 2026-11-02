@@ -295,7 +295,8 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     if (!need(2))
       return;
     const rammp::DriveCommand command{.request = static_cast<rammp::DriveRequest>(p[0]),
-                                      .profile = static_cast<MIB::DriveProfile>(p[1])};
+                                      .profile = static_cast<rammp::DriveProfile>(p[1]),
+                                      .push_assist = false}; // the panel has no push-assist control
     if (handle_drive_command(command))
       reply_ok(reply, f.type);
     else
@@ -401,7 +402,7 @@ std::string MibSystem::status_json() {
     std::lock_guard<std::mutex> lock(joystick_mutex_);
     stick_live = now < panel_stick_until_;
   }
-  MIB::seatState seat{};
+  rammp::SeatState seat{};
   {
     std::lock_guard<std::mutex> lock(seat_state_mutex_);
     seat = seat_state_;

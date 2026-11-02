@@ -41,6 +41,9 @@ inline constexpr const char *service_landing_page_url = "rammp-org.github.io/RAM
 /// @brief A panel motor override or panel drive input lapses this long after its last frame.
 inline constexpr auto service_override_timeout = std::chrono::milliseconds{300};
 
+/// @brief External controller TwistSetpoints stop the chair this long after the last admitted one.
+inline constexpr auto twist_setpoint_timeout = std::chrono::milliseconds{300};
+
 /// @brief Ceilings on panel motor overrides; a limit of 0 from the panel means this value.
 inline constexpr float service_max_velocity_radps = 8.0f;
 inline constexpr float service_max_torque_nm = 20.0f;
@@ -116,8 +119,8 @@ struct DifferentialDriveConfig {
 };
 
 inline constexpr DifferentialDriveConfig differential_drive{
-    .wheel_diameter_m = 0.254f,
-    .wheel_separation_m = 0.558f,
+    .wheel_diameter_m = 0.355f,
+    .wheel_separation_m = 0.6096f,
     .invert_left = false,
     .invert_right = true,
 };
