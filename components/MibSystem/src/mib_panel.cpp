@@ -388,6 +388,9 @@ std::string MibSystem::status_json() {
   case SystemState::SHARED:
     state = "SHARED";
     break;
+  case SystemState::PUSH_ASSIST:
+    state = "PUSH_ASSIST";
+    break;
   case SystemState::ESTOP:
     state = "ESTOP";
     break;
