@@ -29,6 +29,12 @@ public:
   /// @param angular Normalized angular command in [-1, 1].
   void set_target(float linear, float angular);
 
+  /// @brief Set a chassis velocity target, capped by the active profile.
+  /// @param linear_mps Forward velocity in m/s.
+  /// @param angular_radps Angular velocity in rad/s, positive counter-clockwise.
+  /// @note Both are scaled down together when over the cap, keeping the turn radius.
+  void set_velocity(float linear_mps, float angular_radps);
+
   /// @brief Set the chassis target to zero using the planner limits.
   /// @note This does not immediately set motor speed to zero; the planner
   ///       decelerates toward the zero target.
