@@ -21,6 +21,11 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Push-assist conversion tests (host C++ and the panel's JS port)
+      run: |
+        components/PushAssist/test/run.sh
+        node tools/mib_panel/test/push_to_twist.test.js
+
     - name: Build main
       uses: espressif/esp-idf-ci-action@v1
       with:
