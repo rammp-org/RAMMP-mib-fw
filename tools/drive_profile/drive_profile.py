@@ -30,7 +30,7 @@ from enum import IntEnum
 import cyclonedds.idl.types as pt
 from cyclonedds.idl import IdlStruct
 
-TOPIC_COMMAND = "rammp/joystick/drive_profile_command"
+TOPIC_COMMAND = "rammp/drive_profile_command"
 TOPIC_STATE = "rammp/mib/drive_profiles"
 PROFILE_COUNT = 3
 

@@ -40,9 +40,9 @@ deliberately no upper limits: the clinician tuning the chair sets the speeds.
 
 ## Changing a profile over RTPS
 
-Send a `rammp::DriveProfileCommand` on `rammp/joystick/drive_profile_command`.
+Send a `rammp::DriveProfileCommand` on `rammp/drive_profile_command`.
 The MIB reports every profile's limits, where they came from, and the outcome
-of the last command in `MIB::DriveProfileState` on `rammp/mib/drive_profiles`,
+of the last command in `rammp::DriveProfileState` on `rammp/mib/drive_profiles`,
 twice a second. Both types are in `external/rammp-rtps`.
 
 | Command | `persist = 0` | `persist = 1` |
@@ -105,7 +105,7 @@ header's layout fingerprint catches an unversioned change as
    fills the new layout from the old one.
 3. List both in `DriveProfileStore::File`, newest first:
    `espp::PersistentData<config::DriveProfileConfig, config::DriveProfileConfigV1>`.
-4. Mirror the change in `MIB::DriveProfileValues` (rammp-rtps) and
+4. Mirror the change in `rammp::DriveProfileValues` (rammp-rtps) and
    `tools/drive_profile/drive_profile.py`.
 
 An old file then loads as V1, migrates to V2, is validated, and is rewritten as
