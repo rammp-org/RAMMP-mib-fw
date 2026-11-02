@@ -198,16 +198,22 @@ inline constexpr DriveProfileConfig drive_profile_low{
 /// fishtailed lining up with a door. Per wheel that is still at most 5.7 rad/s^2 driving.
 /// Reverse capped at 0.4 m/s: a full-speed reverse arc tripped drive_left (24 A of iq, ~35 A
 /// of phase current at 63 rpm on the 16 V current-loop limit).
+/// Fifth step, from the driver: spinning in place at 1.5 rad/s was dizzying and fast big
+/// circles flung him outward. Turn rate 1.0 rad/s, angular accel 1.0 rad/s^2 (a turn still
+/// dies in ~0.5 s; stick fully released stops it at 1.5), centripetal cap 0.5 m/s^2. With
+/// the HMI's circular stick, |v*w| peaks at 0.75 * 1.0 / 2 = 0.375 m/s^2 on the diagonal,
+/// so the cap is a backstop and does not cut commands (no lurch). The 1.5 rad/s^2 turn-in
+/// also had drive_left's outside wheel at its 30 A ceiling for a second, and it tripped.
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 0.75f,
-    .max_angular_velocity_radps = 1.5f,
+    .max_angular_velocity_radps = 1.0f,
     .max_linear_acceleration_mps2 = 0.3f,
-    .max_angular_acceleration_radps2 = 1.5f,
+    .max_angular_acceleration_radps2 = 1.0f,
     .max_linear_jerk_mps3 = 1.5f,
-    .max_angular_jerk_radps3 = 7.5f,
+    .max_angular_jerk_radps3 = 5.0f,
     .stopping_linear_acceleration_mps2 = 0.6f,
     .stopping_angular_acceleration_radps2 = 1.5f,
-    .max_centripetal_acceleration_mps2 = 1.0f,
+    .max_centripetal_acceleration_mps2 = 0.5f,
     .max_reverse_linear_velocity_mps = 0.4f,
 };
 
