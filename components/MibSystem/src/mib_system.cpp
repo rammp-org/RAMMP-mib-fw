@@ -21,8 +21,8 @@ namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// estop-core's EStop and SPDP.
-constexpr size_t kFixedReaders = 6;
+/// the external controller's TwistSetpoint, estop-core's EStop and SPDP.
+constexpr size_t kFixedReaders = 7;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
@@ -167,6 +167,21 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
+  twist_subscriber_ = std::make_unique<espp::Subscriber<rammp::TwistSetpoint>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::TwistSetpoint>::Config{
+          .topic = rammp::kBaseTwistSetpoint.name,
+          .type_name = rammp::kBaseTwistSetpoint.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::TwistSetpoint &setpoint) {
+            handle_autonomy_setpoint(setpoint.twist.linear.x, setpoint.twist.angular.z);
+          }});
+
+  if (!twist_subscriber_->is_valid()) {
+    logger_.error("Failed to create MIB RTPS twist setpoint subscriber");
+    return false;
+  }
+
   status_publisher_ = std::make_unique<espp::Publisher<rammp::MibStatus>>(
       mib_.rtps_participant(),
       espp::Publisher<rammp::MibStatus>::Config{
@@ -298,13 +313,19 @@ bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
     logger_.warn("Ignoring {} request outside IDLE or DRIVE_ENABLED", name);
     return false;
   }
-  drive_controller_.stop();
+  {
+    // A lapse deadline left over from the last autonomy session would fire at once.
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    twist_until_ = {};
+    drive_controller_.stop();
+  }
   state_.store(autonomy_state);
   logger_.info("Entering {} - placeholder", name);
   return true;
 }
 
 void MibSystem::leave_autonomy(const char *reason) {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   drive_controller_.stop();
   state_.store(SystemState::IDLE);
   logger_.info("Autonomy ended ({}) - back to IDLE", reason);
@@ -331,15 +352,32 @@ void MibSystem::handle_shared_stop() {
 }
 
 void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) {
+  // Leaving autonomy takes this lock too, so no setpoint lands after it.
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   switch (state_.load()) {
   case SystemState::AUTONOMOUS:
-  case SystemState::SHARED:
-    // Placeholder: the Jetson setpoint drives the base in both autonomy states.
-    logger_.debug("Autonomy setpoint linear={} angular={} - placeholder", linear_mps,
-                  angular_radps);
+  case SystemState::SHARED: {
+    // The Jetson setpoint drives the base in both autonomy states.
+    if (!std::isfinite(linear_mps) || !std::isfinite(angular_radps)) {
+      logger_.warn("Dropping non-finite twist setpoint");
+      break;
+    }
+    drive_controller_.set_velocity(linear_mps, angular_radps);
+    twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
     break;
+  }
   default:
     break;
+  }
+}
+
+void MibSystem::stop_if_twist_lapsed() {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
+  if (twist_until_.time_since_epoch().count() != 0 &&
+      std::chrono::steady_clock::now() >= twist_until_) {
+    twist_until_ = {};
+    drive_controller_.stop();
+    logger_.warn("Twist setpoints went quiet: stopping");
   }
 }
 
@@ -412,6 +450,7 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.warn("Ignoring drive disable command outside a drive state");
       return false;
     }
+    std::lock_guard<std::mutex> lock(twist_mutex_);
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
@@ -544,7 +583,8 @@ void MibSystem::log_drive_status() {
 
   float left_rad_per_second = 0.0f;
   float right_rad_per_second = 0.0f;
-  if (current_state == SystemState::DRIVE_ENABLED) {
+  if (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
+      current_state == SystemState::SHARED) {
     const auto wheel_speeds = drive_controller_.wheel_speeds();
     constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
     left_rad_per_second = wheel_speeds.left_rpm * kRpmToRadPerSecond;
@@ -672,7 +712,10 @@ void MibSystem::publish_motor_commands() {
   // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool stopped = latch_.is_active();
-  const bool drive = current_state == SystemState::DRIVE_ENABLED && !stopped;
+  const bool drive = (current_state == SystemState::DRIVE_ENABLED ||
+                      current_state == SystemState::AUTONOMOUS ||
+                      current_state == SystemState::SHARED) &&
+                     !stopped;
   // Panel overrides run only while the chair is IDLE: never alongside the stick.
   const bool service = current_state == SystemState::IDLE && !stopped;
 
@@ -880,9 +923,11 @@ void MibSystem::run_state_step() {
   }
   case SystemState::AUTONOMOUS:
     logger_.debug("System state: AUTONOMOUS - running autonomous placeholder");
+    stop_if_twist_lapsed();
     break;
   case SystemState::SHARED:
     logger_.debug("System state: SHARED - running shared control placeholder");
+    stop_if_twist_lapsed();
     break;
   case SystemState::ESTOP:
     run_estop_step();
@@ -906,6 +951,7 @@ void MibSystem::enter_estop() {
     return;
   }
 
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   drive_controller_.stop();
   estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
   state_.store(SystemState::ESTOP);
