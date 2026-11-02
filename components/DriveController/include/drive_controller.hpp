@@ -37,7 +37,7 @@ public:
   /// @brief Apply one of the predefined trajectory-planner drive profiles.
   /// @param profile The desired drive response profile.
   /// @return True if the planner accepted the profile configuration.
-  bool update_drive_profile(MIB::DriveProfile profile);
+  bool update_drive_profile(rammp::DriveProfile profile);
 
   /// @brief Get the current trajectory-limited wheel speeds.
   /// @return Left and right wheel speeds in RPM.
@@ -55,11 +55,11 @@ public:
 
 private:
   static Config default_config();
-  static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
+  static espp::TrajectoryPlanner::Config profile_config(rammp::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
-  MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
+  rammp::DriveProfile active_profile_{rammp::DriveProfile::NORMAL};
 };
 
 } // namespace mib

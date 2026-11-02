@@ -64,6 +64,11 @@ private:
   static bool profile_change_requested(const rammp::DriveCommand &command) {
     return command.request == rammp::DriveRequest::ENABLE;
   }
+  /// \return True if the command asks for AUTONOMOUS or SHARED (the Jetson's requests).
+  static bool autonomy_requested(const rammp::DriveCommand &command) {
+    return command.request == rammp::DriveRequest::AUTONOMOUS ||
+           command.request == rammp::DriveRequest::SHARED;
+  }
   /// \return True if the stick is off centre or any button is pressed.
   static bool joystick_touched(const rammp::XYTwist &sample) {
     return sample.x != 0.0f || sample.y != 0.0f || sample.twist != 0.0f ||
@@ -128,11 +133,11 @@ private:
   ///       failed; not operational).
   void enter_estop();
 
-  /// Jetson control requests. The RTPS messages (AutonomousRequest, AutonomousStop,
-  /// SharedRequest, SharedStop) are not defined yet and their names may change, so these
-  /// take no payload and nothing calls them. They run on an RTPS receive thread once wired.
-  /// Autonomy starts from IDLE or DRIVE_ENABLED and always ends in IDLE, so driving has
-  /// to be re-enabled from the joystick afterwards.
+  /// Jetson control requests. The Jetson asks with a rammp::DriveCommand whose request is
+  /// AUTONOMOUS or SHARED (handle_drive_command(), which calls enter_autonomy() directly)
+  /// and ends it with DISABLE, so these stop-and-start helpers have no caller of their own
+  /// yet. They run on an RTPS receive thread. Autonomy starts from IDLE or DRIVE_ENABLED
+  /// and always ends in IDLE, so driving has to be re-enabled from the joystick afterwards.
   /// IDLE or DRIVE_ENABLED -> AUTONOMOUS. Ignored elsewhere.
   void handle_autonomous_request();
   /// AUTONOMOUS -> IDLE. Ignored elsewhere.
@@ -237,8 +242,8 @@ private:
   std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
   std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
   std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
-  std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
-  MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
+  std::atomic<rammp::DriveProfile> drive_profile_{rammp::DriveProfile::NORMAL}; ///< Active drive profile.
+  rammp::SeatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
   rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
@@ -257,7 +262,7 @@ private:
   std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
   mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
   bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
-  std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
+  std::unique_ptr<espp::Publisher<rammp::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
   /// One command output per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Publisher<rammp::MotorCommand>>, rammp::kAxisCount>

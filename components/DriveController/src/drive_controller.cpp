@@ -25,7 +25,7 @@ void DriveController::stop() {
 
 DriveController::Config DriveController::default_config() {
   return Config{
-      .trajectory_planner = profile_config(MIB::DriveProfile::NORMAL),
+      .trajectory_planner = profile_config(rammp::DriveProfile::NORMAL),
       .differential_drive = {
           .wheel_diameter_m = config::differential_drive.wheel_diameter_m,
           .wheel_separation_m = config::differential_drive.wheel_separation_m,
@@ -35,7 +35,7 @@ DriveController::Config DriveController::default_config() {
   };
 }
 
-bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
+bool DriveController::update_drive_profile(rammp::DriveProfile profile) {
   const bool accepted = trajectory_planner_.set_config(profile_config(profile));
   if (!accepted) {
     logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
@@ -48,10 +48,10 @@ bool DriveController::update_drive_profile(MIB::DriveProfile profile) {
 }
 
 espp::TrajectoryPlanner::Config
-DriveController::profile_config(MIB::DriveProfile profile) {
+DriveController::profile_config(rammp::DriveProfile profile) {
   espp::TrajectoryPlanner::Config config{};
   switch (profile) {
-  case MIB::DriveProfile::LOW:
+  case rammp::DriveProfile::LOW:
     config.max_linear_velocity = config::drive_profile_low.max_linear_velocity_mps;
     config.max_angular_velocity = config::drive_profile_low.max_angular_velocity_radps;
     config.driving_profile.max_linear_acceleration =
@@ -60,7 +60,7 @@ DriveController::profile_config(MIB::DriveProfile profile) {
       config::drive_profile_low.max_angular_acceleration_radps2;
     config.stopping_profile = config.driving_profile;
     break;
-  case MIB::DriveProfile::NORMAL:
+  case rammp::DriveProfile::NORMAL:
     config.max_linear_velocity = config::drive_profile_normal.max_linear_velocity_mps;
     config.max_angular_velocity = config::drive_profile_normal.max_angular_velocity_radps;
     config.driving_profile.max_linear_acceleration =
@@ -69,7 +69,7 @@ DriveController::profile_config(MIB::DriveProfile profile) {
       config::drive_profile_normal.max_angular_acceleration_radps2;
     config.stopping_profile = config.driving_profile;
     break;
-  case MIB::DriveProfile::HIGH:
+  case rammp::DriveProfile::HIGH:
     config.max_linear_velocity = config::drive_profile_high.max_linear_velocity_mps;
     config.max_angular_velocity = config::drive_profile_high.max_angular_velocity_radps;
     config.driving_profile.max_linear_acceleration =
