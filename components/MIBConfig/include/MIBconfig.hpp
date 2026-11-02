@@ -154,4 +154,19 @@ inline constexpr DriveProfileConfig drive_profile_high{
     .max_angular_acceleration_radps2 = 4.0f,
 };
 
+/// @brief Gains for the push-assist system.
+struct PushAssistGains {
+  float dead_band_n;    // per handle; below this a handle reads as 0
+  float forward_full_n; // forward force past the dead bands for linear = 1
+  float turn_full_n;    // left - right past the dead bands for |angular| = 1
+  float reverse_max;    // cap on backing up when the handles are pulled, 0..1
+};
+
+inline constexpr PushAssistGains push_assist_gains{
+    .dead_band_n = 5.0f,
+    .forward_full_n = 40.0f,
+    .turn_full_n = 20.0f,
+    .reverse_max = 0.3f,
+};
+
 } // namespace mib::config
