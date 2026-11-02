@@ -57,8 +57,8 @@ public:
   /// @param persist Also save them to flash, so they survive a reboot.
   /// @return OK, INVALID (nothing changed), SAVE_FAILED (in use until reboot), or
   ///         BAD_REQUEST for an unknown profile.
-  rammp::DriveProfileResult set(rammp::DriveProfile profile, const config::DriveProfileConfig &values,
-                              bool persist);
+  rammp::DriveProfileResult set(rammp::DriveProfile profile,
+                                const config::DriveProfileConfig &values, bool persist);
 
   /// @brief Return a profile to its compiled-in default.
   /// @param profile The profile to reset.

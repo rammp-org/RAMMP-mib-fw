@@ -272,7 +272,8 @@ private:
   uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
   uint8_t drive_profile_state_sequence_{0};    ///< Sequence number for drive profile samples.
   uint8_t drive_profile_command_ack_{0};       ///< req_id of the last profile command acted on.
-  rammp::DriveProfileResult drive_profile_result_{rammp::DriveProfileResult::NONE}; ///< Its outcome.
+  rammp::DriveProfileResult drive_profile_result_{
+      rammp::DriveProfileResult::NONE};                                     ///< Its outcome.
   std::optional<rammp::DriveProfileCommand> pending_drive_profile_command_; ///< Not yet applied.
   mutable std::mutex drive_profile_command_mutex_; ///< Protects the three above.
   /// When publish_motor_states() last sent a Motors sample (epoch = never).

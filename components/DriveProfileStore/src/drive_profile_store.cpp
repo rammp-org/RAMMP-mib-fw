@@ -119,8 +119,8 @@ rammp::DriveProfileSource DriveProfileStore::source(rammp::DriveProfile profile)
 }
 
 rammp::DriveProfileResult DriveProfileStore::set(rammp::DriveProfile profile,
-                                               const config::DriveProfileConfig &values,
-                                               bool persist) {
+                                                 const config::DriveProfileConfig &values,
+                                                 bool persist) {
   const char *name = profile_name(profile);
   std::lock_guard<std::mutex> lock(mutex_);
   Slot *s = slot(profile);
@@ -165,7 +165,8 @@ rammp::DriveProfileResult DriveProfileStore::reset(rammp::DriveProfile profile, 
   s->file->set(default_values(profile));
   if (!persist) {
     // a reboot goes back to the saved file, if there is one
-    s->source = s->has_saved ? rammp::DriveProfileSource::UNSAVED : rammp::DriveProfileSource::DEFAULT;
+    s->source =
+        s->has_saved ? rammp::DriveProfileSource::UNSAVED : rammp::DriveProfileSource::DEFAULT;
     logger_.info("{}: compiled-in default in use until reboot", name);
     return rammp::DriveProfileResult::OK;
   }

@@ -220,8 +220,8 @@ bool MibSystem::initialize_pubsub() {
   drive_profile_publisher_ = std::make_unique<espp::Publisher<rammp::DriveProfileState>>(
       mib_.rtps_participant(),
       espp::Publisher<rammp::DriveProfileState>::Config{.topic = rammp::kMibDriveProfiles.name,
-                                                      .type_name = rammp::kMibDriveProfiles.type,
-                                                      .reliability = Reliability::BEST_EFFORT});
+                                                        .type_name = rammp::kMibDriveProfiles.type,
+                                                        .reliability = Reliability::BEST_EFFORT});
 
   if (!drive_profile_publisher_->is_valid()) {
     logger_.error("Failed to create MIB drive profile publisher");
