@@ -243,6 +243,14 @@ bool MibSystem::initialize_pubsub() {
   return true;
 }
 
+void MibSystem::publish_estop_broadcast() {
+  rammp::EStopBroadcast msg{};
+  msg.request = rammp::EStopRequest::ESTOP;
+  if (!estop_broadcast_publisher_->publish(msg)) {
+    logger_.warn("Failed to publish MIB estop broadcast");
+  }
+}
+
 void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
   {
     std::lock_guard<std::mutex> lock(joystick_mutex_);

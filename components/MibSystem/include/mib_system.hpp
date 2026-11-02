@@ -50,6 +50,7 @@ private:
     ERROR, ///< Initialization or runtime failure; not operational.
   };
 
+  void publish_estop_broadcast(bool engaged);
   /// Guards shared with the state-machine model (tools/hfsm/mib_system.json).
   /// \return True if the command asks to enable driving.
   static bool drive_enable_requested(const rammp::DriveCommand &command) {
