@@ -7,8 +7,8 @@
 #include <mutex>
 #include <string>
 
-#include "bsp.hpp"
 #include "base_component.hpp"
+#include "bsp.hpp"
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
 #include "messages.hpp"
@@ -46,8 +46,8 @@ private:
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
     AUTONOMOUS,    ///< The Jetson drives the base; any joystick input ends it (back to IDLE).
     SHARED,        ///< Shared control; the joystick commands nothing, even when touched.
-    ESTOP,         ///< Emergency stop: the e-stop latch is active, drive stopped; IDLE once it clears.
-    ERROR,         ///< Initialization or runtime failure; not operational.
+    ESTOP, ///< Emergency stop: the e-stop latch is active, drive stopped; IDLE once it clears.
+    ERROR, ///< Initialization or runtime failure; not operational.
   };
 
   /// Guards shared with the state-machine model (tools/hfsm/mib_system.json).
@@ -230,33 +230,37 @@ private:
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
 
-  mib::bsp::MIB &mib_;                         ///< Board support: Ethernet and RTPS participant.
-  mib::DriveController drive_controller_;     ///< Chassis and seat motion controller.
-  estop::Latch latch_;                         ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
+  mib::bsp::MIB &mib_;                    ///< Board support: Ethernet and RTPS participant.
+  mib::DriveController drive_controller_; ///< Chassis and seat motion controller.
+  estop::Latch latch_; ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
-  std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
-  std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
-  std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
-  std::atomic<MIB::DriveProfile> drive_profile_{MIB::DriveProfile::NORMAL}; ///< Active drive profile.
-  MIB::seatState seat_state_{};                ///< Placeholder for the current seat position.
-  mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
-  rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
-  mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
-  uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
-  uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
-  uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
-  uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
+  std::atomic<bool> error_reported_{false};           ///< This stay in ERROR has been logged.
+  std::chrono::steady_clock::time_point
+      estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task
+                           ///< only.
+  std::chrono::steady_clock::time_point
+      estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
+  std::atomic<MIB::DriveProfile> drive_profile_{
+      MIB::DriveProfile::NORMAL};       ///< Active drive profile.
+  MIB::seatState seat_state_{};         ///< Placeholder for the current seat position.
+  mutable std::mutex seat_state_mutex_; ///< Protects seat state across RTPS and publish tasks.
+  rammp::XYTwist latest_joystick_{};    ///< Most recent joystick sample for diagnostics.
+  mutable std::mutex joystick_mutex_;   ///< Protects the latest joystick sample.
+  uint8_t status_sequence_{0};          ///< Sequence number for MIB status samples.
+  uint8_t motor_command_sequence_{0};   ///< Sequence number for motor command samples.
+  uint8_t diagnostics_sequence_{0};     ///< Sequence number for diagnostics samples.
+  uint8_t motor_states_sequence_{0};    ///< Sequence number for Motors samples.
   /// When publish_motor_states() last sent a Motors sample (epoch = never).
   std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
   /// Latest state of each kAxes board, and when it arrived (epoch = never).
   std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
   std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
   std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
-  mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
-  rammp::MotorJog latest_jog_{};               ///< Most recent jog request.
+  mutable std::mutex motor_state_mutex_; ///< Protects motor states across RTPS and tasks.
+  rammp::MotorJog latest_jog_{};         ///< Most recent jog request.
   std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
-  mutable std::mutex jog_mutex_;               ///< Protects the latest jog request.
-  bool jog_requested_{false};                  ///< A fresh jog asked for; motor task only.
+  mutable std::mutex jog_mutex_;                            ///< Protects the latest jog request.
+  bool jog_requested_{false}; ///< A fresh jog asked for; motor task only.
   std::unique_ptr<espp::Publisher<MIB::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
   /// One command output per kAxes row, in table order.
@@ -265,7 +269,7 @@ private:
   /// One state input per kAxes row, in table order.
   std::array<std::unique_ptr<espp::Subscriber<rammp::MotorState>>, rammp::kAxisCount>
       motor_state_subscribers_;
-  std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_; ///< Motor debug list.
+  std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_;  ///< Motor debug list.
   std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
   std::array<AxisLink, rammp::kAxisCount> axes_{}; ///< Every PACE RACER axis, in table order.
   mutable std::mutex axes_mutex_;                  ///< Protects axes_.
@@ -275,15 +279,17 @@ private:
   float panel_stick_x_{0.0f};                      ///< Panel stick, guarded by joystick_mutex_.
   float panel_stick_y_{0.0f};
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
-  std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
-  std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
+  std::unique_ptr<espp::Publisher<rammp::EStopBroadcast>> estop_broadcast_publisher_;
+  std::unique_ptr<mib::ServiceLink> service_;  ///< WebUSB / UART control panel link.
+  std::unique_ptr<espp::Task> telemetry_task_; ///< Feeds the panel's plots.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
-  std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.
-  std::unique_ptr<espp::Task> state_task_;       ///< Advances the state machine.
-  std::unique_ptr<espp::Task> publication_task_; ///< Publishes state at a lower rate.
-  std::unique_ptr<espp::Task> motor_command_task_; ///< Publishes motor commands at 20 Hz.
-  std::unique_ptr<espp::Task> imu_task_;           ///< Reads the IMU at 100 Hz.
+  std::unique_ptr<espp::Subscriber<rammp::DriveCommand>>
+      drive_command_subscriber_;                          ///< Drive input.
+  std::unique_ptr<espp::Task> state_task_;                ///< Advances the state machine.
+  std::unique_ptr<espp::Task> publication_task_;          ///< Publishes state at a lower rate.
+  std::unique_ptr<espp::Task> motor_command_task_;        ///< Publishes motor commands at 20 Hz.
+  std::unique_ptr<espp::Task> imu_task_;                  ///< Reads the IMU at 100 Hz.
   std::chrono::steady_clock::time_point last_imu_log_{};  ///< Last IMU log time; IMU task only.
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
