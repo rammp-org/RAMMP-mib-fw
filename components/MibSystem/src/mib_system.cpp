@@ -124,7 +124,7 @@ bool MibSystem::initialize_pubsub() {
       mib_.rtps_participant(),
       espp::Publisher<rammp::EStopBroadcast>::Config{.topic = rammp::kEStopBroadcast.name,
                                                      .type_name = rammp::kEStopBroadcast.type,
-                                                     .reliability = Reliability::BEST_EFFORT});
+                                                     .reliability = Reliability::RELIABLE});
 
   if (!estop_broadcast_publisher_->is_valid()) {
     logger_.error("Failed to create MIB RTPS estop broadcast publisher");
@@ -243,10 +243,17 @@ bool MibSystem::initialize_pubsub() {
   return true;
 }
 
-void MibSystem::publish_estop_broadcast() {
+void MibSystem::publish_estop_broadcast(bool engaged) {
   rammp::EStopBroadcast msg{};
-  msg.request = rammp::EStopRequest::ESTOP;
-  if (!estop_broadcast_publisher_->publish(msg)) {
+  timespec ts{};
+  if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+    msg.header.stamp.sec = static_cast<int32_t>(ts.tv_sec);
+    msg.header.stamp.nanosec = static_cast<uint32_t>(ts.tv_nsec);
+  }
+  msg.engaged = engaged;
+  msg.source = rammp::kEStopClearer;
+  msg.reason = engaged ? "Latch engaged" : "Latch cleared";
+  if (!estop_broadcast_publisher_ || !estop_broadcast_publisher_->publish(msg)) {
     logger_.warn("Failed to publish MIB estop broadcast");
   }
 }
@@ -832,6 +839,7 @@ void MibSystem::run_state_step() {
     if (service_) {
       service_->confirm_image_after(std::chrono::seconds{20});
     }
+
     // The latch starts latched ("boot"): straight to ESTOP, with no hold, until it clears.
     state_.store(latch_.is_active() ? SystemState::ESTOP : SystemState::IDLE);
     break;
@@ -889,6 +897,7 @@ void MibSystem::enter_estop() {
     return;
   }
 
+  publish_estop_broadcast(latch_.is_active());
   drive_controller_.stop();
   estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
   state_.store(SystemState::ESTOP);
@@ -927,5 +936,6 @@ void MibSystem::run_estop_step() {
   }
   estop_last_clear_attempt_ = now;
   latch_.start_clear_attempt();
+  publish_estop_broadcast(latch_.is_active());
   logger_.info("E-stop: hold elapsed, asking the latch to clear");
 }
