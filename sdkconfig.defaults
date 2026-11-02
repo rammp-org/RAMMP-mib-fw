@@ -48,8 +48,10 @@ CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
 
 # RTPS endpoint pool (espp/rtps). Writers: a command and a tuning per motor board, status,
 # DriveProfileState, Diagnostics, Motors, estop-core's, SPDP. Readers: a state per motor
-# board, the joystick's five inputs (DriveProfileCommand among them), estop-core's, SPDP.
-# Per participant adds SEDP's two of each. mib_system.cpp checks these against the axis table.
+# board, the joystick's five inputs (DriveProfileCommand among them), the external
+# controller's TwistSetpoint, estop-core's, SPDP. With the four boards that is 14 of 14
+# writers and 12 of 12 readers: the next endpoint needs its limit raised. Per participant
+# adds SEDP's two of each. mib_system.cpp checks these against the axis table.
 CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
 CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
 CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=20
