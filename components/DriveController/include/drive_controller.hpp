@@ -29,6 +29,12 @@ public:
   /// @param angular Normalized angular command in [-1, 1].
   void set_target(float linear, float angular);
 
+  /// @brief Set a chassis velocity target, capped by the active profile.
+  /// @param linear_mps Forward velocity in m/s.
+  /// @param angular_radps Angular velocity in rad/s, positive counter-clockwise.
+  /// @note Both are scaled down together when over the cap, keeping the turn radius.
+  void set_velocity(float linear_mps, float angular_radps);
+
   /// @brief Set the chassis target to zero using the planner limits.
   /// @note This does not immediately set motor speed to zero; the planner
   ///       decelerates toward the zero target.
@@ -37,7 +43,7 @@ public:
   /// @brief Apply one of the predefined trajectory-planner drive profiles.
   /// @param profile The desired drive response profile.
   /// @return True if the planner accepted the profile configuration.
-  bool update_drive_profile(MIB::DriveProfile profile);
+  bool update_drive_profile(rammp::DriveProfile profile);
 
   /// @brief Get the current trajectory-limited wheel speeds.
   /// @return Left and right wheel speeds in RPM.
@@ -55,11 +61,11 @@ public:
 
 private:
   static Config default_config();
-  static espp::TrajectoryPlanner::Config profile_config(MIB::DriveProfile profile);
+  static espp::TrajectoryPlanner::Config profile_config(rammp::DriveProfile profile);
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
-  MIB::DriveProfile active_profile_{MIB::DriveProfile::NORMAL};
+  rammp::DriveProfile active_profile_{rammp::DriveProfile::NORMAL};
 };
 
 } // namespace mib
