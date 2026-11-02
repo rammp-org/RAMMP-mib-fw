@@ -28,6 +28,11 @@ jobs:
         path: "."
         target: ${{ env.IDF_TARGET }}
 
+    # After the build: the checks compile against the espp headers it fetched into
+    # managed_components/.
+    - name: Arbiter host checks
+      run: components/Arbiter/test/host/run.sh
+
     - name: Determine Size Delta
       uses: esp-cpp/esp-idf-size-delta@v1
       with:
