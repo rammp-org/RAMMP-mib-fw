@@ -25,9 +25,9 @@ means right now*. It decides whether the stick drives the chair or navigates
 the joystick's GUI, whether seat commands are accepted, and what a halt does.
 The Arbiter never sees it. It only calls back `on_halt`.
 
-The state machine is being reworked separately and will grow states the
-Arbiter does not care about (an `ESTOP` state is planned). Nothing here depends
-on that.
+The state machine (#43) has states the Arbiter does not care about: `ESTOP`
+for estop-core's latch, and `AUTONOMOUS` and `SHARED` for the Jetson. Nothing
+here depends on them.
 
 ## Who holds tokens
 
@@ -151,6 +151,12 @@ What it took for a ROS 2 host to reach the MIB at all, each one hiding the next:
 
 ## Modes, stick interrupts, and history (planned)
 
+Main has since taken a simpler path. The Jetson asks for `AUTONOMOUS` or
+`SHARED` with an untokened `DriveCommand` (#61), drives on `TwistSetpoint` in
+both (#58), and a stick touch ends `AUTONOMOUS`. The design below predates
+those and is to be reconciled with them when the Arbiter is wired in (roadmap
+step 5).
+
 The Jetson asks the base for a control mode with a tokened `ModeCommand`:
 MANUAL, COMBINED, or AUTONOMOUS, with the profile to use. It must hold the
 base's token to send one, so it acquires first; if the user was driving, that
@@ -193,6 +199,11 @@ refresh it: a sender with a bad token is not evidence the stream is healthy.
 The joystick publishes continuously even at rest, so it is covered too; pick
 the timeout from its rate, a handful of publish periods.
 
+`MibSystem` already has the lapse half of this (#58): after
+`twist_setpoint_timeout` (300 ms) with no setpoint the chair stops, stays in
+`AUTONOMOUS`, and drives again on the next setpoint. Every setpoint refreshes it
+for now, since the token is not checked yet.
+
 Deadline expiry is routine, every autonomy restart will trigger it, so it
 halts and returns to IDLE. It is **not** an error. `ERROR`, with the motor
 boards disarmed to coast, is for when the MIB cannot trust its own control:
@@ -220,10 +231,17 @@ twist cannot command a jerk or exceed what the chair allows a human.
 2. **RTPS server face.** Done: `components/ArbitrationServer`, tested from
    ROS 2 on hardware. Not done: an `/estop` subscription; the MIB's e-stop is
    estop-core's latch (RAMMP-mib-fw#36, #39), which should latch the Arbiter.
-3. **Twist input.** The type is settled and the example subscribes to it;
-   converting it to the drive controller's input is left for the wiring.
+3. **Twist input.** Done on main (#58): `MibSystem` subscribes to
+   `/base/setpoint/twist` and drives on it in `AUTONOMOUS` and `SHARED`, with
+   the token ignored. What is left is the check in that one handler: wrap it
+   in `run_if_admitted`, so a refused setpoint is dropped and does not refresh
+   the lapse. Whether a refusal should also stop the chair at once is for the
+   wiring to decide; it needs the server running, so it waits for step 5.
 4. **Joystick client.** The in-process owner described above.
 5. **Wire into `MibSystem`.** Handlers call `run_if_admitted`; `on_halt` feeds
    the state machine; the deadline runs on the state task; `arbitration_mode`
    in `MIBconfig.hpp`, defaulting to `DISABLED` so the joystick keeps working
-   with no Jetson until it is flipped.
+   with no Jetson until it is flipped. The server's reliable endpoints need
+   the stateful pools raised in the root `sdkconfig.defaults` and counted in
+   `mib_system.cpp`'s checks; see the
+   [ArbitrationServer README](../components/ArbitrationServer/README.md#configuration-the-firmware-needs).

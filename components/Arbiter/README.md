@@ -65,9 +65,10 @@ mib::Arbiter arbiter_({
     },
 });
 
-void MibSystem::handle_twist(const TwistSetpoint &setpoint) {
+// MibSystem's TwistSetpoint subscriber (#58), with the check added:
+.on_message = [this](const rammp::TwistSetpoint &setpoint) {
   arbiter_.run_if_admitted(setpoint.token, [&] {
-    // what the state machine does with an admitted twist
+    handle_autonomy_setpoint(setpoint.twist.linear.x, setpoint.twist.angular.z);
   });
 }
 ```
@@ -92,8 +93,8 @@ arm's tests where the surface is the same.
 
 - **Admission is a wrapper, not a decorator.** The arm's Arbiter implements
   the driver's sink interfaces and forwards each method. The MIB has three
-  commands and its vocabulary is still changing (`TwistSetpoint` is moving to a
-  new `rammp_control_interfaces` package), so this port offers
+  commands and its vocabulary is still changing (`TwistSetpoint` is settled in
+  `rammp_base_interfaces`; tokened drive and seat commands are not), so this port offers
   `run_if_admitted` and lets the handler supply the command. Same atomicity,
   fewer moving parts. The cost is that a handler has to remember to call it.
 - **A seize has its own halt reason.** The arm halts with `kOwnershipRevoked` both
