@@ -39,6 +39,14 @@ prints the link on its console) or runs against a simulated MIB. Its Firmware ta
 the MIB over the same link (after one last `idf.py flash` over USB for the two-slot partition
 table); see its README.
 
+### Drive profiles
+
+The LOW, NORMAL and HIGH drive limits default to `MIBconfig.hpp` and can be changed and saved
+to the MIB's flash over RTPS with [`tools/drive_profile`](tools/drive_profile/drive_profile.py),
+no reflash needed. They are saved on a LittleFS partition that the panel's firmware update
+can't add, so a chair flashed before it needs one more `idf.py flash` over USB; see
+[`components/DriveProfileStore`](components/DriveProfileStore/README.md).
+
 ### Automated Setup
 
 After setting this as the template:

@@ -23,7 +23,11 @@ void DriveController::set_target(float linear, float angular) {
 }
 
 void DriveController::set_velocity(float linear_mps, float angular_radps) {
-  const auto config = trajectory_planner_.get_config();
+  // get_config() returns a reference that set_config() overwrites, and a DriveProfileCommand
+  // or DriveCommand can change the profile from another thread. Every set_config() runs
+  // under profile_mutex_ (apply_locked), so holding it keeps the caps whole.
+  std::lock_guard<std::mutex> lock(profile_mutex_);
+  const auto &config = trajectory_planner_.get_config();
   const float max_linear = linear_mps < 0.0f && config.max_reverse_linear_velocity > 0.0f
                                ? config.max_reverse_linear_velocity
                                : config.max_linear_velocity;
@@ -41,7 +45,7 @@ void DriveController::stop() {
 
 DriveController::Config DriveController::default_config() {
   return Config{
-      .trajectory_planner = profile_config(rammp::DriveProfile::NORMAL),
+      .trajectory_planner = planner_config(config::drive_profile_normal),
       .differential_drive = {
           .wheel_diameter_m = config::differential_drive.wheel_diameter_m,
           .wheel_separation_m = config::differential_drive.wheel_separation_m,
@@ -51,51 +55,40 @@ DriveController::Config DriveController::default_config() {
   };
 }
 
-bool DriveController::update_drive_profile(rammp::DriveProfile profile) {
-  const bool accepted = trajectory_planner_.set_config(profile_config(profile));
-  if (!accepted) {
-    logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
+bool DriveController::update_drive_profile(rammp::DriveProfile profile,
+                                           const config::DriveProfileConfig &values) {
+  std::lock_guard<std::mutex> lock(profile_mutex_);
+  if (!apply_locked(profile, values)) {
     return false;
   }
-
   active_profile_ = profile;
   logger_.info("Drive profile updated to {}", static_cast<uint8_t>(profile));
   return true;
 }
 
-espp::TrajectoryPlanner::Config
-DriveController::profile_config(rammp::DriveProfile profile) {
-  espp::TrajectoryPlanner::Config config{};
-  switch (profile) {
-  case rammp::DriveProfile::LOW:
-    config.max_linear_velocity = config::drive_profile_low.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_low.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_low.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_low.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
-  case rammp::DriveProfile::NORMAL:
-    config.max_linear_velocity = config::drive_profile_normal.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_normal.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_normal.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_normal.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
-  case rammp::DriveProfile::HIGH:
-    config.max_linear_velocity = config::drive_profile_high.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_high.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_high.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_high.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
+bool DriveController::refresh_drive_profile(rammp::DriveProfile profile,
+                                            const config::DriveProfileConfig &values) {
+  std::lock_guard<std::mutex> lock(profile_mutex_);
+  if (profile != active_profile_) {
+    return true;
   }
-  return config;
+  if (!apply_locked(profile, values)) {
+    return false;
+  }
+  logger_.info("Drive profile {} limits re-applied", static_cast<uint8_t>(profile));
+  return true;
+}
+
+bool DriveController::apply_locked(rammp::DriveProfile profile,
+                                   const config::DriveProfileConfig &values) {
+  // Keep the current velocity so a profile change while driving ramps instead of
+  // dropping the wheels to zero.
+  const bool accepted =
+      trajectory_planner_.set_config(planner_config(values), /*reset_state=*/false);
+  if (!accepted) {
+    logger_.error("Failed to apply drive profile {}", static_cast<uint8_t>(profile));
+  }
+  return accepted;
 }
 
 DifferentialDrive::WheelSpeeds DriveController::wheel_speeds() const {
