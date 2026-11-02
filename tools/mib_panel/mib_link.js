@@ -196,7 +196,8 @@ const SYS = { RESET: 0x01, INFO: 0x02, SET_BAUD: 0x03, OK: 0x81, INFO_REPLY: 0x8
 const SERIAL_FAST_BAUD = 921600;
 const MIBP = {
   OVERRIDE: 0x01, RELEASE: 0x02, TUNING: 0x03, CLEAR_FAULT: 0x04, DRIVE: 0x05, STICK: 0x06,
-  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, OK: 0x81, STATUS_REPLY: 0x89, ERROR: 0x8F, ALL: 0xFF,
+  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, PARAMS: 0x0A, SET_PARAM: 0x0B, SAVE_PARAMS: 0x0C, DEFAULT_PARAMS: 0x0D,
+  OK: 0x81, STATUS_REPLY: 0x89, PARAMS_REPLY: 0x8A, PARAM_REPLY: 0x8B, SAVE_REPLY: 0x8C, ERROR: 0x8F, ALL: 0xFF,
 };
 const REQ_STATE = { DISARMED: 0, ARMED: 1, SAFE_STOP: 2, ESTOP: 3 };
 const MODE = { COAST: 0, TORQUE: 1, VELOCITY: 2, POSITION: 3, HOLD: 4 };
@@ -386,6 +387,22 @@ class MibLink {
   drive(enable, profile) { return this.mib(MIBP.DRIVE, u8(enable ? 1 : 0, profile)); }
   seat(axis, target) { return this.mib(MIBP.SEAT, cat(u8(axis), f32s(target))); }
   estop(engage) { return this.mib(MIBP.ESTOP, u8(engage ? 1 : 2)); }
+
+  // Tunable params (mib_panel_protocol.hpp PARAMS): today the push-assist gains.
+  async params() { return paramsCall(this, M_MIB, MIBP.PARAMS, null, MIBP.PARAMS_REPLY, MIBP.ERROR); }
+  async setParam(key, value) { return paramsCall(this, M_MIB, MIBP.SET_PARAM, paramPayload(key, value), MIBP.PARAM_REPLY, MIBP.ERROR); }
+  async saveParams() { return paramsCall(this, M_MIB, MIBP.SAVE_PARAMS, null, MIBP.SAVE_REPLY, MIBP.ERROR); }
+  async defaultParams() { return paramsCall(this, M_MIB, MIBP.DEFAULT_PARAMS, null, MIBP.PARAMS_REPLY, MIBP.ERROR); }
+}
+
+// The params protocol the MIB (module 0x40) and the push-assist board (0x30) both serve:
+// JSON replies, a SAVE reply of [ok u8], errors as [request type u8][reason].
+function paramPayload(key, value) { const k = new TextEncoder().encode(key); return cat(u8(k.length), k, f32s(value)); }
+async function paramsCall(link, module, type, payload, replyType, errType) {
+  const f = await link.request(module, type, payload, [replyType, errType], 3000);
+  if (f.type === errType) throw new Error(link.dec.decode(f.payload.subarray(1)) || 'refused');
+  if (f.payload.length === 1) { if (!f.payload[0]) throw new Error('save failed'); return true; }
+  return JSON.parse(link.dec.decode(f.payload));
 }
 
 // ---------------------------------------------------------------- FrameLink

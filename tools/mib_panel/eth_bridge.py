@@ -9,7 +9,8 @@ Endpoints:
     GET  /, /<file>            the panel, from this directory
     GET  /builds               JSON list of firmware builds: this repo's build*/, and --racer's
     GET  /builds/<source>/<dir>/<file>   a file that build's flasher_args.json names
-    GET  /discover             PACE RACER boards answering "PACE?" on udp :5556
+    GET  /discover             boards answering "PACE?" (PACE RACERs) or "PUSH?" (the
+                               push-assist board, "product": "push_assist") on udp :5556
     GET  /bridge.json          {"bridge": true, "default_target": "192.168.4.1"}: tells
                                the page it can use this origin's /ws
     WS   /ws?target=<ip>[:port]   raw bytes <-> tcp <ip>:<port, 5555>, one socket per page
@@ -107,7 +108,8 @@ def _bind_for(sock, target_ip):
 # ---------------------------------------------------------------- builds
 # Firmware builds the page can flash: every build*/ dir with a flasher_args.json under each
 # source (an ESP-IDF project dir). The MIB repo is always a source; --racer adds the PACE
-# RACER's atos-drive app. flasher_args.json names the app image the page sends over the air.
+# RACER's atos-drive app and --push the push-assist board's firmware. flasher_args.json names
+# the app image the page sends over the air.
 SOURCES = {"mib": REPO}
 
 
@@ -160,12 +162,14 @@ def build_file(path):
     return None
 
 
-# ---------------------------------------------------------------- PACE RACER discovery
+# ---------------------------------------------------------------- board discovery
 DISCOVERY_PORT = 5556
+# Each kind of board answers its own probe on the same port with one JSON line.
+DISCOVERY_PROBES = (b"PACE?", b"PUSH?")
 
 
 def discover(timeout=1.5):
-    """Broadcast "PACE?" from every interface (eth_link.discover); [board info dict + 'ip']."""
+    """Broadcast each probe from every interface (eth_link.discover); [board info dict + 'ip']."""
     socks = []
     for name, ip, mask in (_ifaces() or [(None, "0.0.0.0", "0.0.0.0")]):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -183,10 +187,11 @@ def discover(timeout=1.5):
             mn = int.from_bytes(socket.inet_aton(mask), "big")
             dsts.add(socket.inet_ntoa(((ipn & mn) | (~mn & 0xFFFFFFFF)).to_bytes(4, "big")))
         for dst in dsts:
-            try:
-                s.sendto(b"PACE?", (dst, DISCOVERY_PORT))
-            except OSError:
-                pass
+            for probe in DISCOVERY_PROBES:
+                try:
+                    s.sendto(probe, (dst, DISCOVERY_PORT))
+                except OSError:
+                    pass
     boards, t0 = {}, time.time()
     while time.time() - t0 < timeout:
         for s in socks:
@@ -345,10 +350,13 @@ def main():
     ap.add_argument("--port", type=int, default=8765, help="local HTTP / WebSocket port (default 8765)")
     ap.add_argument("--target", default=DEFAULT_TARGET, help=f"the MIB's address (default {DEFAULT_TARGET})")
     ap.add_argument("--racer", metavar="DIR", help="pace-racer-fw's atos-drive app dir, to flash its build*/ to the RACERs")
+    ap.add_argument("--push", metavar="DIR", help="space-bar-push-assist's firmware dir, to flash its build*/ to the push-assist board")
     a = ap.parse_args()
     DEFAULT_TARGET = a.target
     if a.racer:
         SOURCES["racer"] = os.path.abspath(os.path.expanduser(a.racer))
+    if a.push:
+        SOURCES["push"] = os.path.abspath(os.path.expanduser(a.push))
     for b in builds():
         print(f"  build {b['id']}: {b['project']} {b['version']} ({b['chip']}, {b['built']})", flush=True)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)

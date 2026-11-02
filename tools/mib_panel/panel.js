@@ -609,9 +609,10 @@ if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) fetch('bridge.json').t
 // The PACE RACER dashboard's flow (atos-drive/tools/dashboard.html): BEGIN with the size,
 // 4 KiB DATA chunks each acknowledged, FINISH, then the board reboots into the new slot; the
 // panel reconnects and marks the new image valid. The target is the MIB (the panel's own
-// link) or a PACE RACER (its tcp :5555 through eth_bridge.py, found with "PACE?").
+// link), a PACE RACER (its tcp :5555 through eth_bridge.py, found with "PACE?") or the
+// push-assist board (the same, found with "PUSH?"; push_link.js).
 const fw = { picked: null, busy: false, abort: false, rebooting: false, builds: [], racers: new Map() };
-const FW_PROJECT = { mib: 'rammp_mib', racer: 'pace_racer_atos_drive' };
+const FW_PROJECT = { mib: 'rammp_mib', racer: 'pace_racer_atos_drive', push: 'push_assist' };
 const fwCstr = (img, a, b) => new TextDecoder().decode(img.subarray(a, b)).split('\0')[0];
 const bridgeServed = () => /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
 // The bridge's HTTP base: this origin when it served the page, else the Ethernet bridge field.
@@ -619,6 +620,7 @@ const bridgeBase = () => bridgeServed() ? '' : $('ethBridge').value.trim().repla
 function fwTarget() {
   const v = $('fwTarget').value;
   if (v === 'mib') return { kind: 'mib', label: 'MIB' };
+  if (v.startsWith('push:')) { const addr = v.slice(5); return { kind: 'push', addr, label: addr === 'sim' ? 'push-assist board (simulated)' : 'push-assist board' }; }
   const r = fw.racers.get(v.slice(6));
   return { kind: 'racer', addr: v.slice(6), label: r && r.axis_name ? `RACER ${r.axis_name}` : `RACER ${v.slice(6)}`, info: r };
 }
@@ -646,21 +648,31 @@ function renderBuildList() {
 function renderTargets() {
   const keep = $('fwTarget').value;
   $('fwTarget').innerHTML = '<option value="mib">MIB (the connected link)</option>' + [...fw.racers.entries()].map(([addr, r]) =>
-    `<option value="racer:${addr}">PACE RACER ${r.axis_name || '(axis ?)'} · ${addr}${r.version ? ' · ' + r.version : ''}</option>`).join('');
+    `<option value="racer:${addr}">PACE RACER ${r.axis_name || '(axis ?)'} · ${addr}${r.version ? ' · ' + r.version : ''}</option>`).join('') +
+    [...pa.boards.entries()].map(([addr, b]) => `<option value="push:${addr}">Push assist · ${addr}${b.firmware ? ' · ' + b.firmware : ''}</option>`).join('') +
+    '<option value="push:sim">Push assist (simulated)</option>';
   if ([...$('fwTarget').options].some(o => o.value === keep)) $('fwTarget').value = keep;
 }
-// Info for the "Running image" table: the MIB from its link, a RACER over a short-lived one.
-const racerLink = async addr => { const l = new FrameLink(new WsTransport($('ethBridge').value.trim(), addr.includes(':') ? addr : `${addr}:5555`)); await l.connect(); return l; };
+// Info for the "Running image" table: the MIB from its link, another board over a short-lived one.
+// The push-assist board serves one client at a time, so the Push assist tab lets go of it first.
+async function boardLink(t) {
+  if (t.kind === 'push') {
+    if (pa.link && pa.target === t.addr) { await paDisconnect(); sys('Push assist tab disconnected: the board serves one client at a time'); }
+    const l = new PushFrameLink(paTransport(t.addr)); await l.connect(); return l;
+  }
+  const l = new FrameLink(new WsTransport($('ethBridge').value.trim(), t.addr.includes(':') ? t.addr : `${t.addr}:5555`)); await l.connect(); return l;
+}
 async function renderFwInfo() {
   const t = fwTarget();
   if (t.kind === 'mib' && !link) { $('fwInfo').innerHTML = '<tr><td class="empty">Not connected.</td></tr>'; return; }
   let j;
   try {
     if (t.kind === 'mib') { j = info = await link.info(); $('mFw').textContent = `fw ${j.version} (${j.built})`; }
-    else { const l = await racerLink(t.addr); try { j = await l.info(); } finally { await l.close(); } }
+    else { const l = await boardLink(t); try { j = await l.info(); } finally { await l.close(); } }
   } catch (e) { $('fwInfo').innerHTML = `<tr><td class="empty">No info from ${t.label}: ${e.message}</td></tr>`; return; }
-  const rows = [['Board', t.kind === 'mib' ? 'MIB' : `PACE RACER ${j.axis_name || ''} (axis ${j.axis ?? '?'})`], ['Version', j.version], ['Built', j.built], ['Slot', j.partition || '–'],
-    ['State', j.pending_verify ? '<span class="ax-status warning">Pending verify</span>' : '<span class="ax-status good">Confirmed</span>'],
+  const board = t.kind === 'mib' ? 'MIB' : t.kind === 'push' ? 'Push-assist board' : `PACE RACER ${j.axis_name || ''} (axis ${j.axis ?? '?'})`;
+  const state = j.pending_verify === undefined ? '–' : j.pending_verify ? '<span class="ax-status warning">Pending verify</span>' : '<span class="ax-status good">Confirmed</span>';
+  const rows = [['Board', board], ['Version', j.version ?? j.firmware], ['Built', j.built], ['Slot', j.partition || '–'], ['State', state],
     ['Reset reason', j.reset_reason || '–'], ['Up', j.uptime_s !== undefined ? `${j.uptime_s} s` : '–']];
   if (j.motor) rows.push(['Motor profile', j.motor]);
   if (j.mac) rows.push(['MAC', j.mac]);
@@ -674,11 +686,12 @@ async function findRacers() {
   axBusy($('fwFind'), true, 'Asking');
   try {
     const r = await fetch(bridgeBase() + 'discover', { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status);
-    const boards = await r.json();
+    const all = await r.json(), boards = all.filter(b => b.product !== 'push_assist'), push = all.filter(b => b.product === 'push_assist');
     for (const b of boards) fw.racers.set(b.ip, b);
-    renderTargets(); sys(`PACE RACERs answering: ${boards.length ? boards.map(b => `${b.axis_name || '?'} ${b.ip} ${b.version || ''}`).join(', ') : 'none'}`);
-    toast(boards.length ? `Found ${boards.length} PACE RACER${boards.length > 1 ? 's' : ''}` : 'No PACE RACER answered', boards.length ? 'ok' : '');
-  } catch (e) { toast('Find RACERs needs eth_bridge.py: ' + e.message, 'err'); }
+    notePushBoards(push); renderTargets();
+    sys(`PACE RACERs answering: ${boards.length ? boards.map(b => `${b.axis_name || '?'} ${b.ip} ${b.version || ''}`).join(', ') : 'none'}; push-assist boards: ${push.length ? push.map(b => b.ip).join(', ') : 'none'}`);
+    toast(all.length ? `Found ${boards.length} PACE RACER${boards.length === 1 ? '' : 's'} and ${push.length} push-assist board${push.length === 1 ? '' : 's'}` : 'No board answered', all.length ? 'ok' : '');
+  } catch (e) { toast('Find boards needs eth_bridge.py: ' + e.message, 'err'); }
   finally { axBusy($('fwFind'), false); }
 }
 $('fwFind').onclick = findRacers;
@@ -716,10 +729,10 @@ async function reconnectLoop(old, timeoutMs) {
   }
   return false;
 }
-// A RACER after its reboot: open a fresh link until it answers.
-async function racerAfterReboot(addr, timeoutMs = 90000) {
+// A RACER or the push-assist board after its reboot: open a fresh link until it answers.
+async function boardAfterReboot(t, timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs; await sleep(3000);
-  while (Date.now() < deadline) { try { return await racerLink(addr); } catch (e) { await sleep(2000); } }
+  while (Date.now() < deadline) { try { const l = await boardLink(t); await l.otaStatus(); return l; } catch (e) { await sleep(2000); } }
   return null;
 }
 // BEGIN, DATA..., FINISH on `l` (a MibLink or a FrameLink).
@@ -739,7 +752,9 @@ async function otaWrite(l, img, say, bar) {
 $('fwFlash').onclick = async () => {
   const t = fwTarget(), src = fwSource(); if (!src || (t.kind === 'mib' && !link)) return fwRefresh();
   if (t.kind === 'racer' && status && status.state === 'DRIVE_ENABLED') { toast('Disable drive on the MIB before flashing a wheel', 'err'); return; }
-  if (!confirm(`Flash ${src.name} to the ${t.label}? It stops its motor${t.kind === 'mib' ? 's (drive disabled, every motor disarmed)' : ''} and reboots.`)) return;
+  if (t.kind === 'push' && status && status.state === 'PUSH_ASSIST') { toast('Leave push assist on the MIB before flashing the handles', 'err'); return; }
+  const what = t.kind === 'push' ? 'It stops sending handle forces' : `It stops its motor${t.kind === 'mib' ? 's (drive disabled, every motor disarmed)' : ''}`;
+  if (!confirm(`Flash ${src.name} to the ${t.label}? ${what} and reboots.`)) return;
   fw.busy = true; fw.abort = false; axBusy($('fwFlash'), true, 'Flashing'); $('fwAbort').disabled = false;
   const bar = $('fwBar'); bar.className = 'bar'; bar.firstElementChild.style.width = '0';
   const say = (s, cls = 'warning') => { $('fwStatus').className = 'ax-status ' + cls; $('fwStatus').textContent = s; };
@@ -758,10 +773,13 @@ $('fwFlash').onclick = async () => {
       fw.busy = false; say('Written; the MIB is rebooting');
       back = (await reconnectAfterReboot(oldT)) ? link : null;
     } else {
-      say(`Connecting to ${t.label}`); l = await racerLink(t.addr);
+      say(`Connecting to ${t.label}`); l = await boardLink(t);
+      try { await l.otaStatus(); } catch (e) {
+        throw new Error(t.kind === 'push' ? 'the board does not answer OTA: its firmware predates OtaService (INTERFACE.md). Flash it over USB once.' : e.message);
+      }
       await otaWrite(l, img, say, bar);
       await l.close(); l = null; say(`Written; the ${t.label} is rebooting`);
-      back = l = await racerAfterReboot(t.addr);
+      back = l = await boardAfterReboot(t);
     }
     bar.className = 'bar done'; const dt = (performance.now() - t0) / 1000;
     if (back) {
@@ -769,6 +787,7 @@ $('fwFlash').onclick = async () => {
       if (t.kind === 'racer' && fw.racers.has(t.addr)) { fw.racers.get(t.addr).version = st.version; renderTargets(); }
       if (st.pending) { await back.ota(OTA.MARK_VALID); say(`${t.label} runs ${st.version}, marked valid (${dt.toFixed(0)} s)`, 'good'); toast(`${t.label} updated to ${st.version}`, 'ok'); }
       else say(`${t.label} runs ${st.version}${st.version === version ? '' : ` (not ${version}: it rolled back?)`}`, st.version === version ? 'good' : 'critical');
+      if (t.kind === 'push') sys('push-assist board updated: reconnect it on the Push assist tab');
     } else say(`The ${t.label} did not come back. A power cycle boots its previous image.`, 'critical');
   } catch (e) {
     bar.className = 'bar failed'; say(e.userAbort ? 'Aborted' : 'Failed: ' + e.message, 'critical');
@@ -785,7 +804,7 @@ $('fwFlash').onclick = async () => {
 async function fwOnTarget(fn) {
   const t = fwTarget();
   if (t.kind === 'mib') return fn(link, t);
-  const l = await racerLink(t.addr); try { return await fn(l, t); } finally { await l.close(); }
+  const l = await boardLink(t); try { return await fn(l, t); } finally { await l.close(); }
 }
 $('fwValid').onclick = async () => { try { await fwOnTarget(l => l.ota(OTA.MARK_VALID)); toast('Running image marked valid', 'ok'); renderFwInfo(); } catch (e) { toast('Mark valid: ' + e.message, 'err'); } };
 $('fwRollback').onclick = async () => {
@@ -793,7 +812,7 @@ $('fwRollback').onclick = async () => {
   if (!confirm(`Roll the ${t.label} back to its previous image and reboot?`)) return;
   try {
     if (t.kind === 'mib') { const oldT = link.t; oldT.lastPort = oldT.port; oldT.lastDevice = oldT.device; fw.rebooting = true; await link.ota(OTA.MARK_INVALID); sys('rolling back; the MIB is rebooting'); await reconnectAfterReboot(oldT); }
-    else { await fwOnTarget(l => l.ota(OTA.MARK_INVALID)); sys(`rolling back; the ${t.label} is rebooting`); const l = await racerAfterReboot(t.addr); if (l) await l.close(); }
+    else { await fwOnTarget(l => l.ota(OTA.MARK_INVALID)); sys(`rolling back; the ${t.label} is rebooting`); const l = await boardAfterReboot(t); if (l) await l.close(); }
     renderFwInfo();
   } catch (e) { toast('Roll back: ' + e.message, 'err'); }
 };
