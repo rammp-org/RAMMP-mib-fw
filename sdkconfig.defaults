@@ -63,3 +63,8 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # The panel's TCP service port (a listener and one client) beside the RTPS sockets;
 # the PACE RACER raised the same limit for its EthLink.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# The BNO055 read times out when an OTA writes flash with the I2C interrupt masked, and
+# the IMU recovery probe that follows panicked the MIB (2026-11-01, Load access fault in
+# pthread_mutex_unlock under I2c::probe_device). Keep the I2C ISR running from IRAM.
+CONFIG_I2C_ISR_IRAM_SAFE=y
