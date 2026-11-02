@@ -13,7 +13,6 @@
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
 #include "messages.hpp"
-#include "ros_messages.hpp"
 #include "rtps_pubsub.hpp"
 #include "service_link.hpp"
 #include "task.hpp"
@@ -235,7 +234,7 @@ private:
   /// \note Runs on the motor command task.
   void publish_motor_states();
 
-  /// Advance wheel odometry and publish it to ROS 2 as /odom and the
+  /// Advance wheel odometry and publish it to ROS 2 as /base/odom and the
   /// odom -> base_link transform on /tf (REP-105).
   /// \note Runs on the odometry task.
   void publish_odometry();
@@ -296,8 +295,8 @@ private:
   std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
   std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
-  std::unique_ptr<espp::Publisher<mib::ros::nav_msgs::Odometry>> odometry_publisher_; ///< /odom.
-  std::unique_ptr<espp::Publisher<mib::ros::tf2_msgs::TFMessage>> tf_publisher_;      ///< /tf.
+  std::unique_ptr<espp::Publisher<rammp::Odometry>> odometry_publisher_; ///< /base/odom.
+  std::unique_ptr<espp::Publisher<rammp::TFMessage>> tf_publisher_;      ///< /tf.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>> drive_command_subscriber_; ///< Drive input.

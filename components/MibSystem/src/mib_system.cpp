@@ -21,7 +21,7 @@ using namespace std::chrono_literals;
 namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
-/// /odom and /tf: reliable, so stateful writers, in the per-participant limit only.
+/// /base/odom and /tf: reliable, so stateful writers, in the per-participant limit only.
 constexpr size_t kReliableWriters = 2;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
 /// the external controller's TwistSetpoint, estop-core's EStop and SPDP.
@@ -32,7 +32,7 @@ constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
 constexpr size_t kReaders = rammp::kAxisCount + kFixedReaders;
 /// Current time as a ROS 2 stamp, from the system clock: the ROS host's once SNTP has synced
 /// (MIB::init_time_sync()), time since boot (1970) until then.
-mib::ros::builtin_interfaces::Time ros_time_now() {
+rammp::Time ros_time_now() {
   const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
   const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
   const auto nanoseconds =
@@ -286,17 +286,17 @@ bool MibSystem::initialize_pubsub() {
 
   // RELIABLE: tf2 listeners subscribe reliable, and a best-effort writer never
   // matches a reliable reader. A reliable writer still serves best-effort readers.
-  odometry_publisher_ = std::make_unique<espp::Publisher<mib::ros::nav_msgs::Odometry>>(
+  odometry_publisher_ = std::make_unique<espp::Publisher<rammp::Odometry>>(
       mib_.rtps_participant(),
-      espp::Publisher<mib::ros::nav_msgs::Odometry>::Config{.topic = mib::ros::kOdom.name,
-                                                            .type_name = mib::ros::kOdom.type,
-                                                            .reliability = Reliability::RELIABLE});
+      espp::Publisher<rammp::Odometry>::Config{.topic = rammp::kBaseOdom.name,
+                                               .type_name = rammp::kBaseOdom.type,
+                                               .reliability = Reliability::RELIABLE});
 
-  tf_publisher_ = std::make_unique<espp::Publisher<mib::ros::tf2_msgs::TFMessage>>(
+  tf_publisher_ = std::make_unique<espp::Publisher<rammp::TFMessage>>(
       mib_.rtps_participant(),
-      espp::Publisher<mib::ros::tf2_msgs::TFMessage>::Config{.topic = mib::ros::kTf.name,
-                                                             .type_name = mib::ros::kTf.type,
-                                                             .reliability = Reliability::RELIABLE});
+      espp::Publisher<rammp::TFMessage>::Config{.topic = rammp::kTf.name,
+                                                .type_name = rammp::kTf.type,
+                                                .reliability = Reliability::RELIABLE});
 
   if (!odometry_publisher_->is_valid() || !tf_publisher_->is_valid()) {
     logger_.error("Failed to create odometry publisher");
@@ -921,19 +921,21 @@ void MibSystem::publish_odometry() {
   const auto velocity = odometry_.velocity(left.velocity, right.velocity);
 
   // Planar base: the only rotation is yaw about z.
-  const mib::ros::geometry_msgs::Quaternion orientation{
+  const rammp::Quaternion orientation{
+      .x = 0.0,
+      .y = 0.0,
       .z = std::sin(pose.yaw_rad / 2.0),
       .w = std::cos(pose.yaw_rad / 2.0),
   };
-  const mib::ros::std_msgs::Header header{
+  const rammp::Header header{
       .stamp = ros_time_now(),
-      .frame_id = mib::config::odom_frame_id,
+      .frame_id = rammp::kOdomFrame,
   };
 
-  mib::ros::nav_msgs::Odometry odometry{};
+  rammp::Odometry odometry{};
   odometry.header = header;
-  odometry.child_frame_id = mib::config::base_frame_id;
-  odometry.pose.pose.position = {.x = pose.x_m, .y = pose.y_m};
+  odometry.child_frame_id = rammp::kBaseFrame;
+  odometry.pose.pose.position = {.x = pose.x_m, .y = pose.y_m, .z = 0.0};
   odometry.pose.pose.orientation = orientation;
   odometry.twist.twist.linear.x = velocity.linear_mps;
   odometry.twist.twist.angular.z = velocity.angular_radps;
@@ -945,11 +947,12 @@ void MibSystem::publish_odometry() {
     logger_.warn("Failed to publish odometry");
   }
 
-  mib::ros::tf2_msgs::TFMessage tf{};
+  rammp::TFMessage tf{};
   tf.transforms.push_back({
       .header = header,
-      .child_frame_id = mib::config::base_frame_id,
-      .transform = {.translation = {.x = pose.x_m, .y = pose.y_m}, .rotation = orientation},
+      .child_frame_id = rammp::kBaseFrame,
+      .transform = {.translation = {.x = pose.x_m, .y = pose.y_m, .z = 0.0},
+                    .rotation = orientation},
   });
   if (!tf_publisher_->publish(tf)) {
     logger_.warn("Failed to publish odom -> base_link transform");

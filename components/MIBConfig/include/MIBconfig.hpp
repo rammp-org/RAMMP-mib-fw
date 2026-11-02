@@ -130,12 +130,6 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_right = true,
 };
 
-/// @brief REP-105 frame the odometry pose is expressed in.
-inline constexpr const char *odom_frame_id = "odom";
-
-/// @brief REP-105 frame rigidly attached to the chair base.
-inline constexpr const char *base_frame_id = "base_link";
-
 /// @brief Diagonal of the published pose covariance: x, y, z, roll, pitch, yaw.
 ///        A planar base cannot observe z, roll, or pitch, so they carry a large variance.
 inline constexpr std::array<double, 6> odometry_pose_covariance_diagonal{0.001, 0.001, 1e6,
