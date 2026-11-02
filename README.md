@@ -39,6 +39,12 @@ prints the link on its console) or runs against a simulated MIB. Its Firmware ta
 the MIB over the same link (after one last `idf.py flash` over USB for the two-slot partition
 table); see its README.
 
+### ROS 2
+
+The MIB's Jetson-facing topics carry ROS 2 names and types, so a ROS 2 node reads its
+status and sends drive requests with no bridge. Topics, QoS, the CycloneDDS setup the host
+needs, a wheel-free check and a troubleshooting table: [docs/ros2.md](docs/ros2.md).
+
 ### Automated Setup
 
 After setting this as the template:
