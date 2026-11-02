@@ -23,7 +23,11 @@ void DriveController::set_target(float linear, float angular) {
 }
 
 void DriveController::set_velocity(float linear_mps, float angular_radps) {
-  const auto config = trajectory_planner_.get_config();
+  // get_config() returns a reference that set_config() overwrites, and a DriveProfileCommand
+  // or DriveCommand can change the profile from another thread. Every set_config() runs
+  // under profile_mutex_ (apply_locked), so holding it keeps the caps whole.
+  std::lock_guard<std::mutex> lock(profile_mutex_);
+  const auto &config = trajectory_planner_.get_config();
   const float max_linear = linear_mps < 0.0f && config.max_reverse_linear_velocity > 0.0f
                                ? config.max_reverse_linear_velocity
                                : config.max_linear_velocity;

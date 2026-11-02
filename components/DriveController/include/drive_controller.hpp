@@ -35,6 +35,9 @@ public:
   /// @param linear_mps Forward velocity in m/s.
   /// @param angular_radps Angular velocity in rad/s, positive counter-clockwise.
   /// @note Both are scaled down together when over the cap, keeping the turn radius.
+  ///       The cap is the active profile's forward, reverse and turn rate limits, read
+  ///       under the same lock as a profile change so a setpoint never sees a half-applied
+  ///       config.
   void set_velocity(float linear_mps, float angular_radps);
 
   /// @brief Set the chassis target to zero using the planner limits.
@@ -77,7 +80,7 @@ private:
 
   espp::TrajectoryPlanner trajectory_planner_;
   DifferentialDrive differential_drive_;
-  std::mutex profile_mutex_; ///< Orders profile switches against limit changes.
+  std::mutex profile_mutex_; ///< Orders profile switches, limit changes and set_velocity().
   rammp::DriveProfile active_profile_{rammp::DriveProfile::NORMAL};
 };
 
