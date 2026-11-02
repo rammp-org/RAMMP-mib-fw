@@ -714,19 +714,22 @@ void MibSystem::start_imu_task() {
 }
 
 bool MibSystem::update_imu() {
+  // An OTA erases and writes flash for seconds: the bus stalls, the read fails, and the
+  // recovery below is the risky part. The MIB reboots after the update anyway.
+  if (ota_active_.load()) {
+    return true;
+  }
   auto *imu = mib_.imu();
   std::error_code ec;
   // A BNO055 that lost power comes back in CONFIG mode and reads all zeros
   // without a bus error, so after any failed read, run init() again first.
-  // Probe once before init(): init() polls the chip ID 20 times, and each
-  // failed poll logs an I2C error, which floods the console while it is unplugged.
+  // No probe() first: espp's I2c::probe_device() after a failed transfer on this bus
+  // corrupted the I2c mutex and panicked the MIB (Load access fault in
+  // pthread_mutex_unlock, 2026-11-01). init() reads the chip ID itself; an unplugged IMU
+  // costs its I2C error lines once per imu_retry_interval.
   bool ok = imu_reading_ok_.load();
   if (!ok) {
-    if (imu->probe(ec)) {
-      ok = imu->init(ec);
-    } else {
-      ec = std::make_error_code(std::errc::no_such_device);
-    }
+    ok = imu->init(ec);
   }
   if (ok) {
     ok = imu->update(ec);
