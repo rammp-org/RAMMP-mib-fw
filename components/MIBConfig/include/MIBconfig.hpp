@@ -158,8 +158,10 @@ struct DriveProfileConfig {
 /// NORMAL matches the R-Net chair, fitted in #32 (tools/drive_fit) from the
 /// wheel_velocities rosbag (Luci joystick to wheel speed, 71 s). The R-Net hit
 /// 14.5 rad/s at the wheel full forward, 10.4 rad/s full reverse, and 5.0 rad/s
-/// per wheel spinning in place. The m/s and rad/s values assume the R-Net chair
-/// has the wheel diameter and separation in differential_drive above.
+/// per wheel spinning in place. The m/s and rad/s values were converted with the
+/// old 0.254 m wheel and 0.558 m track, not the corrected differential_drive
+/// above, and have not been refitted: with 0.355 m and 0.6096 m they give about
+/// 0.72x the R-Net's wheel speed driving straight and 0.78x spinning in place.
 ///
 /// The centripetal limit was set, not fitted: 1.5 m/s^2 is below the 2.6 m/s^2
 /// peak the R-Net reached but fits the recording as well as no limit does. It
