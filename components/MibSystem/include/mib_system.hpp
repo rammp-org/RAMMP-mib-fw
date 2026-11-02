@@ -200,8 +200,12 @@ private:
   /// @brief Advance the at-rest state (coast, or hold after the roll guard fired).
   /// @param at_rest The planner's target and output are both zero.
   /// @param fastest_wheel_radps The faster drive wheel's measured speed, magnitude.
+  /// @param positions Left and right drive wheel positions, rad (the roll guard's travel).
   /// @return True while the drive wheels should coast. Motor command task only.
-  bool update_rest_mode(bool at_rest, float fastest_wheel_radps);
+  bool update_rest_mode(bool at_rest, float fastest_wheel_radps,
+                        const std::array<float, 2> &positions);
+  /// @brief "drive_left ok, drive_right OVERCURRENT": each drive board's health, for logs.
+  std::string drive_boards_summary() const;
 
   /// Handle a motor jog request from the joystick (hold-to-run, motor debug).
   /// \param jog The requested board and direction.
@@ -273,7 +277,8 @@ private:
   /// At rest the drive coasts; the roll guard turns that into a hold (motor command task).
   enum class RestMode { DRIVING, COASTING, HOLDING };
   RestMode rest_mode_{RestMode::DRIVING};
-  int roll_ticks_{0}; ///< Consecutive command periods a coasting wheel was over the guard.
+  int rest_ticks_{0}; ///< Command periods spent at rest still braking under power.
+  std::array<float, 2> coast_start_positions_{}; ///< Wheel positions when coasting began.
   /// Largest |iq| each board reported since the last drive status line, in A.
   std::array<float, rammp::kAxisCount> motor_peak_iq_{};
   mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.

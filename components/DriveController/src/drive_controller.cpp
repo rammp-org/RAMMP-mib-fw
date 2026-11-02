@@ -68,6 +68,7 @@ DriveController::profile_config(rammp::DriveProfile profile) {
   config.max_linear_velocity = values.max_linear_velocity_mps;
   config.max_angular_velocity = values.max_angular_velocity_radps;
   config.max_centripetal_acceleration = values.max_centripetal_acceleration_mps2;
+  config.max_reverse_linear_velocity = values.max_reverse_linear_velocity_mps;
   config.driving_profile.max_linear_acceleration = values.max_linear_acceleration_mps2;
   config.driving_profile.max_angular_acceleration = values.max_angular_acceleration_radps2;
   config.driving_profile.max_linear_jerk = values.max_linear_jerk_mps3;

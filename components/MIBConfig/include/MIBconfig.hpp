@@ -139,6 +139,8 @@ struct DriveProfileConfig {
   /// |v * w| ceiling. Over it the planner scales v and w down together, so steering while
   /// driving also cuts forward speed. 0.1 is espp's default, which LOW and HIGH keep.
   float max_centripetal_acceleration_mps2{0.1f};
+  /// Speed at full reverse stick. 0 = the same as max_linear_velocity_mps.
+  float max_reverse_linear_velocity_mps{0.0f};
 };
 
 /// @brief MotorCommand.accel_limit sent to each drive board, as a multiple of the
@@ -147,16 +149,18 @@ struct DriveProfileConfig {
 /// steps its speed reference to every new command).
 inline constexpr float drive_wheel_accel_limit_margin = 1.25f;
 
-/// @brief Coast at rest (TEST 2026-11-01). With the stick centred, the planner stopped, and
-/// both wheels under drive_coast_enter_radps, the MIB sends ControlMode::COAST: the boards
-/// go Hi-Z and draw nothing, instead of a position hold that rocked the chair back and forth
-/// at ~4 A. Roll guard: if either wheel then turns faster than drive_roll_guard_radps for
-/// drive_roll_guard_ticks motor-command periods (on a slope, pushed), the MIB holds the
-/// chair at zero speed until the stick moves again. false keeps the old hold at rest.
+/// @brief Coast at rest (TEST 2026-11-01). With the stick centred and the planner stopped,
+/// the MIB sends ControlMode::COAST (boards Hi-Z, no current) once both wheels are under
+/// drive_coast_enter_radps or drive_coast_enter_ticks have passed, whichever is first. The
+/// boards' position hold at rest rocked the chair (+-0.5 rad/s, +-5 A, 0.65 s period), and
+/// waiting for the wheels to settle let it start. Roll guard: a wheel that travels more than
+/// drive_roll_guard_travel_rad since coasting began (a slope, a push) switches to a
+/// zero-speed hold until the stick moves. Distance, not speed: the chair springs back up to
+/// ~0.5 rad/s right after a stop, which a speed guard mistook for rolling away.
 inline constexpr bool drive_coast_at_rest = true;
 inline constexpr float drive_coast_enter_radps = 0.2f;
-inline constexpr float drive_roll_guard_radps = 0.4f;
-inline constexpr int drive_roll_guard_ticks = 4; // x 50 ms
+inline constexpr int drive_coast_enter_ticks = 8; // x 50 ms: coast after 0.4 s at rest anyway
+inline constexpr float drive_roll_guard_travel_rad = 1.0f; // ~13 cm at the rim
 
 /// @brief Inside-wheel torque cap for tight turns (TEST 2026-11-01). In a tight arc the
 /// planner asks the inside wheel for a crawl (0.4 rad/s against 2.7 outside); scrub holds it
@@ -188,16 +192,23 @@ inline constexpr DriveProfileConfig drive_profile_low{
 /// set to 1.0 m/s^2. Left at espp's 0.1 it allowed 0.2 rad/s at 0.5 m/s and halved the
 /// command 938 times in an 81 s drive: steering felt dead and adding a little made the
 /// chair lurch, because the limit cuts v together with w.
+/// Fourth step: angular accel 0.6 -> 1.5 rad/s^2 (jerk keeps the 0.2 s ramp). The planner
+/// uses the same limit to take a turn away, so at 0.6 the turn rate took 0.6-1.3 s to die
+/// after the stick came back to centre, plus ~0.3 s of wheel lag: the chair overshot and
+/// fishtailed lining up with a door. Per wheel that is still at most 5.7 rad/s^2 driving.
+/// Reverse capped at 0.4 m/s: a full-speed reverse arc tripped drive_left (24 A of iq, ~35 A
+/// of phase current at 63 rpm on the 16 V current-loop limit).
 inline constexpr DriveProfileConfig drive_profile_normal{
     .max_linear_velocity_mps = 0.75f,
     .max_angular_velocity_radps = 1.5f,
     .max_linear_acceleration_mps2 = 0.3f,
-    .max_angular_acceleration_radps2 = 0.6f,
+    .max_angular_acceleration_radps2 = 1.5f,
     .max_linear_jerk_mps3 = 1.5f,
-    .max_angular_jerk_radps3 = 3.0f,
+    .max_angular_jerk_radps3 = 7.5f,
     .stopping_linear_acceleration_mps2 = 0.6f,
-    .stopping_angular_acceleration_radps2 = 1.2f,
+    .stopping_angular_acceleration_radps2 = 1.5f,
     .max_centripetal_acceleration_mps2 = 1.0f,
+    .max_reverse_linear_velocity_mps = 0.4f,
 };
 
 inline constexpr DriveProfileConfig drive_profile_high{

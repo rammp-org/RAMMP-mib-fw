@@ -483,33 +483,58 @@ void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state)
   }
 }
 
-bool MibSystem::update_rest_mode(bool at_rest, float fastest_wheel_radps) {
+bool MibSystem::update_rest_mode(bool at_rest, float fastest_wheel_radps,
+                                 const std::array<float, 2> &positions) {
   const RestMode before = rest_mode_;
+  float travel = 0.0f;
   if (!at_rest) {
     rest_mode_ = RestMode::DRIVING;
-    roll_ticks_ = 0;
+    rest_ticks_ = 0;
   } else if (rest_mode_ == RestMode::DRIVING) {
-    // Still slowing under power until both wheels have nearly stopped.
-    if (fastest_wheel_radps < mib::config::drive_coast_enter_radps) {
+    // Still slowing under power, but not long enough for the boards' hold to start rocking.
+    if (fastest_wheel_radps < mib::config::drive_coast_enter_radps ||
+        ++rest_ticks_ >= mib::config::drive_coast_enter_ticks) {
       rest_mode_ = RestMode::COASTING;
-      roll_ticks_ = 0;
+      coast_start_positions_ = positions;
     }
   } else if (rest_mode_ == RestMode::COASTING) {
-    roll_ticks_ = fastest_wheel_radps > mib::config::drive_roll_guard_radps ? roll_ticks_ + 1 : 0;
-    if (roll_ticks_ >= mib::config::drive_roll_guard_ticks) {
+    travel = std::max(std::fabs(positions[0] - coast_start_positions_[0]),
+                      std::fabs(positions[1] - coast_start_positions_[1]));
+    if (travel > mib::config::drive_roll_guard_travel_rad) {
       rest_mode_ = RestMode::HOLDING;
     }
   }
   if (rest_mode_ != before) {
     if (rest_mode_ == RestMode::HOLDING) {
-      logger_.warn("Roll guard: a wheel turned at {:.2f} rad/s while coasting; holding until "
-                   "the stick moves",
-                   fastest_wheel_radps);
+      logger_.warn("Roll guard: a wheel rolled {:.2f} rad while coasting; holding until the "
+                   "stick moves",
+                   travel);
     } else {
-      logger_.info("Drive at rest: {}", rest_mode_ == RestMode::COASTING ? "coasting" : "driving");
+      logger_.info("Drive at rest: {} (fastest wheel {:.2f} rad/s)",
+                   rest_mode_ == RestMode::COASTING ? "coasting" : "driving", fastest_wheel_radps);
     }
   }
   return rest_mode_ == RestMode::COASTING;
+}
+
+std::string MibSystem::drive_boards_summary() const {
+  const auto now = std::chrono::steady_clock::now();
+  std::string out;
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const rammp::AxisId id = rammp::kAxes[i].id;
+    if (id != rammp::AxisId::DRIVE_LEFT && id != rammp::AxisId::DRIVE_RIGHT) {
+      continue;
+    }
+    const bool fresh = motor_state_times_[i] != std::chrono::steady_clock::time_point{} &&
+                       now - motor_state_times_[i] < mib::config::motor_state_timeout;
+    out += fmt::format("{}{} {}", out.empty() ? "" : ", ", rammp::kAxes[i].segment,
+                       !fresh ? "silent"
+                              : (motor_states_[i].state == rammp::BoardState::FAULT
+                                     ? mib::fault_name(motor_states_[i].fault_code)
+                                     : "ok"));
+  }
+  return out;
 }
 
 bool MibSystem::drive_boards_ready() const {
@@ -823,18 +848,20 @@ void MibSystem::publish_motor_commands() {
   bool coast = false;
   if (drive && mib::config::drive_coast_at_rest) {
     float fastest_wheel = 0.0f;
+    std::array<float, 2> positions{}; // left, right
     {
       std::lock_guard<std::mutex> lock(motor_state_mutex_);
       for (size_t i = 0; i < rammp::kAxisCount; i++) {
         const rammp::AxisId id = rammp::kAxes[i].id;
         if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
           fastest_wheel = std::max(fastest_wheel, std::fabs(motor_states_[i].velocity));
+          positions[id == rammp::AxisId::DRIVE_LEFT ? 0 : 1] = motor_states_[i].position;
         }
       }
     }
-    coast = update_rest_mode(drive_controller_.at_rest(), fastest_wheel);
+    coast = update_rest_mode(drive_controller_.at_rest(), fastest_wheel, positions);
   } else {
-    update_rest_mode(false, 0.0f);
+    update_rest_mode(false, 0.0f, {});
   }
 
   // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
@@ -1033,16 +1060,23 @@ void MibSystem::run_state_step() {
     // One wheel can't drive the chair: it drags the other and runs into its own current
     // limit (2026-11-01, Drive R at 30 A in reverse while Drive L sat stale). Stop both
     // when either board is faulted or silent, and log the change once each way.
+    // The healthy board brakes under power first; once the planner is at rest the MIB
+    // leaves DRIVE_ENABLED so the joystick shows the drive dropped out. The fault stays
+    // latched on the board: clear it on purpose (control panel) before driving again.
     const bool ready = drive_boards_ready();
     if (!ready) {
       drive_controller_.stop();
-    }
-    if (ready != drive_boards_were_ready_) {
-      drive_boards_were_ready_ = ready;
-      if (ready) {
-        logger_.info("Drive boards ready: driving resumes on the next stick input");
-      } else {
-        logger_.warn("A drive board is faulted or silent: stopping both wheels");
+      if (drive_boards_were_ready_) {
+        drive_boards_were_ready_ = false;
+        logger_.warn("A drive board is faulted or silent ({}): stopping both wheels",
+                     drive_boards_summary());
+      }
+      if (drive_controller_.at_rest()) {
+        state_.store(SystemState::IDLE);
+        drive_boards_were_ready_ = true;
+        logger_.warn("Drive disabled: a drive board is faulted or silent ({}). Clear the fault "
+                     "before enabling the drive again",
+                     drive_boards_summary());
       }
     }
     break;
