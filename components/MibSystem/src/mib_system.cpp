@@ -263,11 +263,12 @@ bool MibSystem::initialize_pubsub() {
 }
 
 void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   if (state_.load() != SystemState::PUSH_ASSIST) {
     logger_.debug("Ignoring push-assist handle force outside PUSH_ASSIST state");
     return;
   }
-  std::lock_guard<std::mutex> lock(twist_mutex_);
+
   // left_n, right_n: HandleForce fields, push +.
   // Returns {linear, angular} in [-1, 1] for DriveController::set_target(),
   // angular counter-clockwise + (REP 103).
