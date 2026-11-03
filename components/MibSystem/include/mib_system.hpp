@@ -148,12 +148,6 @@ private:
   /// SHARED -> IDLE. Ignored elsewhere.
   void handle_shared_stop();
 
-  /// Enter PUSH_ASSIST from a manual state.
-  /// \return False (and logs) if the current state is not IDLE or DRIVE_ENABLED.
-  bool enter_push_assist();
-  /// PUSH_ASSIST -> IDLE. Ignored elsewhere.
-  void leave_push_assist();
-
   /// Enter AUTONOMOUS or SHARED from a manual state.
   /// \return False (and logs) if the current state is not IDLE or DRIVE_ENABLED.
   bool enter_autonomy(SystemState autonomy_state, const char *name);

@@ -352,23 +352,6 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
   }
 }
 
-bool MibSystem::enter_push_assist() {
-  std::lock_guard<std::mutex> lock(twist_mutex_);
-  twist_until_ = {};
-  drive_controller_.stop();
-  state_.store(SystemState::PUSH_ASSIST);
-  logger_.info("Push assist requested: entering PUSH_ASSIST state");
-  return true;
-}
-
-void MibSystem::leave_push_assist() {
-  std::lock_guard<std::mutex> lock(twist_mutex_);
-  twist_until_ = {};
-  drive_controller_.stop();
-  state_.store(SystemState::IDLE);
-  logger_.info("Push assist ended");
-}
-
 bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
   const auto current_state = state_.load();
   if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
