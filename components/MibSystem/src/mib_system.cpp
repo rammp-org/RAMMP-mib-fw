@@ -331,7 +331,9 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
     // comes from the Jetson through handle_autonomy_setpoint().
     break;
   case SystemState::PUSH_ASSIST:
-    // The joystick is ignored while pushing assist.
+    if (joystick_touched(sample)) {
+      leave_push_assist();
+    }
     break;
   case SystemState::CALIBRATE:
     // The joystick is ignored while calibrating.
@@ -343,6 +345,19 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
     drive_controller_.stop();
     break;
   }
+}
+
+bool MibSystem::enter_push_assist() {
+  drive_controller_.stop();
+  state_.store(SystemState::PUSH_ASSIST);
+  logger_.info("Push assist requested: entering PUSH_ASSIST state");
+  return true;
+}
+
+void MibSystem::leave_push_assist() {
+  drive_controller_.stop();
+  state_.store(SystemState::IDLE);
+  logger_.info("Push assist ended");
 }
 
 bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
@@ -483,10 +498,7 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     // DISABLE with push_assist asks for PUSH_ASSIST (rammp-rtps#18), which the MIB does not
     // have yet: the drive is disabled as asked, and the joystick sees IDLE, not PUSH_ASSIST.
     if (command.push_assist) {
-      drive_controller_.stop();
-      state_.store(SystemState::PUSH_ASSIST);
-      logger_.info("Push assist requested: entering PUSH_ASSIST state");
-      return true;
+      return enter_push_assist();
     }
 
     std::lock_guard<std::mutex> lock(twist_mutex_);
