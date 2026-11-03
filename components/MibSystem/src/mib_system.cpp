@@ -339,6 +339,8 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
     // comes from the Jetson through handle_autonomy_setpoint().
     break;
   case SystemState::PUSH_ASSIST:
+    // left blank until rammp-rtps#24 is merged in, which allows stick input during push
+    // assist which will allow exiting push assist when joystick is touched
     break;
   case SystemState::CALIBRATE:
     // The joystick is ignored while calibrating.
