@@ -270,6 +270,15 @@ void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
     return;
   }
 
+  constexpr uint8_t kNeedOk = rammp::kHandleForceLeftOk | rammp::kHandleForceRightOk;
+  constexpr uint8_t kNoDrive = rammp::kHandleForceLeftZeroAtLimit |
+                               rammp::kHandleForceRightZeroAtLimit | rammp::kHandleForceUpdating;
+  if ((force.flags & kNeedOk) != kNeedOk || (force.flags & kNoDrive) != 0) {
+    twist_until_ = {};
+    drive_controller_.stop();
+    return;
+  }
+
   // left_n, right_n: HandleForce fields, push +.
   // Returns {linear, angular} in [-1, 1] for DriveController::set_target(),
   // angular counter-clockwise + (REP 103).
