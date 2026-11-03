@@ -162,11 +162,13 @@ struct PushAssistGains {
   float reverse_max;    // cap on backing up when the handles are pulled, 0..1
 };
 
+//---Stand-in for Alex's code---
 inline constexpr PushAssistGains push_assist_gains{
     .dead_band_n = 5.0f,
     .forward_full_n = 40.0f,
     .turn_full_n = 20.0f,
     .reverse_max = 0.3f,
 };
+//--------------------------------
 
 } // namespace mib::config
