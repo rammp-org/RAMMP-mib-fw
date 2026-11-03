@@ -264,13 +264,16 @@ bool MibSystem::initialize_pubsub() {
 
 void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
   if (state_.load() != SystemState::PUSH_ASSIST) {
-    // logger_.warn("Ignoring push-assist handle force outside PUSH_ASSIST state");
+    logger_.debug("Ignoring push-assist handle force outside PUSH_ASSIST state");
     return;
   }
-
+  std::lock_guard<std::mutex> lock(twist_mutex_);
   // left_n, right_n: HandleForce fields, push +.
   // Returns {linear, angular} in [-1, 1] for DriveController::set_target(),
   // angular counter-clockwise + (REP 103).
+
+  //--------------------------------placeholder until Alex's conversion code is
+  // implemented--------------------------------
   float left_n = force.left_n;
   float right_n = force.right_n;
   auto band = [&](float f) { // remove the dead band, keep the sign
@@ -288,6 +291,10 @@ void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
   // (as DriveController::set_velocity does).
   const float scale = std::max({1.0f, std::fabs(linear), std::fabs(angular)});
   drive_controller_.set_target(linear / scale, angular / scale);
+  //--------------------------------placeholder until Alex's conversion code is
+  // implemented--------------------------------
+
+  twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
 }
 
 void MibSystem::handle_joystick_message(const rammp::XYTwist &sample) {
@@ -348,6 +355,8 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
 }
 
 bool MibSystem::enter_push_assist() {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
+  twist_until_ = {};
   drive_controller_.stop();
   state_.store(SystemState::PUSH_ASSIST);
   logger_.info("Push assist requested: entering PUSH_ASSIST state");
@@ -355,6 +364,8 @@ bool MibSystem::enter_push_assist() {
 }
 
 void MibSystem::leave_push_assist() {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
+  twist_until_ = {};
   drive_controller_.stop();
   state_.store(SystemState::IDLE);
   logger_.info("Push assist ended");
@@ -495,8 +506,21 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.info("Drive profile updated to {}", static_cast<uint8_t>(command.profile));
     }
   } else if (drive_disable_requested(command)) {
-    // DISABLE with push_assist asks for PUSH_ASSIST (rammp-rtps#18), which the MIB does not
-    // have yet: the drive is disabled as asked, and the joystick sees IDLE, not PUSH_ASSIST.
+    if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
+        current_state != SystemState::SHARED) {
+      logger_.warn("Ignoring drive disable command outside a drive state");
+      return false;
+    }
+
+    if (any_override_active()) {
+      logger_.warn("Ignoring autonomy request while the control panel overrides a motor");
+      return false;
+    }
+    if (ota_active_.load()) {
+      logger_.warn("Ignoring autonomy request during a firmware update");
+      return false;
+    }
+
     if (command.push_assist) {
       return enter_push_assist();
     }
@@ -505,6 +529,7 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
     logger_.info("Drive disabled");
+
   } else if (autonomy_requested(command)) {
     // The Jetson's request (rammp-rtps#18): AUTONOMOUS or SHARED from IDLE or DRIVE_ENABLED,
     // driving with the profile it asked for. enter_autonomy() stops the drive first.
@@ -987,6 +1012,7 @@ void MibSystem::run_state_step() {
     break;
   case SystemState::PUSH_ASSIST:
     logger_.debug("System state: PUSH_ASSIST - running push-assist placeholder");
+    stop_if_twist_lapsed();
     break;
   case SystemState::ESTOP:
     run_estop_step();
