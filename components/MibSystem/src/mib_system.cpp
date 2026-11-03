@@ -21,7 +21,8 @@ namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// the external controller's TwistSetpoint, estop-core's EStop and SPDP.
+/// the external controller's TwistSetpoint, estop-core's EStop, SPDP and push assist board's
+/// HandleForce.
 constexpr size_t kFixedReaders = 8;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
