@@ -483,19 +483,12 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     // DISABLE with push_assist asks for PUSH_ASSIST (rammp-rtps#18), which the MIB does not
     // have yet: the drive is disabled as asked, and the joystick sees IDLE, not PUSH_ASSIST.
     if (command.push_assist) {
-      if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
-        // logger_.warn("Ignoring drive disable command outside a drive state");
-        return false;
-      }
       drive_controller_.stop();
       state_.store(SystemState::PUSH_ASSIST);
       logger_.info("Push assist requested: entering PUSH_ASSIST state");
       return true;
     }
-    if (current_state == SystemState::PUSH_ASSIST) {
-      logger_.warn("Ignoring drive disable command while in PUSH_ASSIST state");
-      return false;
-    }
+
     std::lock_guard<std::mutex> lock(twist_mutex_);
     drive_controller_.stop();
     state_.store(SystemState::IDLE);
