@@ -72,6 +72,9 @@ environment deploys from `main` only).
   while held; let go and the MIB brakes to a stop within 300 ms. In
   AUTONOMOUS, touching the pad ends autonomy (back to IDLE) as the HMI's
   stick does.
+- **Push assist**: the space-bar push-assist handles
+  ([rammp-org/space-bar-push-assist](https://github.com/rammp-org/space-bar-push-assist)).
+  See [Push assist](#push-assist) below.
 - **Seat actuators**: targets for the four seat axes (rammp-rtps seat table).
   The MIB accepts and reports them; it has no actuator driver yet.
 - **Sensors and data**: every telemetry channel, with live values, plots of
@@ -81,28 +84,59 @@ environment deploys from `main` only).
   in `emit_telemetry()`.
 - **Log**: the MIB's console, filterable and downloadable.
 
+## Push assist
+
+The push-assist board measures the force on each handle. The MIB turns the forces into a
+drive target: the board measures, the MIB decides (space-bar-push-assist
+`docs/MIB-INPUT-DEVICES.md`). The tab tunes both sides.
+
+- **Board link:** press **Find** (the bridge broadcasts `PUSH?` on udp :5556) or type its
+  IP, then **Connect**. It is a second link, beside the MIB's, through the same bridge to the
+  board's tcp :5555. The board serves one client at a time, so connecting here drops its own
+  dashboard or `log_forces.py`. **Simulated board** runs a scripted attendant in the page.
+- **Live:** each handle's force (push +), forward (L + R) and turn (L − R), zero tracking,
+  and **Tare** (hands off the handles first).
+- **Would drive:** `pushToTwist()` on the live forces with the MIB's gains: the drive the
+  MIB would command, in m/s and rad/s and as a plot. It is a port of
+  `push_to_twist()` (`components/PushAssist/include/push_assist.hpp`);
+  `test/push_to_twist.test.js` checks it against the C++ host test's cases.
+- **Handle map:** left force against right. The grey square is the dead band; the outline
+  is where the drive reaches full speed or full turn. A trail shows the last 5 s.
+- **MIB: push-assist gains:** dead band, forward and turn full-scale forces, reverse cap,
+  and the planner limits while pushing. Live on the MIB at once; **Save to MIB** writes NVS.
+- **Board settings:** cell sign and scale, tare samples, zero tracking. Live on the board;
+  **Save to board** writes its NVS. A board on older firmware (Kconfig only) says so.
+
+Both settings panels render whatever the device lists (the params protocol in
+`mib_panel_protocol.hpp`, served by the MIB on 0x40 and the board on 0x30), so a param added
+to either firmware shows up without a panel change.
+
 ## Firmware updates
 
-The **Firmware** tab flashes the MIB and the PACE RACERs over the air, so neither needs
-its USB port for updates. It is the PACE RACER dashboard's flow over espp's `OtaService`;
-both boards serve it.
+The **Firmware** tab flashes the MIB, the PACE RACERs and the push-assist board over the
+air, so none needs its USB port for updates. It is the PACE RACER dashboard's flow over
+espp's `OtaService`; all three serve it.
 
 ```
-python3 tools/mib_panel/eth_bridge.py --racer <pace-racer-fw>/components/pace-racer-board/atos-drive
+python3 tools/mib_panel/eth_bridge.py --racer <pace-racer-fw>/components/pace-racer-board/atos-drive \
+                                      --push <space-bar-push-assist>/firmware
 ```
 
 1. **Target:**
    - **MIB** goes over the link you're connected with.
-   - **PACE RACER:** press **Find RACERs**. The bridge broadcasts the RACERs' `PACE?`
-     discovery on udp :5556; each answers with its axis, firmware and slot. Or type a
-     board's IP. A RACER goes over Ethernet, through the bridge to its tcp :5555.
+   - **PACE RACER** or **push-assist board:** press **Find boards**. The bridge broadcasts
+     `PACE?` and `PUSH?` on udp :5556; each board answers with its firmware and slot. Or
+     type a RACER's IP. Both go over Ethernet, through the bridge to the board's tcp :5555.
+     Flashing the push-assist board disconnects the Push assist tab from it first.
 2. **Build:** the bridge lists every `build*/` with a `flasher_args.json`: this repo's, and
-   with `--racer`, the RACER app's (`build-hub20`, `build-flatbot`, ...). The list shows only
+   with `--racer`, the RACER app's (`build-hub20`, `build-flatbot`, ...), and with `--push`,
+   the push-assist board's. The list shows only
    builds for the chosen target. You can also pick or drop a `.bin`.
 3. **Flash:** the board makes itself safe, writes its other app slot and reboots into it.
    - The MIB disables drive, drops panel overrides and commands every motor DISARMED.
    - A RACER unloads its drive.
-   - The panel refuses to flash a RACER while the MIB is driving.
+   - The panel refuses to flash a RACER while the MIB is driving, or the push-assist board
+     while the MIB is in push assist.
    - Then the panel reconnects and marks the new image valid.
    - Unconfirmed, a MIB image confirms itself 20 s after RTPS comes up. A RACER's confirms
      once it holds a lease and serves its stream.
@@ -118,7 +152,8 @@ tests a 1 MB image wrote in a few seconds over localhost TCP; over real Ethernet
 **Once, over USB:** the MIB's two-slot partition table and rollback bootloader have to
 reach it once. Flash this firmware with `rm sdkconfig && idf.py build flash` over the USB-C
 one last time; every update after that goes through the panel. A RACER's first
-ethernet-capable image goes over USB too (`tools/provision.py` in pace-racer-fw).
+ethernet-capable image goes over USB too (`tools/provision.py` in pace-racer-fw), and so
+does the push-assist board's first image with `OtaService`.
 
 ## Safety
 
@@ -153,7 +188,10 @@ the numbers.
 | `index.html` | layout and styles |
 | `panel.js` | the UI: status, charts, tuning, auto-tune, drive, seat, sensors, log |
 | `mib_link.js` | frame codec, Ethernet / Web Serial / WebUSB / simulator transports, telemetry store, MIB requests |
-| `eth_bridge.py` | serves the panel, lists firmware builds (`--racer` adds the RACER's), finds RACERs (`PACE?`), and relays the WebSocket to a board's tcp :5555 |
+| `eth_bridge.py` | serves the panel, lists firmware builds (`--racer` and `--push` add the RACER's and the push-assist board's), finds boards (`PACE?`, `PUSH?`), and relays the WebSocket to a board's tcp :5555 |
 | `mib_sim.js` | the simulated MIB |
+| `push_link.js` | the push-assist board: its protocol, `pushToTwist()`, and a simulated board |
+| `push_panel.js` | the Push assist tab |
+| `test/push_to_twist.test.js` | `pushToTwist()` against the C++ host test's cases (`node`) |
 | `ax-tokens.css`, `ax-fx.js` | alex-style tokens and effects, vendored |
 | `uPlot.iife.min.js` | uPlot 1.6.31 (MIT), vendored from espp `components/telemetry/web` |

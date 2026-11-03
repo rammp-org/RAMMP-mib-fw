@@ -87,6 +87,16 @@ const char *fault_name(rammp::FaultCode f) {
 // JSON has no NaN or infinity: report a non-finite reading as 0.
 float fin(float v) { return std::isfinite(v) ? v : 0.0f; }
 
+// One tunable param as the panel's params JSON lists it (mib_panel_protocol.hpp PARAMS).
+std::string param_json(const mib::push_assist::ParamSpec &p, const mib::push_assist::Gains &g) {
+  return fmt::format(
+      "{{\"key\":\"{}\",\"label\":\"{}\",\"unit\":\"{}\",\"group\":\"Push assist: {}\","
+      "\"type\":\"float\",\"value\":{:g},\"default\":{:g},\"min\":{:g},\"max\":{:g},"
+      "\"step\":{:g}}}",
+      p.key, p.label, p.unit, p.group, g.*(p.field), mib::push_assist::kDefaultGains.*(p.field),
+      p.min, p.max, p.step);
+}
+
 // JSON-safe copy of a short C string (the e-stop cause).
 std::string json_escape(std::string_view s) {
   std::string out;
@@ -354,6 +364,39 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     reply_ok(reply, f.type, p[0]);
     return;
   }
+  case P::kParams:
+  case P::kDefaultParams: {
+    if (f.type == P::kDefaultParams) {
+      push_assist_.reset_to_defaults();
+      logger_.info("Push assist gains back to their defaults (not saved)");
+    }
+    const auto json = params_json();
+    reply(reply_frame(
+        P::kParamsReply,
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(json.data()), json.size())));
+    return;
+  }
+  case P::kSetParam: {
+    if (!need(1) || !need(1 + p[0] + 4))
+      return;
+    const std::string_view key(reinterpret_cast<const char *>(p.data() + 1), p[0]);
+    const auto *spec = push_assist_.set(key, get_f32(p, 1 + p[0]));
+    if (spec == nullptr) {
+      reply_error(reply, f.type, "unknown param");
+      return;
+    }
+    const auto json = param_json(*spec, push_assist_.get());
+    logger_.info("Push assist {} = {}", spec->key, push_assist_.get().*(spec->field));
+    reply(reply_frame(
+        P::kParamReply,
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(json.data()), json.size())));
+    return;
+  }
+  case P::kSaveParams: {
+    const uint8_t ok = push_assist_.save() ? 1 : 0;
+    reply(reply_frame(P::kSaveReply, std::span<const uint8_t>(&ok, 1)));
+    return;
+  }
   case P::kStatus: {
     const auto json = status_json();
     reply(reply_frame(
@@ -365,6 +408,19 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     reply_error(reply, f.type, "unknown request");
     return;
   }
+}
+
+std::string MibSystem::params_json() {
+  const auto gains = push_assist_.get();
+  std::string json =
+      fmt::format("{{\"saved\":{},\"params\":[", push_assist_.saved() ? "true" : "false");
+  for (size_t i = 0; i < mib::push_assist::kParams.size(); i++) {
+    if (i)
+      json += ",";
+    json += param_json(mib::push_assist::kParams[i], gains);
+  }
+  json += "]}";
+  return json;
 }
 
 std::string MibSystem::status_json() {

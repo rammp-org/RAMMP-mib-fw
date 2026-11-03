@@ -53,6 +53,7 @@ MibSystem::MibSystem()
 
 void MibSystem::start() {
   latch_.start(); // first: it starts latched, so nothing moves until a clear succeeds
+  push_assist_.load();  // NVS, before the panel can tune it
   start_service_link(); // before INIT, which waits on the Ethernet link
   state_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex,

@@ -9,7 +9,19 @@
 'use strict';
 
 // What the simulated MIB's flash holds, kept across its (simulated) reboots.
-const SIM_FLASH = { version: 'sim-1.0', partition: 'ota_0', pending: false, previous: null };
+const SIM_FLASH = { version: 'sim-1.0', partition: 'ota_0', pending: false, previous: null, params: null };
+
+// The MIB's tunable params: components/PushAssist/include/push_assist.hpp kParams.
+const SIM_MIB_PARAMS = [
+  ['dead_band_n', 'Dead band per handle', 'N', 'Force to drive', 0, 50, 0.5],
+  ['forward_full_n', 'Forward force for full speed', 'N', 'Force to drive', 10, 300, 5],
+  ['turn_full_n', 'Turn force for full turn', 'N', 'Force to drive', 5, 200, 5],
+  ['reverse_max', 'Reverse cap (pull)', '', 'Force to drive', 0, 1, 0.05],
+  ['max_lin_mps', 'Max linear speed', 'm/s', 'Planner limits', 0.05, 1, 0.05],
+  ['max_ang_rps', 'Max angular speed', 'rad/s', 'Planner limits', 0.1, 3.14159, 0.05],
+  ['lin_acc_mps2', 'Linear acceleration', 'm/s²', 'Planner limits', 0.1, 2, 0.05],
+  ['ang_acc_rps2', 'Angular acceleration', 'rad/s²', 'Planner limits', 0.1, 4, 0.05],
+].map(([key, label, unit, group, min, max, step]) => ({ key, label, unit, group: 'Push assist: ' + group, type: 'float', min, max, step }));
 
 class SimMib {
   constructor(out) {
@@ -31,7 +43,10 @@ class SimMib {
     }));
   }
   now() { return (performance.now() - this.t0) / 1000; }
+  paramJson(d) { return { ...d, value: this.params[d.key], default: PUSH_DEFAULT_GAINS[d.key] }; }
+  paramsJson() { return { saved: SIM_MIB_PARAMS.every(d => (SIM_FLASH.params || PUSH_DEFAULT_GAINS)[d.key] === this.params[d.key]), params: SIM_MIB_PARAMS.map(d => this.paramJson(d)) }; }
   start() {
+    this.params = { ...(SIM_FLASH.params || PUSH_DEFAULT_GAINS) };
     this.physics = setInterval(() => this.step(), 5);
     this.motorTimer = setInterval(() => this.publishMotorCommands(), 50);
     this.stateTimer = setInterval(() => this.reportStates(), 20); // MotorState at 50 Hz, as the PACE RACER (ab44267)
@@ -102,6 +117,16 @@ class SimMib {
         else { this.estop.clearing = true; this.log('W RAMMP_MIB: E-stop clear attempt from the control panel'); setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
         return this.ok(f.type, p[0]);
       case MIBP.STATUS: return this.reply(MIBP.STATUS_REPLY, new TextEncoder().encode(JSON.stringify(this.statusJson())));
+      case MIBP.PARAMS: return this.reply(MIBP.PARAMS_REPLY, new TextEncoder().encode(JSON.stringify(this.paramsJson())));
+      case MIBP.DEFAULT_PARAMS: this.params = { ...PUSH_DEFAULT_GAINS }; return this.reply(MIBP.PARAMS_REPLY, new TextEncoder().encode(JSON.stringify(this.paramsJson())));
+      case MIBP.SET_PARAM: {
+        const n = p[0], key = new TextDecoder().decode(p.subarray(1, 1 + n)), d = SIM_MIB_PARAMS.find(x => x.key === key);
+        if (!d) return this.err(f.type, 'unknown param');
+        const v = F(1 + n); this.params[key] = Number.isNaN(v) ? d.min : Math.min(d.max, Math.max(d.min, v));
+        this.log(`I RAMMP_MIB: Push assist ${key} = ${this.params[key]}`);
+        return this.reply(MIBP.PARAM_REPLY, new TextEncoder().encode(JSON.stringify(this.paramJson(d))));
+      }
+      case MIBP.SAVE_PARAMS: SIM_FLASH.params = { ...this.params }; this.log('I PushAssist: Push assist gains saved'); return this.reply(MIBP.SAVE_REPLY, u8(1));
       default: return this.err(f.type, 'unknown request');
     }
   }

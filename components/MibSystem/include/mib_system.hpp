@@ -7,11 +7,12 @@
 #include <mutex>
 #include <string>
 
-#include "bsp.hpp"
 #include "base_component.hpp"
+#include "bsp.hpp"
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
 #include "messages.hpp"
+#include "push_assist_settings.hpp"
 #include "rtps_pubsub.hpp"
 #include "service_link.hpp"
 #include "task.hpp"
@@ -108,6 +109,13 @@ private:
 
   /// The MIB's state for the panel's status view, as a JSON object.
   std::string status_json();
+
+  /// The MIB's tunable params for the panel (mib_panel_protocol.hpp PARAMS), as JSON.
+  std::string params_json();
+
+  /// The push-assist gains as tuned from the panel. Whatever drives from the handles
+  /// (PUSH_ASSIST) reads them here on each sample: a panel change is live at once.
+  mib::push_assist::Gains push_assist_gains() const { return push_assist_.get(); }
 
   /// Emit one telemetry sample on the service link.
   /// \note Runs on the telemetry task.
@@ -284,6 +292,7 @@ private:
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
   std::mutex twist_mutex_; ///< Orders setpoints against leaving autonomy; guards twist_until_.
   std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
+  mib::push_assist::Settings push_assist_;                    ///< Push-assist gains, NVS-backed.
   std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.

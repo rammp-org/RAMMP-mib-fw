@@ -95,6 +95,13 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
 .bar { height: 6px; background: var(--ax-rule); margin-top: 12px; }
 .bar > div { height: 100%; width: 0; background: var(--ax-accent); transition: width 0.2s; }
 .bar.done > div { background: var(--ax-good); } .bar.failed > div { background: var(--ax-critical); }
+.pmap { width: 100%; max-width: 420px; aspect-ratio: 1; display: block; margin-top: 6px; }
+.pmap text { font: 10px var(--ax-font-mono); fill: var(--ax-muted); }
+.field.prm { grid-template-columns: 1fr auto; row-gap: 2px; margin-top: 10px; }
+.field.prm .ax-range { grid-column: 1 / -1; }
+.param-group { font: 500 11px var(--ax-font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ax-muted); margin: 14px 0 0; }
+.field .ax-input.num { width: 84px; }
+.field .changed { color: var(--ax-warning); }
 .toast { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 6px; }
 .toast div { background: var(--ax-panel); border: 1px solid var(--ax-border-strong); border-left: 3px solid var(--ax-warning); padding: 8px 12px; font: 12px var(--ax-font-mono); max-width: 420px; }
 .toast div.err { border-left-color: var(--ax-critical); }
@@ -138,6 +145,7 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     <button data-tab="tune">Motor tuning</button>
     <button data-tab="auto">Auto-tune</button>
     <button data-tab="drive">Drive</button>
+    <button data-tab="push">Push assist</button>
     <button data-tab="seat">Seat actuators</button>
     <button data-tab="sensors">Sensors &amp; data</button>
     <button data-tab="firmware">Firmware</button>
@@ -253,6 +261,49 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     </div>
   </section>
 
+  <!-- ============================================================ PUSH ASSIST -->
+  <section class="tab" id="tab-push">
+    <div class="ax-cap">The space-bar push-assist handles (rammp-org/space-bar-push-assist). The board measures each handle's force; the MIB turns the forces into a drive target with the gains below. The board connects on its own, through <code>eth_bridge.py</code>, beside the MIB link.</div>
+    <section class="ax-tiles" style="margin-top:10px">
+      <div class="ax-tile"><div class="ax-label">Left handle</div><div class="ax-value" id="paL">–<small>N</small></div><div class="ax-sub" id="paLSub">–</div></div>
+      <div class="ax-tile"><div class="ax-label">Right handle</div><div class="ax-value" id="paR">–<small>N</small></div><div class="ax-sub" id="paRSub">–</div></div>
+      <div class="ax-tile"><div class="ax-label">Forward · L + R</div><div class="ax-value" id="paSum">–<small>N</small></div><div class="ax-sub">push +</div></div>
+      <div class="ax-tile"><div class="ax-label">Turn · L − R</div><div class="ax-value" id="paDiff">–<small>N</small></div><div class="ax-sub">+ turns right</div></div>
+      <div class="ax-tile"><div class="ax-label">Would drive</div><div class="ax-value" id="paLin">–<small>m/s</small></div><div class="ax-sub" id="paLinSub">–</div></div>
+      <div class="ax-tile"><div class="ax-label">Would turn</div><div class="ax-value" id="paAng">–<small>rad/s</small></div><div class="ax-sub" id="paAngSub">–</div></div>
+    </section>
+    <div class="ax-grid cols-2">
+      <div>
+        <div class="ax-panel">
+          <h2>Push-assist board</h2>
+          <div class="ax-cap">Found with <code>PUSH?</code> on udp :5556. It serves one client at a time: connecting here drops its own dashboard or logger, and the other way round.</div>
+          <div class="field"><span class="ax-label">Board</span><select class="ax-input" id="paTarget"><option value="sim">Simulated board</option></select><button class="ax-btn" id="paFind">Find</button></div>
+          <div class="field"><span class="ax-label">By IP</span><input class="ax-input" id="paIp" placeholder="192.168.4.x"><button class="ax-btn" id="paAdd">Add</button></div>
+          <div class="row"><button class="ax-btn primary" id="paConnect" data-fx="ripple">Connect</button><button class="ax-btn" id="paTare" disabled title="Re-zero both cells. Take your hands off the handles first.">Tare</button><span class="ax-status" id="paLink">Disconnected</span></div>
+          <table style="margin-top:10px"><tbody id="paInfo"><tr><td class="empty">Not connected.</td></tr></tbody></table>
+        </div>
+        <div class="ax-panel" style="margin-top:14px">
+          <h2>MIB: push-assist gains</h2>
+          <div class="ax-cap">Driving decisions, so they live on the MIB. A change is live at once; Save keeps it after a reboot. The preview above uses these.</div>
+          <div id="paMibParams"><div class="empty">Connect to the MIB (top of the page) to tune its gains. The preview uses the defaults until then.</div></div>
+          <div class="row"><button class="ax-btn primary" id="paMibSave" disabled>Save to MIB</button><button class="ax-btn" id="paMibDefaults" disabled>Defaults</button><button class="ax-btn" id="paMibReload" disabled>Reload</button><span class="ax-status" id="paMibState"></span></div>
+        </div>
+        <div class="ax-panel" style="margin-top:14px">
+          <h2>Board settings</h2>
+          <div class="ax-cap">Measurement settings on the push-assist board itself: cell scale and sign, and zero tracking.</div>
+          <div id="paBoardParams"><div class="empty">Connect to the board.</div></div>
+          <div class="row"><button class="ax-btn primary" id="paBoardSave" disabled>Save to board</button><button class="ax-btn" id="paBoardDefaults" disabled>Defaults</button><button class="ax-btn" id="paBoardReload" disabled>Reload</button><span class="ax-status" id="paBoardState"></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="ax-panel chart-wrap"><h2>Handle map</h2><div class="ax-cap">Left against right handle force. Grey: the dead band, where nothing moves. Outline: where the drive reaches full speed or full turn; it stays open toward a pull, which the reverse cap keeps slow. The trail is the last 5 s.</div><div id="paMap"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Handle forces</h2><div class="ax-cap">Force on each handle, push +, tared and zero-tracked by the board.</div><div class="chart" id="cPaForce"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Drive the MIB would command</h2><div class="ax-cap">push_to_twist() on these forces with the gains on the left: −1 to 1 of the push-assist limits. Angular is counter-clockwise +.</div><div class="chart" id="cPaTwist"></div></div>
+        <div class="ax-panel chart-wrap"><h2>Zero tracking</h2><div class="ax-cap">The correction the board has taken out of each handle since the last tare. At its cap the board stops tracking: tare.</div><div class="chart" id="cPaZero"></div></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================================================ SEAT -->
   <section class="tab" id="tab-seat">
     <div class="warnbox" style="margin:0 0 8px"><b>Placeholder on the MIB:</b> seat commands are accepted and reported back, but the MIB has no actuator driver yet (DriveController::set_seat_target). The MCP266 path lives on feature/2-actuator-control and feature/21-mib-debugger.</div>
@@ -284,12 +335,12 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     <div class="ax-grid cols-even">
       <div class="ax-panel" id="fwPanel">
         <h2>Flash firmware</h2>
-        <div class="ax-cap">Over the air, the way the PACE RACER dashboard flashes a wheel: the board makes itself safe, writes its other app slot and reboots into it, and the panel reconnects and marks the new image valid. The MIB goes over the link you are connected with; a PACE RACER goes over Ethernet through <code>eth_bridge.py</code>.</div>
-        <div class="field"><span class="ax-label">Target</span><select class="ax-input" id="fwTarget"><option value="mib">MIB (the connected link)</option></select><button class="ax-btn" id="fwFind" title="Ask the network who answers PACE?">Find RACERs</button></div>
+        <div class="ax-cap">Over the air, the way the PACE RACER dashboard flashes a wheel: the board makes itself safe, writes its other app slot and reboots into it, and the panel reconnects and marks the new image valid. The MIB goes over the link you are connected with; a PACE RACER or the push-assist board goes over Ethernet through <code>eth_bridge.py</code>.</div>
+        <div class="field"><span class="ax-label">Target</span><select class="ax-input" id="fwTarget"><option value="mib">MIB (the connected link)</option></select><button class="ax-btn" id="fwFind" title="Ask the network who answers PACE? or PUSH?">Find boards</button></div>
         <div class="field"><span class="ax-label">RACER by IP</span><input class="ax-input" id="fwRacerIp" placeholder="192.168.4.x"><button class="ax-btn" id="fwAddRacer">Add</button></div>
         <div class="field"><span class="ax-label">Build</span><select class="ax-input" id="fwBuild"><option value="">none found (needs eth_bridge.py)</option></select><span></span></div>
         <div class="field"><span class="ax-label">Or a file</span><input class="ax-input" id="fwFile" type="file" accept=".bin"><span></span></div>
-        <div class="hint" id="fwHint">Drop a <code>.bin</code> anywhere on this panel too. RACER builds are listed when the bridge runs with <code>--racer &lt;pace-racer-fw&gt;/components/pace-racer-board/atos-drive</code>.</div>
+        <div class="hint" id="fwHint">Drop a <code>.bin</code> anywhere on this panel too. RACER builds are listed when the bridge runs with <code>--racer &lt;pace-racer-fw&gt;/components/pace-racer-board/atos-drive</code>, push-assist builds with <code>--push &lt;space-bar-push-assist&gt;/firmware</code>.</div>
         <div class="row"><button class="ax-btn primary" id="fwFlash" disabled data-fx="sparks">Flash</button><button class="ax-btn danger" id="fwAbort" disabled>Abort</button></div>
         <div class="bar" id="fwBar"><div></div></div>
         <div class="row"><span class="ax-status" id="fwStatus">No image chosen</span></div>
@@ -321,6 +372,8 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
 <script src="uPlot.iife.min.js"></script>
 <script src="mib_link.js"></script>
 <script src="mib_sim.js"></script>
+<script src="push_link.js"></script>
 <script src="panel.js"></script>
+<script src="push_panel.js"></script>
 </body>
 </html>

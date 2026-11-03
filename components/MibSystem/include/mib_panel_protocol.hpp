@@ -29,10 +29,26 @@
 ///   0x07 SEAT           [axis u8][target f32]     rammp::SeatCommand. Reply OK / ERROR.
 ///   0x08 ESTOP          [action u8]               1 = engage, 2 = start a clear attempt.
 ///   0x09 STATUS                                    Reply STATUS_REPLY, UTF-8 JSON.
+///   0x0A PARAMS                                    Reply PARAMS_REPLY: the MIB's tunable
+///        params (today the push-assist gains, mib::push_assist::kParams), UTF-8 JSON
+///        {"saved":bool,"params":[{"key","label","unit","group","type":"float","value",
+///        "default","min","max","step"}, ...]}. The panel renders whatever is listed.
+///   0x0B SET_PARAM      [key_len u8][key UTF-8][value f32]
+///        Clamped to the param's range and live at once, in RAM. Reply PARAM_REPLY: that
+///        param's JSON object after the set. ERROR for an unknown key.
+///   0x0C SAVE_PARAMS                               Write the params to NVS. Reply
+///        SAVE_REPLY [ok u8].
+///   0x0D DEFAULT_PARAMS                            Back to the defaults in RAM (unsaved).
+///        Reply PARAMS_REPLY.
+///   The push-assist board serves the same params protocol on its module 0x30 (types 0x03
+///   to 0x06; rammp-org/space-bar-push-assist firmware/INTERFACE.md).
 ///
 /// MIB -> host
 ///   0x81 OK           [request type u8][value u8]
 ///   0x89 STATUS_REPLY UTF-8 JSON (see MibSystem::status_json)
+///   0x8A PARAMS_REPLY UTF-8 JSON (see PARAMS)
+///   0x8B PARAM_REPLY  UTF-8 JSON, one param
+///   0x8C SAVE_REPLY   [ok u8]
 ///   0x8F ERROR        [request type u8][UTF-8 reason]
 namespace mib::panel {
 
@@ -47,9 +63,16 @@ inline constexpr uint8_t kStick = 0x06;
 inline constexpr uint8_t kSeat = 0x07;
 inline constexpr uint8_t kEstop = 0x08;
 inline constexpr uint8_t kStatus = 0x09;
+inline constexpr uint8_t kParams = 0x0A;
+inline constexpr uint8_t kSetParam = 0x0B;
+inline constexpr uint8_t kSaveParams = 0x0C;
+inline constexpr uint8_t kDefaultParams = 0x0D;
 
 inline constexpr uint8_t kOk = 0x81;
 inline constexpr uint8_t kStatusReply = 0x89;
+inline constexpr uint8_t kParamsReply = 0x8A;
+inline constexpr uint8_t kParamReply = 0x8B;
+inline constexpr uint8_t kSaveReply = 0x8C;
 inline constexpr uint8_t kError = 0x8F;
 
 inline constexpr uint8_t kAllAxes = 0xFF;
