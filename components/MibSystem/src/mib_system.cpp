@@ -504,29 +504,32 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       logger_.info("Drive profile updated to {}", static_cast<uint8_t>(command.profile));
     }
   } else if (drive_disable_requested(command)) {
-    if (current_state != SystemState::DRIVE_ENABLED && current_state != SystemState::AUTONOMOUS &&
-        current_state != SystemState::SHARED) {
-      logger_.warn("Ignoring drive disable command outside a drive state");
+    if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED &&
+        current_state != SystemState::AUTONOMOUS && current_state != SystemState::SHARED &&
+        current_state != SystemState::PUSH_ASSIST) {
+      logger_.warn("Ignoring drive disable command outside an operational state");
       return false;
     }
-
-    if (any_override_active()) {
-      logger_.warn("Ignoring autonomy request while the control panel overrides a motor");
-      return false;
-    }
-    if (ota_active_.load()) {
-      logger_.warn("Ignoring autonomy request during a firmware update");
-      return false;
-    }
-
     if (command.push_assist) {
-      return enter_push_assist();
+      if (current_state == SystemState::PUSH_ASSIST) {
+        return true; // a repeat: MibStatus already answers it
+      }
+      if (any_override_active()) {
+        logger_.warn("Ignoring push assist request while the control panel overrides a motor");
+        return false;
+      }
+      if (ota_active_.load()) {
+        logger_.warn("Ignoring push assist request during a firmware update");
+        return false;
+      }
+    } else if (current_state == SystemState::IDLE) {
+      return true; // already stopped
     }
-
     std::lock_guard<std::mutex> lock(twist_mutex_);
+    twist_until_ = {};
     drive_controller_.stop();
-    state_.store(SystemState::IDLE);
-    logger_.info("Drive disabled");
+    state_.store(command.push_assist ? SystemState::PUSH_ASSIST : SystemState::IDLE);
+    logger_.info(command.push_assist ? "Entering PUSH_ASSIST" : "Drive disabled");
 
   } else if (autonomy_requested(command)) {
     // The Jetson's request (rammp-rtps#18): AUTONOMOUS or SHARED from IDLE or DRIVE_ENABLED,
