@@ -508,6 +508,12 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
         logger_.warn("Ignoring push assist request during a firmware update");
         return false;
       }
+
+      if (!drive_controller_.update_drive_profile(rammp::DriveProfile::NORMAL)) {
+        logger_.error("Failed to update drive profile");
+        return false;
+      }
+      drive_profile_.store(rammp::DriveProfile::NORMAL);
     } else if (current_state == SystemState::IDLE) {
       return true; // already stopped
     }
