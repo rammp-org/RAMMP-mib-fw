@@ -349,8 +349,8 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
     // comes from the Jetson through handle_autonomy_setpoint().
     break;
   case SystemState::PUSH_ASSIST:
-    // left blank until rammp-rtps#24 is merged in, which allows stick input during push
-    // assist which will allow exiting push assist when joystick is touched
+    // Left blank until the HMI passes the stick through in PUSH_ASSIST;
+    // then a stick touch ends it (rammp-rtps#24), as in AUTONOMOUS above.
     break;
   case SystemState::CALIBRATE:
     // The joystick is ignored while calibrating.
@@ -365,11 +365,6 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
 }
 
 bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
-  const auto current_state = state_.load();
-  if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
-    logger_.warn("Ignoring {} request outside IDLE or DRIVE_ENABLED", name);
-    return false;
-  }
   {
     // A lapse deadline left over from the last autonomy session would fire at once.
     std::lock_guard<std::mutex> lock(twist_mutex_);
@@ -535,8 +530,9 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   } else if (autonomy_requested(command)) {
     // The Jetson's request (rammp-rtps#18): AUTONOMOUS or SHARED from IDLE or DRIVE_ENABLED,
     // driving with the profile it asked for. enter_autonomy() stops the drive first.
-    if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED) {
-      logger_.warn("Ignoring autonomy request outside IDLE or DRIVE_ENABLED");
+    if (current_state != SystemState::IDLE && current_state != SystemState::DRIVE_ENABLED &&
+        current_state != SystemState::PUSH_ASSIST) {
+      logger_.warn("Ignoring autonomy request outside IDLE or DRIVE_ENABLED or PUSH_ASSIST");
       return false;
     }
     if (any_override_active()) {
