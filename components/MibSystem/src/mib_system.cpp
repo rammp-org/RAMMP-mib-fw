@@ -1,7 +1,9 @@
 #include "mib_system.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <condition_variable>
 #include <mutex>
 #include <span>
@@ -43,6 +45,52 @@ rammp::Time ros_time_now() {
 
 /// No watched nodes: estop-core's default watches the HMI as a deadman.
 constexpr std::string_view kNoWatchedNodes[] = {""};
+
+/// Minutes east of UTC at `now` in the TZ the BSP set (mib::config::timezone), DST included.
+int16_t utc_offset_minutes(time_t now) {
+  std::tm local{};
+  std::tm utc{};
+  if (localtime_r(&now, &local) == nullptr || gmtime_r(&now, &utc) == nullptr) {
+    return 0;
+  }
+  // mktime reads the UTC fields as local time, so it lands `offset` seconds before `now`.
+  utc.tm_isdst = local.tm_isdst;
+  return static_cast<int16_t>((now - std::mktime(&utc)) / 60);
+}
+
+/// The hottest of a motor board's four temperature sensors, C.
+float hottest_temp(const rammp::MotorState &state) {
+  return *std::max_element(state.temps.begin(), state.temps.end());
+}
+
+/// FaultCode's name for the logs; "?" for a code this build does not know.
+const char *fault_name(rammp::FaultCode code) {
+  switch (code) {
+  case rammp::FaultCode::NONE:
+    return "NONE";
+  case rammp::FaultCode::WATCHDOG:
+    return "WATCHDOG";
+  case rammp::FaultCode::OVERCURRENT:
+    return "OVERCURRENT";
+  case rammp::FaultCode::VDS_OCP:
+    return "VDS_OCP";
+  case rammp::FaultCode::OVERTEMP:
+    return "OVERTEMP";
+  case rammp::FaultCode::ENCODER:
+    return "ENCODER";
+  case rammp::FaultCode::DRV_FAULT:
+    return "DRV_FAULT";
+  case rammp::FaultCode::UNASSIGNED_AXIS:
+    return "UNASSIGNED_AXIS";
+  case rammp::FaultCode::SAMPLER:
+    return "SAMPLER";
+  case rammp::FaultCode::HALL:
+    return "HALL";
+  case rammp::FaultCode::STALL:
+    return "STALL";
+  }
+  return "?";
+}
 } // namespace
 
 static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
@@ -567,7 +615,8 @@ void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
 void MibSystem::publish_system_state() {
   rammp::MibStatus status{};
   status.active_profile = drive_profile_.load();
-  switch (state_.load()) {
+  const auto current_state = state_.load();
+  switch (current_state) {
   case SystemState::INIT:
   case SystemState::CALIBRATE:  // TODO: Handle calibration state separately if needed.
     status.system_state = rammp::MibSystemState::INITIALIZING;
@@ -586,7 +635,9 @@ void MibSystem::publish_system_state() {
     break;
   case SystemState::ESTOP:
     status.system_state = rammp::MibSystemState::ESTOP;
-    status.error_message = "Emergency stop";
+    // The latch's cause, e.g. "hmi: engage" or "hmi: silent (deadman)". The joystick
+    // shows its own e-stop banner instead; this is for the Jetson and the logs.
+    status.error_message = std::string("E-stop: ") + latch_.status().cause;
     break;
   case SystemState::ERROR:
     status.system_state = rammp::MibSystemState::ERROR;
@@ -598,6 +649,30 @@ void MibSystem::publish_system_state() {
     std::lock_guard<std::mutex> lock(seat_state_mutex_);
     status.current_seat_state = seat_state_;
   }
+
+  // Speed is the average of the commanded wheel speeds, matching what
+  // publish_motor_commands() sends: zero unless the chair is driving.
+  if (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
+      current_state == SystemState::SHARED) {
+    const auto wheel_speeds = drive_controller_.wheel_speeds();
+    const auto &drive = mib::config::differential_drive;
+    // wheel_speeds() carries each motor's mounting inversion; undo it so both
+    // wheels are positive when the chassis moves forward.
+    const float left_rpm = drive.invert_left ? -wheel_speeds.left_rpm : wheel_speeds.left_rpm;
+    const float right_rpm = drive.invert_right ? -wheel_speeds.right_rpm : wheel_speeds.right_rpm;
+    const float rpm_to_mps = 3.14159265358979323846f * drive.wheel_diameter_m / 60.0f;
+    // Ground speed has no direction; the joystick shows 0.0 for negative values.
+    status.speed = std::fabs((left_rpm + right_rpm) / 2.0f * rpm_to_mps);
+  }
+
+  // UTC and the local offset; 0 until SNTP has set the clock, which the joystick reads as
+  // "time not known" rather than 1970.
+  if (mib_.time_synced()) {
+    const time_t now = std::time(nullptr);
+    status.epoch_s = static_cast<int64_t>(now);
+    status.utc_offset_min = utc_offset_minutes(now);
+  }
+
   status.seq = ++status_sequence_;
   if (!status_publisher_->publish(status)) {
     logger_.warn("Failed to publish MIB status");
@@ -761,6 +836,33 @@ void MibSystem::publish_diagnostics() {
     };
   }
 
+  // The drive wheels: hottest board sensor, torque current and the latched fault (0 = none).
+  // A board not heard from within motor_state_timeout sends nothing, like a failed IMU read.
+  constexpr std::pair<rammp::DiagId, rammp::AxisId> kDriveRows[] = {
+      {rammp::DiagId::DRIVE_LEFT, rammp::AxisId::DRIVE_LEFT},
+      {rammp::DiagId::DRIVE_RIGHT, rammp::AxisId::DRIVE_RIGHT},
+  };
+  {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (const auto &[diag, axis] : kDriveRows) {
+      const auto index = static_cast<size_t>(axis);
+      const auto heard = motor_state_times_[index];
+      if (heard == std::chrono::steady_clock::time_point{} ||
+          now - heard >= mib::config::motor_state_timeout) {
+        continue;
+      }
+      const rammp::MotorState &state = motor_states_[index];
+      const auto fault = state.state == rammp::BoardState::FAULT ? state.fault_code
+                                                                 : rammp::FaultCode::NONE;
+      diagnostics.items[static_cast<size_t>(diag)].values = {
+          to_raw(hottest_temp(state), diag, 0),
+          to_raw(state.iq, diag, 1),
+          static_cast<int32_t>(fault),
+      };
+    }
+  }
+
   if (!diagnostics_publisher_->publish(diagnostics)) {
     logger_.warn("Failed to publish diagnostics");
   }
@@ -877,6 +979,23 @@ void MibSystem::publish_motor_states() {
       if (online != motor_online_[i]) {
         motor_online_[i] = online;
         logger_.info("Motor {} {}", rammp::kAxes[i].label, online ? "online" : "offline");
+      }
+      // A fault and its clearing are logged once each (serial console and the control
+      // panel's ServiceLink), with what the board saw: its hottest sensor, the bus voltage,
+      // iq and the gate driver's bits.
+      const auto fault = online && state.state == rammp::BoardState::FAULT ? state.fault_code
+                                                                           : rammp::FaultCode::NONE;
+      if (fault != motor_fault_[i]) {
+        if (fault != rammp::FaultCode::NONE) {
+          logger_.error("Motor {} fault {}: hottest {:.1f} C, vbus {:.1f} V, iq {:.2f} A, "
+                        "drv_status 0x{:04x}",
+                        rammp::kAxes[i].label, fault_name(fault), hottest_temp(state), state.vbus, state.iq,
+                        state.drv_status);
+        } else if (online) {
+          logger_.info("Motor {} fault {} cleared", rammp::kAxes[i].label,
+                       fault_name(motor_fault_[i]));
+        }
+        motor_fault_[i] = fault;
       }
       message.motors.push_back(rammp::MotorSummary{
           .axis_id = static_cast<uint8_t>(i),

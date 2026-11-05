@@ -85,6 +85,10 @@ public:
   /// @return Reference to the RTPS participant owned by the MIB BSP.
   espp::RtpsParticipant &rtps_participant() { return *rtps_participant_; }
 
+  /// @brief Whether SNTP has set the clock since boot.
+  /// @return True once the first sync has landed; until then the clock counts from 1970.
+  bool time_synced() const { return time_synced_.load(); }
+
 private:
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};

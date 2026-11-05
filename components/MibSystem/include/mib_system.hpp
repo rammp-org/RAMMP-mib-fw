@@ -266,6 +266,7 @@ private:
   std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
   std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
   std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
+  std::array<rammp::FaultCode, rammp::kAxisCount> motor_fault_{}; ///< As last logged; NONE = none.
   bool drive_state_updated_{false}; ///< A drive report arrived since the last odometry step.
   bool odometry_resync_{false};     ///< A drive wheel's angle restarted; resync odometry.
   mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.

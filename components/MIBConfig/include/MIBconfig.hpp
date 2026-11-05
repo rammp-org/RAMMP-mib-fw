@@ -99,6 +99,10 @@ inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
 /// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
 inline constexpr const char *ntp_server = "snorlax.local";
 
+/// @brief Where the chair is, as a POSIX TZ string: MibStatus carries UTC plus this zone's
+/// offset (daylight saving included), and the joystick's clock shows the local time.
+inline constexpr const char *timezone = "EST5EDT,M3.2.0,M11.1.0"; // US Eastern
+
 /// @brief SNTP client restart period until the first sync. A ROS host that comes up after the MIB
 /// is found within one period, not after lwIP's retry backoff (15 s doubling to 150 s).
 inline constexpr auto time_sync_retry_interval = std::chrono::seconds{15};
