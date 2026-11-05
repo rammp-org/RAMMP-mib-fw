@@ -124,6 +124,13 @@ idf.py -p PORT flash monitor
 
 (Replace PORT with the name of the serial port to use.)
 
+The default build is for the chair. For the flatbot's wheel geometry, build it in its own
+directory:
+
+```
+idf.py -B build-flatbot -DMIB_ROBOT=flatbot -p PORT flash monitor
+```
+
 (To exit the serial monitor, type ``Ctrl-]``.)
 
 See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
