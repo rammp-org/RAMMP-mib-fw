@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Fast DDS on the MIB's link only. On a host with several interfaces (Wi-Fi, a VPN)
+     Fast DDS otherwise listens for discovery multicast and announces itself on the
+     wrong one, and the MIB replies to the first address it is given. MIB_HOST_IP and
+     MIB_IP are filled in by env.sh. -->
+<dds xmlns="http://www.eprosima.com">
+  <profiles>
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>mib_udp</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>MIB_HOST_IP</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+    <participant profile_name="mib_participant" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>mib_udp</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <initialPeersList>
+            <locator><udpv4><address>MIB_IP</address></udpv4></locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+  </profiles>
+</dds>

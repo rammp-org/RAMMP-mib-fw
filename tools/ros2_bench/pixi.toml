@@ -1,0 +1,26 @@
+[workspace]
+name = "mib-ros2-bench"
+description = "ROS 2 bench for the MIB: talks to the firmware over RTPS as the Jetson will"
+channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+[dependencies]
+ros-jazzy-ros-base = "*"
+ros-jazzy-rmw-fastrtps-cpp = "*"
+ros-jazzy-geometry-msgs = "*"
+ros-jazzy-rosidl-default-generators = "*"
+ros-jazzy-ament-cmake = "*"
+colcon-common-extensions = "*"
+cmake = "*"
+ninja = "*"
+pkg-config = "*"
+compilers = "*"
+python = "3.12.*"
+pyserial = ">=3.5,<4"
+
+[tasks]
+# Once: fetch and build the rammp-interfaces-ros2 messages the bench speaks.
+setup = "./setup.sh"
+# Against a running MIB (components/ArbitrationServer/example). Pass --serial <port>
+# to also read the MIB's USB console.
+conformance = "./conformance.sh"
