@@ -12,6 +12,7 @@
 
 #include "MIBconfig.hpp"
 #include "mib_panel_protocol.hpp"
+#include "motor_names.hpp"
 
 using namespace std::chrono_literals;
 
@@ -38,50 +39,6 @@ void reply_error(const mib::ServiceLink::reply_fn &reply, uint8_t request, std::
   std::vector<uint8_t> p{request};
   p.insert(p.end(), why.begin(), why.end());
   reply(reply_frame(mib::panel::kError, p));
-}
-
-const char *board_state_name(rammp::BoardState s) {
-  switch (s) {
-  case rammp::BoardState::DISARMED:
-    return "DISARMED";
-  case rammp::BoardState::ARMED:
-    return "ARMED";
-  case rammp::BoardState::SAFE_STOPPING:
-    return "SAFE_STOPPING";
-  case rammp::BoardState::HOLDING:
-    return "HOLDING";
-  case rammp::BoardState::FAULT:
-    return "FAULT";
-  }
-  return "UNKNOWN";
-}
-
-const char *fault_name(rammp::FaultCode f) {
-  switch (f) {
-  case rammp::FaultCode::NONE:
-    return "NONE";
-  case rammp::FaultCode::WATCHDOG:
-    return "WATCHDOG";
-  case rammp::FaultCode::OVERCURRENT:
-    return "OVERCURRENT";
-  case rammp::FaultCode::VDS_OCP:
-    return "VDS_OCP";
-  case rammp::FaultCode::OVERTEMP:
-    return "OVERTEMP";
-  case rammp::FaultCode::ENCODER:
-    return "ENCODER";
-  case rammp::FaultCode::DRV_FAULT:
-    return "DRV_FAULT";
-  case rammp::FaultCode::UNASSIGNED_AXIS:
-    return "UNASSIGNED_AXIS";
-  case rammp::FaultCode::SAMPLER:
-    return "SAMPLER";
-  case rammp::FaultCode::HALL:
-    return "HALL";
-  case rammp::FaultCode::STALL:
-    return "STALL";
-  }
-  return "UNKNOWN";
 }
 
 // JSON has no NaN or infinity: report a non-finite reading as 0.
@@ -447,8 +404,8 @@ std::string MibSystem::status_json() {
         "\"cmd\":{{\"state\":{},\"mode\":{},\"vel\":{:.3f}}}}}",
         i ? "," : "", i, rammp::kAxes[i].segment, rammp::kAxes[i].label, online ? "true" : "false",
         age_ms, s.api_version, s.fw_version >> 24, (s.fw_version >> 16) & 0xFF,
-        s.fw_version & 0xFFFF, board_state_name(s.state), static_cast<int>(s.mode),
-        fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus), fin(tmax),
+        s.fw_version & 0xFFFF, mib::board_state_name(s.state), static_cast<int>(s.mode),
+        mib::fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus), fin(tmax),
         fin(s.torque_limit_eff), fin(s.vel_limit_eff), fin(s.accel_limit_eff), s.tuning_ack,
         a.tuning.tuning_req_id, fin(s.speed_kp), fin(s.speed_ki), fin(s.hall_pll_hz),
         now < a.override_until ? "true" : "false", a.clear_fault_req, s.clear_fault_ack,
