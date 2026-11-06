@@ -184,6 +184,12 @@ void MibSystem::make_safe_for_ota() {
     state_.store(SystemState::IDLE);
   } else if (state == SystemState::AUTONOMOUS || state == SystemState::SHARED) {
     leave_autonomy("firmware update");
+  } else if (state == SystemState::PUSH_ASSIST) {
+    // Under twist_mutex_, so no handle-force sample can land a target after the stop.
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    twist_until_ = {};
+    drive_controller_.stop();
+    state_.store(SystemState::IDLE);
   }
   logger_.warn("Firmware update: drive disabled, overrides dropped, motors commanded DISARMED");
 }

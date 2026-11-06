@@ -746,7 +746,7 @@ void MibSystem::publish_system_state() {
   // Speed is the average of the commanded wheel speeds, matching what
   // publish_motor_commands() sends: zero unless the chair is driving.
   if (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
-      current_state == SystemState::SHARED) {
+      current_state == SystemState::SHARED || current_state == SystemState::PUSH_ASSIST) {
     const auto wheel_speeds = drive_controller_.wheel_speeds();
     const auto &drive = mib::config::differential_drive;
     // wheel_speeds() carries each motor's mounting inversion; undo it so both
@@ -816,7 +816,7 @@ void MibSystem::log_drive_status() {
   float left_rad_per_second = 0.0f;
   float right_rad_per_second = 0.0f;
   if (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
-      current_state == SystemState::SHARED) {
+      current_state == SystemState::SHARED || current_state == SystemState::PUSH_ASSIST) {
     const auto wheel_speeds = drive_controller_.wheel_speeds();
     constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
     left_rad_per_second = wheel_speeds.left_rpm * kRpmToRadPerSecond;
