@@ -9,6 +9,7 @@
 
 #include "driver/temperature_sensor.h"
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 
 #include "MIBconfig.hpp"
 #include "mib_panel_protocol.hpp"
@@ -411,13 +412,24 @@ std::string MibSystem::status_json() {
   std::string json =
       fmt::format("{{\"state\":\"{}\",\"profile\":{},\"ethernet\":{},\"ip\":\"{}\",\"rtps\":{},"
                   "\"estop\":{{\"latched\":{},\"clearing\":{},\"cause\":\"{}\",\"releases\":{}}},"
-                  "\"panel_stick\":{},\"seat\":[{:.2f},{:.2f},{:.2f},{:.2f}],\"axes\":[",
+                  "\"panel_stick\":{},\"seat\":[{:.2f},{:.2f},{:.2f},{:.2f}],",
                   state, static_cast<int>(drive_profile_.load()),
                   mib_.ethernet_connected() ? "true" : "false", mib_.ethernet_ip_string(),
                   endpoints_ready_.load() ? "true" : "false", latch.latched ? "true" : "false",
                   latch.clear_attempt_running ? "true" : "false", json_escape(latch.cause),
                   latch.releases, stick_live ? "true" : "false", fin(seat.front_back_tilt),
                   fin(seat.lateral_tilt), fin(seat.elevation), fin(seat.translation));
+  // Enough to tell a dead DHCP server from a dead network stack or a heap that ran out (#75),
+  // over USB or UART when Ethernet is the thing that failed.
+  const auto dhcp = mib_.dhcp_status();
+  constexpr auto kHeapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+  json += fmt::format(
+      "\"net\":{{\"heap_free\":{},\"heap_largest\":{},\"heap_min\":{},"
+      "\"dhcps\":{},\"leases\":{},\"last_lease_age_s\":{},"
+      "\"pool\":[{},{}]}},\"axes\":[",
+      heap_caps_get_free_size(kHeapCaps), heap_caps_get_largest_free_block(kHeapCaps),
+      heap_caps_get_minimum_free_size(kHeapCaps), dhcp.running ? "true" : "false",
+      dhcp.leases_assigned, dhcp.last_lease_age_s, dhcp.pool_first_host, dhcp.pool_last_host);
 
   // Each board's last MotorState (copied out of handle_motor_state()'s cache first, so the
   // two mutexes are never held together).
