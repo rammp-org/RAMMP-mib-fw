@@ -93,8 +93,11 @@ inline constexpr std::uint8_t ethernet_ip[4] = {192, 168, 4, 1};
 /// @brief IPv4 netmask used by the MIB Ethernet interface.
 inline constexpr std::uint8_t ethernet_netmask[4] = {255, 255, 255, 0};
 
-/// @brief IPv4 gateway address advertised by the MIB DHCP server.
-inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
+/// @brief IPv4 gateway of the MIB Ethernet interface, also offered to DHCP clients as their router.
+/// @details 0.0.0.0 means no gateway: the robot LAN has no uplink, and ESP-IDF's DHCP server only
+/// sends the router option when this is nonzero. Advertising the MIB as a router makes hosts that
+/// also have Wi-Fi send their internet traffic here whenever Wi-Fi drops (#73).
+inline constexpr std::uint8_t ethernet_gateway[4] = {0, 0, 0, 0};
 
 /// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
 inline constexpr const char *ntp_server = "snorlax.local";
