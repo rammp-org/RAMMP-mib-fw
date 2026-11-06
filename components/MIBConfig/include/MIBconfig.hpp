@@ -239,4 +239,21 @@ inline constexpr const ActuatorConfig &actuator_config(Leg leg) {
   return actuators[static_cast<std::size_t>(leg)];
 }
 
+/// @brief Gains for the push-assist system.
+struct PushAssistGains {
+  float dead_band_n;    // per handle; below this a handle reads as 0
+  float forward_full_n; // forward force past the dead bands for linear = 1
+  float turn_full_n;    // left - right past the dead bands for |angular| = 1
+  float reverse_max;    // cap on backing up when the handles are pulled, 0..1
+};
+
+//---Stand-in for Alex's code---
+inline constexpr PushAssistGains push_assist_gains{
+    .dead_band_n = 5.0f,
+    .forward_full_n = 40.0f,
+    .turn_full_n = 20.0f,
+    .reverse_max = 0.3f,
+};
+//--------------------------------
+
 } // namespace mib::config
