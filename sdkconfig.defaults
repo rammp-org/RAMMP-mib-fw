@@ -83,3 +83,13 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # The panel's TCP service port (a listener and one client) beside the RTPS sockets;
 # the PACE RACER raised the same limit for its EthLink.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Past this many leases the DHCP server evicts the oldest one every second, without telling
+# the client, and can then hand its address to another device. The default of 8 leaves little
+# room on a robot LAN once a laptop or two join (#75). components/bsp checks the DHCP pool
+# window against this.
+CONFIG_LWIP_DHCPS_MAX_STATION_NUM=32
+
+# The event task ran with about 240 bytes of its default 2304 free on the bench, and every
+# espp Ethernet callback, the DHCP pool move among them, runs on it.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
