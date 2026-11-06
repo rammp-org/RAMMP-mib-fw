@@ -1,12 +1,15 @@
 #include "mib_system.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <condition_variable>
 #include <mutex>
 #include <span>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include "MIBconfig.hpp"
 #include "sdkconfig.h"
@@ -20,6 +23,8 @@ using namespace std::chrono_literals;
 namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
+/// /base/odom and /tf: reliable, so stateful writers, in the per-participant limit only.
+constexpr size_t kReliableWriters = 2;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
 /// the external controller's TwistSetpoint, estop-core's EStop, SPDP and push assist board's
 /// HandleForce.
@@ -28,8 +33,65 @@ constexpr size_t kFixedReaders = 8;
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
 constexpr size_t kReaders = rammp::kAxisCount + kFixedReaders;
+/// Current time as a ROS 2 stamp, from the system clock: the ROS host's once SNTP has synced
+/// (MIB::init_time_sync()), time since boot (1970) until then.
+rammp::Time ros_time_now() {
+  const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
+  const auto nanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(since_epoch - seconds);
+  return {.sec = static_cast<int32_t>(seconds.count()),
+          .nanosec = static_cast<uint32_t>(nanoseconds.count())};
+}
+
 /// No watched nodes: estop-core's default watches the HMI as a deadman.
 constexpr std::string_view kNoWatchedNodes[] = {""};
+
+/// Minutes east of UTC at `now` in the TZ the BSP set (mib::config::timezone), DST included.
+int16_t utc_offset_minutes(time_t now) {
+  std::tm local{};
+  std::tm utc{};
+  if (localtime_r(&now, &local) == nullptr || gmtime_r(&now, &utc) == nullptr) {
+    return 0;
+  }
+  // mktime reads the UTC fields as local time, so it lands `offset` seconds before `now`.
+  utc.tm_isdst = local.tm_isdst;
+  return static_cast<int16_t>((now - std::mktime(&utc)) / 60);
+}
+
+/// The hottest of a motor board's four temperature sensors, C.
+float hottest_temp(const rammp::MotorState &state) {
+  return *std::max_element(state.temps.begin(), state.temps.end());
+}
+
+/// FaultCode's name for the logs; "?" for a code this build does not know.
+const char *fault_name(rammp::FaultCode code) {
+  switch (code) {
+  case rammp::FaultCode::NONE:
+    return "NONE";
+  case rammp::FaultCode::WATCHDOG:
+    return "WATCHDOG";
+  case rammp::FaultCode::OVERCURRENT:
+    return "OVERCURRENT";
+  case rammp::FaultCode::VDS_OCP:
+    return "VDS_OCP";
+  case rammp::FaultCode::OVERTEMP:
+    return "OVERTEMP";
+  case rammp::FaultCode::ENCODER:
+    return "ENCODER";
+  case rammp::FaultCode::DRV_FAULT:
+    return "DRV_FAULT";
+  case rammp::FaultCode::UNASSIGNED_AXIS:
+    return "UNASSIGNED_AXIS";
+  case rammp::FaultCode::SAMPLER:
+    return "SAMPLER";
+  case rammp::FaultCode::HALL:
+    return "HALL";
+  case rammp::FaultCode::STALL:
+    return "STALL";
+  }
+  return "?";
+}
 } // namespace
 
 static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
@@ -38,7 +100,8 @@ static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= kReaders,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
 static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= kReaders,
               "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >= kWriters + kSedpEndpoints,
+static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >=
+                  kWriters + kReliableWriters + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
 static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= kReaders + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
@@ -50,7 +113,13 @@ MibSystem::MibSystem()
     , latch_({.watched = mib::config::estop_watch_hmi
                              ? std::span<const std::string_view>(estop::kDefaultWatched)
                              : std::span<const std::string_view>(kNoWatchedNodes, 0),
-              .clear_input = {.gpio_num = mib::config::estop_clear_gpio}}) {}
+              .clear_input = {.gpio_num = mib::config::estop_clear_gpio}})
+    , odometry_({
+          .wheel_diameter_m = mib::config::differential_drive.wheel_diameter_m,
+          .wheel_separation_m = mib::config::differential_drive.wheel_separation_m,
+          .invert_left = mib::config::differential_drive.invert_left,
+          .invert_right = mib::config::differential_drive.invert_right,
+      }) {}
 
 void MibSystem::start() {
   latch_.start();       // first: it starts latched, so nothing moves until a clear succeeds
@@ -112,6 +181,18 @@ void MibSystem::start() {
           },
   });
   motor_command_task_->start();
+
+  odometry_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        publish_odometry();
+
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_for(lock, mib::config::odometry_task_interval);
+        return false;
+      },
+      .task_config = {.name = "MIB odometry", .stack_size_bytes = 8 * 1024},
+  });
+  odometry_task_->start();
 
   while (true) {
     std::this_thread::sleep_for(2s);
@@ -256,6 +337,25 @@ bool MibSystem::initialize_pubsub() {
           .on_message = [this](const rammp::MotorJog &jog) { handle_motor_jog(jog); }});
   if (!motor_states_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
     logger_.error("Failed to create the motor debug endpoints");
+    return false;
+  }
+
+  // RELIABLE: tf2 listeners subscribe reliable, and a best-effort writer never
+  // matches a reliable reader. A reliable writer still serves best-effort readers.
+  odometry_publisher_ = std::make_unique<espp::Publisher<rammp::Odometry>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::Odometry>::Config{.topic = rammp::kBaseOdom.name,
+                                               .type_name = rammp::kBaseOdom.type,
+                                               .reliability = Reliability::RELIABLE});
+
+  tf_publisher_ = std::make_unique<espp::Publisher<rammp::TFMessage>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::TFMessage>::Config{.topic = rammp::kTf.name,
+                                                .type_name = rammp::kTf.type,
+                                                .reliability = Reliability::RELIABLE});
+
+  if (!odometry_publisher_->is_valid() || !tf_publisher_->is_valid()) {
+    logger_.error("Failed to create odometry publisher");
     return false;
   }
 
@@ -561,6 +661,17 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
 
 void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
   std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  const rammp::AxisId id = rammp::kAxes[index].id;
+  if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
+    // A board counts its shaft angle from boot, so a first report or a reboot
+    // (uptime going backwards) restarts the angle. uptime_ms wrapping also looks
+    // like a reboot, which only costs one odometry step.
+    if (motor_state_times_[index] == std::chrono::steady_clock::time_point{} ||
+        state.uptime_ms < motor_states_[index].uptime_ms) {
+      odometry_resync_ = true;
+    }
+    drive_state_updated_ = true;
+  }
   motor_states_[index] = state;
   motor_state_times_[index] = std::chrono::steady_clock::now();
 }
@@ -578,7 +689,8 @@ void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
 void MibSystem::publish_system_state() {
   rammp::MibStatus status{};
   status.active_profile = drive_profile_.load();
-  switch (state_.load()) {
+  const auto current_state = state_.load();
+  switch (current_state) {
   case SystemState::INIT:
   case SystemState::CALIBRATE: // TODO: Handle calibration state separately if needed.
     status.system_state = rammp::MibSystemState::INITIALIZING;
@@ -600,7 +712,9 @@ void MibSystem::publish_system_state() {
     break;
   case SystemState::ESTOP:
     status.system_state = rammp::MibSystemState::ESTOP;
-    status.error_message = "Emergency stop";
+    // The latch's cause, e.g. "hmi: engage" or "hmi: silent (deadman)". The joystick
+    // shows its own e-stop banner instead; this is for the Jetson and the logs.
+    status.error_message = std::string("E-stop: ") + latch_.status().cause;
     break;
   case SystemState::ERROR:
     status.system_state = rammp::MibSystemState::ERROR;
@@ -612,6 +726,30 @@ void MibSystem::publish_system_state() {
     std::lock_guard<std::mutex> lock(seat_state_mutex_);
     status.current_seat_state = seat_state_;
   }
+
+  // Speed is the average of the commanded wheel speeds, matching what
+  // publish_motor_commands() sends: zero unless the chair is driving.
+  if (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
+      current_state == SystemState::SHARED) {
+    const auto wheel_speeds = drive_controller_.wheel_speeds();
+    const auto &drive = mib::config::differential_drive;
+    // wheel_speeds() carries each motor's mounting inversion; undo it so both
+    // wheels are positive when the chassis moves forward.
+    const float left_rpm = drive.invert_left ? -wheel_speeds.left_rpm : wheel_speeds.left_rpm;
+    const float right_rpm = drive.invert_right ? -wheel_speeds.right_rpm : wheel_speeds.right_rpm;
+    const float rpm_to_mps = 3.14159265358979323846f * drive.wheel_diameter_m / 60.0f;
+    // Ground speed has no direction; the joystick shows 0.0 for negative values.
+    status.speed = std::fabs((left_rpm + right_rpm) / 2.0f * rpm_to_mps);
+  }
+
+  // UTC and the local offset; 0 until SNTP has set the clock, which the joystick reads as
+  // "time not known" rather than 1970.
+  if (mib_.time_synced()) {
+    const time_t now = std::time(nullptr);
+    status.epoch_s = static_cast<int64_t>(now);
+    status.utc_offset_min = utc_offset_minutes(now);
+  }
+
   status.seq = ++status_sequence_;
   if (!status_publisher_->publish(status)) {
     logger_.warn("Failed to publish MIB status");
@@ -777,6 +915,33 @@ void MibSystem::publish_diagnostics() {
     };
   }
 
+  // The drive wheels: hottest board sensor, torque current and the latched fault (0 = none).
+  // A board not heard from within motor_state_timeout sends nothing, like a failed IMU read.
+  constexpr std::pair<rammp::DiagId, rammp::AxisId> kDriveRows[] = {
+      {rammp::DiagId::DRIVE_LEFT, rammp::AxisId::DRIVE_LEFT},
+      {rammp::DiagId::DRIVE_RIGHT, rammp::AxisId::DRIVE_RIGHT},
+  };
+  {
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (const auto &[diag, axis] : kDriveRows) {
+      const auto index = static_cast<size_t>(axis);
+      const auto heard = motor_state_times_[index];
+      if (heard == std::chrono::steady_clock::time_point{} ||
+          now - heard >= mib::config::motor_state_timeout) {
+        continue;
+      }
+      const rammp::MotorState &state = motor_states_[index];
+      const auto fault = state.state == rammp::BoardState::FAULT ? state.fault_code
+                                                                 : rammp::FaultCode::NONE;
+      diagnostics.items[static_cast<size_t>(diag)].values = {
+          to_raw(hottest_temp(state), diag, 0),
+          to_raw(state.iq, diag, 1),
+          static_cast<int32_t>(fault),
+      };
+    }
+  }
+
   if (!diagnostics_publisher_->publish(diagnostics)) {
     logger_.warn("Failed to publish diagnostics");
   }
@@ -894,6 +1059,23 @@ void MibSystem::publish_motor_states() {
         motor_online_[i] = online;
         logger_.info("Motor {} {}", rammp::kAxes[i].label, online ? "online" : "offline");
       }
+      // A fault and its clearing are logged once each (serial console and the control
+      // panel's ServiceLink), with what the board saw: its hottest sensor, the bus voltage,
+      // iq and the gate driver's bits.
+      const auto fault = online && state.state == rammp::BoardState::FAULT ? state.fault_code
+                                                                           : rammp::FaultCode::NONE;
+      if (fault != motor_fault_[i]) {
+        if (fault != rammp::FaultCode::NONE) {
+          logger_.error("Motor {} fault {}: hottest {:.1f} C, vbus {:.1f} V, iq {:.2f} A, "
+                        "drv_status 0x{:04x}",
+                        rammp::kAxes[i].label, fault_name(fault), hottest_temp(state), state.vbus, state.iq,
+                        state.drv_status);
+        } else if (online) {
+          logger_.info("Motor {} fault {} cleared", rammp::kAxes[i].label,
+                       fault_name(motor_fault_[i]));
+        }
+        motor_fault_[i] = fault;
+      }
       message.motors.push_back(rammp::MotorSummary{
           .axis_id = static_cast<uint8_t>(i),
           .online = static_cast<uint8_t>(online ? 1 : 0),
@@ -907,6 +1089,71 @@ void MibSystem::publish_motor_states() {
   }
   if (!motor_states_publisher_->publish(message)) {
     logger_.warn("Failed to publish Motors");
+  }
+}
+
+void MibSystem::publish_odometry() {
+  rammp::MotorState left{};
+  rammp::MotorState right{};
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    constexpr auto kLeft = static_cast<size_t>(rammp::AxisId::DRIVE_LEFT);
+    constexpr auto kRight = static_cast<size_t>(rammp::AxisId::DRIVE_RIGHT);
+    constexpr std::chrono::steady_clock::time_point kNever{};
+    // Publish nothing until both wheels have reported, and nothing new while
+    // neither has, so ROS sees /odom go quiet rather than a stale velocity.
+    if (motor_state_times_[kLeft] == kNever || motor_state_times_[kRight] == kNever ||
+        !drive_state_updated_) {
+      return;
+    }
+    left = motor_states_[kLeft];
+    right = motor_states_[kRight];
+    if (std::exchange(odometry_resync_, false)) {
+      odometry_.resync();
+    }
+    drive_state_updated_ = false;
+  }
+
+  odometry_.update(left.position, right.position);
+  const auto &pose = odometry_.pose();
+  const auto velocity = odometry_.velocity(left.velocity, right.velocity);
+
+  // Planar base: the only rotation is yaw about z.
+  const rammp::Quaternion orientation{
+      .x = 0.0,
+      .y = 0.0,
+      .z = std::sin(pose.yaw_rad / 2.0),
+      .w = std::cos(pose.yaw_rad / 2.0),
+  };
+  const rammp::Header header{
+      .stamp = ros_time_now(),
+      .frame_id = rammp::kOdomFrame,
+  };
+
+  rammp::Odometry odometry{};
+  odometry.header = header;
+  odometry.child_frame_id = rammp::kBaseFrame;
+  odometry.pose.pose.position = {.x = pose.x_m, .y = pose.y_m, .z = 0.0};
+  odometry.pose.pose.orientation = orientation;
+  odometry.twist.twist.linear.x = velocity.linear_mps;
+  odometry.twist.twist.angular.z = velocity.angular_radps;
+  for (size_t i = 0; i < 6; i++) {
+    odometry.pose.covariance[i * 7] = mib::config::odometry_pose_covariance_diagonal[i];
+    odometry.twist.covariance[i * 7] = mib::config::odometry_twist_covariance_diagonal[i];
+  }
+  if (!odometry_publisher_->publish(odometry)) {
+    logger_.warn("Failed to publish odometry");
+  }
+
+  rammp::TFMessage tf{};
+  tf.transforms.push_back({
+      .header = header,
+      .child_frame_id = rammp::kBaseFrame,
+      .transform = {.translation = {.x = pose.x_m, .y = pose.y_m, .z = 0.0},
+                    .rotation = orientation},
+  });
+  if (!tf_publisher_->publish(tf)) {
+    logger_.warn("Failed to publish odom -> base_link transform");
   }
 }
 

@@ -1,5 +1,8 @@
 #include "bsp.hpp"
 
+#include <cstdlib>
+#include <ctime>
+
 #include "esp_netif_sntp.h"
 
 namespace mib::bsp {
@@ -33,6 +36,9 @@ bool MIB::init_time_sync() {
   // Every sync steps the clock (no smooth_sync). After the first, a step is the drift over one
   // sync interval plus the one-way network delay, well under 1 ms on the direct link. Smooth sync
   // slews at 1/64: following a 10 s step of the host's clock would take ~10 min.
+  // SNTP sets UTC; TZ only turns it into local time, for MibStatus.utc_offset_min.
+  setenv("TZ", mib::config::timezone, 1);
+  tzset();
   esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG(mib::config::ntp_server);
   config.wait_for_sync = false;
   // Runs on lwIP's tcpip thread, at the bottom of its receive path on a 3 KB stack: only set the

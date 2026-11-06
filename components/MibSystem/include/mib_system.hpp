@@ -9,6 +9,7 @@
 
 #include "base_component.hpp"
 #include "bsp.hpp"
+#include "diff_drive_odometry.hpp"
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
 #include "messages.hpp"
@@ -32,7 +33,7 @@ public:
 
   /// Bring the system up and run it.
   /// Starts the state task, waits for initialization to finish, then starts the
-  /// publication task.
+  /// publication, motor command, and odometry tasks.
   /// \note Blocks the calling thread for the lifetime of the application, and
   ///       returns early if initialization fails (state becomes ERROR).
   void start();
@@ -237,6 +238,11 @@ private:
   /// \note Runs on the motor command task.
   void publish_motor_states();
 
+  /// Advance wheel odometry and publish it to ROS 2 as /base/odom and the
+  /// odom -> base_link transform on /tf (REP-105).
+  /// \note Runs on the odometry task.
+  void publish_odometry();
+
   /// Log the latest joystick input, system state, and motor output.
   /// \note Runs at the slower publication-task rate.
   void log_drive_status();
@@ -245,30 +251,30 @@ private:
   mib::DriveController drive_controller_; ///< Chassis and seat motion controller.
   estop::Latch latch_; ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
-  std::atomic<bool> error_reported_{false};           ///< This stay in ERROR has been logged.
-  std::chrono::steady_clock::time_point
-      estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task
-                           ///< only.
-  std::chrono::steady_clock::time_point
-      estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
-  std::atomic<rammp::DriveProfile> drive_profile_{
-      rammp::DriveProfile::NORMAL};     ///< Active drive profile.
-  rammp::SeatState seat_state_{};       ///< Placeholder for the current seat position.
-  mutable std::mutex seat_state_mutex_; ///< Protects seat state across RTPS and publish tasks.
-  rammp::XYTwist latest_joystick_{};    ///< Most recent joystick sample for diagnostics.
-  mutable std::mutex joystick_mutex_;   ///< Protects the latest joystick sample.
-  uint8_t status_sequence_{0};          ///< Sequence number for MIB status samples.
-  uint8_t motor_command_sequence_{0};   ///< Sequence number for motor command samples.
-  uint8_t diagnostics_sequence_{0};     ///< Sequence number for diagnostics samples.
-  uint8_t motor_states_sequence_{0};    ///< Sequence number for Motors samples.
+  std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
+  std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
+  std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
+  std::atomic<rammp::DriveProfile> drive_profile_{rammp::DriveProfile::NORMAL}; ///< Active drive profile.
+  rammp::SeatState seat_state_{};                ///< Placeholder for the current seat position.
+  mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
+  rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
+  mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
+  mib::DiffDriveOdometry odometry_;            ///< Wheel odometry; used only on the odometry task.
+  uint8_t status_sequence_{0};                 ///< Sequence number for MIB status samples.
+  uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
+  uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
+  uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
   /// When publish_motor_states() last sent a Motors sample (epoch = never).
   std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
   /// Latest state of each kAxes board, and when it arrived (epoch = never).
   std::array<rammp::MotorState, rammp::kAxisCount> motor_states_{};
   std::array<std::chrono::steady_clock::time_point, rammp::kAxisCount> motor_state_times_{};
   std::array<bool, rammp::kAxisCount> motor_online_{}; ///< As last reported, for logging.
-  mutable std::mutex motor_state_mutex_; ///< Protects motor states across RTPS and tasks.
-  rammp::MotorJog latest_jog_{};         ///< Most recent jog request.
+  std::array<rammp::FaultCode, rammp::kAxisCount> motor_fault_{}; ///< As last logged; NONE = none.
+  bool drive_state_updated_{false}; ///< A drive report arrived since the last odometry step.
+  bool odometry_resync_{false};     ///< A drive wheel's angle restarted; resync odometry.
+  mutable std::mutex motor_state_mutex_;       ///< Protects motor states across RTPS and tasks.
+  rammp::MotorJog latest_jog_{};               ///< Most recent jog request.
   std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
   mutable std::mutex jog_mutex_;                            ///< Protects the latest jog request.
   bool jog_requested_{false}; ///< A fresh jog asked for; motor task only.
@@ -293,9 +299,11 @@ private:
   std::mutex twist_mutex_; ///< Orders setpoints against leaving autonomy; guards twist_until_.
   std::unique_ptr<espp::Subscriber<rammp::HandleForce>>
       push_assist_subscriber_;                          ///< Push-assist handles.
-  std::chrono::steady_clock::time_point twist_until_{}; ///< Twist setpoints lapse here.
-  std::unique_ptr<mib::ServiceLink> service_;           ///< WebUSB / UART control panel link.
-  std::unique_ptr<espp::Task> telemetry_task_;          ///< Feeds the panel's plots.
+  std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
+  std::unique_ptr<mib::ServiceLink> service_;                 ///< WebUSB / UART control panel link.
+  std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
+  std::unique_ptr<espp::Publisher<rammp::Odometry>> odometry_publisher_; ///< /base/odom.
+  std::unique_ptr<espp::Publisher<rammp::TFMessage>> tf_publisher_;      ///< /tf.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>>
@@ -308,4 +316,5 @@ private:
   std::chrono::steady_clock::time_point last_imu_log_{};  ///< Last IMU log time; IMU task only.
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
+  std::unique_ptr<espp::Task> odometry_task_; ///< Publishes odometry at 20 Hz.
 };

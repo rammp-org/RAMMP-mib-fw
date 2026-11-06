@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 
@@ -15,6 +16,10 @@ inline constexpr auto publication_task_interval = std::chrono::milliseconds{500}
 
 /// @brief Motor command publication task period.
 inline constexpr auto motor_command_task_interval = std::chrono::milliseconds{50};
+
+/// @brief Wheel odometry update and /odom, /tf publication period. Matches the
+///        20 Hz rate the drive motor controllers report their state at.
+inline constexpr auto odometry_task_interval = std::chrono::milliseconds{50};
 
 /// @brief Telemetry sample period of the service link (the control panel's plots).
 inline constexpr auto service_telemetry_interval = std::chrono::milliseconds{20};
@@ -94,6 +99,10 @@ inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
 /// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
 inline constexpr const char *ntp_server = "snorlax.local";
 
+/// @brief Where the chair is, as a POSIX TZ string: MibStatus carries UTC plus this zone's
+/// offset (daylight saving included), and the joystick's clock shows the local time.
+inline constexpr const char *timezone = "EST5EDT,M3.2.0,M11.1.0"; // US Eastern
+
 /// @brief SNTP client restart period until the first sync. A ROS host that comes up after the MIB
 /// is found within one period, not after lwIP's retry backoff (15 s doubling to 150 s).
 inline constexpr auto time_sync_retry_interval = std::chrono::seconds{15};
@@ -124,6 +133,15 @@ inline constexpr DifferentialDriveConfig differential_drive{
     .invert_left = false,
     .invert_right = true,
 };
+
+/// @brief Diagonal of the published pose covariance: x, y, z, roll, pitch, yaw.
+///        A planar base cannot observe z, roll, or pitch, so they carry a large variance.
+inline constexpr std::array<double, 6> odometry_pose_covariance_diagonal{0.001, 0.001, 1e6,
+                                                                         1e6,   1e6,   0.03};
+
+/// @brief Diagonal of the published twist covariance: vx, vy, vz, wx, wy, wz.
+inline constexpr std::array<double, 6> odometry_twist_covariance_diagonal{0.001, 0.001, 1e6,
+                                                                          1e6,   1e6,   0.03};
 
 /// @brief Trajectory limits for one MIB drive response profile.
 struct DriveProfileConfig {
