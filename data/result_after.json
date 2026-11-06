@@ -1,0 +1,143 @@
+{
+ "label": "after",
+ "evict_12": {
+  "clients": 12,
+  "kept": 12,
+  "lost": 0
+ },
+ "evict_40": {
+  "clients": 40,
+  "kept": 32,
+  "lost": 8
+ },
+ "restarts": [
+  {
+   "boot": 0,
+   "up_s": 5.73,
+   "got": [
+    123,
+    124,
+    125,
+    126,
+    127,
+    128
+   ],
+   "conflicts": 0,
+   "renew": null
+  },
+  {
+   "boot": 1,
+   "up_s": 5.73,
+   "got": [
+    163,
+    164,
+    165,
+    166,
+    167,
+    168
+   ],
+   "conflicts": 0,
+   "renew": "NAK"
+  },
+  {
+   "boot": 2,
+   "up_s": 6.03,
+   "got": [
+    203,
+    204,
+    205,
+    206,
+    207,
+    208
+   ],
+   "conflicts": 0,
+   "renew": "NAK"
+  },
+  {
+   "boot": 3,
+   "up_s": 5.72,
+   "got": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+   ],
+   "conflicts": 0,
+   "renew": "NAK"
+  },
+  {
+   "boot": 4,
+   "up_s": 5.73,
+   "got": [
+    43,
+    44,
+    45,
+    46,
+    47,
+    48
+   ],
+   "conflicts": 0,
+   "renew": "NAK"
+  },
+  {
+   "boot": 5,
+   "up_s": 5.73,
+   "got": [
+    83,
+    84,
+    85,
+    86,
+    87,
+    88
+   ],
+   "conflicts": 0,
+   "renew": "NAK"
+  },
+  {
+   "boot": 6,
+   "up_s": 5.73,
+   "got": [
+    123,
+    124,
+    125,
+    126,
+    127,
+    128
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  }
+ ],
+ "status_net": {
+  "heap_free": 229404,
+  "heap_largest": 188416,
+  "heap_min": 221796,
+  "dhcps": true,
+  "leases": 7,
+  "last_lease_age_s": 0,
+  "pool": [
+   122,
+   161
+  ]
+ },
+ "boots": [
+  5.73,
+  5.73,
+  6.03,
+  5.73,
+  5.73,
+  5.73,
+  5.73,
+  6.03,
+  5.73,
+  5.73,
+  5.73,
+  5.73,
+  6.03,
+  5.73,
+  5.73
+ ],
+ "hwm": "2040"
+}

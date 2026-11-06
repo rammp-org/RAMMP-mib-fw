@@ -1,0 +1,132 @@
+{
+ "label": "before",
+ "evict_12": {
+  "clients": 12,
+  "kept": 8,
+  "lost": 4
+ },
+ "evict_40": {
+  "clients": 40,
+  "kept": 28,
+  "lost": 12
+ },
+ "restarts": [
+  {
+   "boot": 0,
+   "up_s": 6.33,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 0,
+   "renew": null
+  },
+  {
+   "boot": 1,
+   "up_s": 5.73,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  },
+  {
+   "boot": 2,
+   "up_s": 5.72,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  },
+  {
+   "boot": 3,
+   "up_s": 5.73,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  },
+  {
+   "boot": 4,
+   "up_s": 5.73,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  },
+  {
+   "boot": 5,
+   "up_s": 5.73,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  },
+  {
+   "boot": 6,
+   "up_s": 6.03,
+   "got": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "conflicts": 6,
+   "renew": "NAK"
+  }
+ ],
+ "status_net": null,
+ "boots": [
+  5.73,
+  5.73,
+  5.73,
+  5.73,
+  5.73,
+  6.03,
+  5.73,
+  5.73,
+  5.73,
+  5.73,
+  6.03,
+  5.73,
+  5.73,
+  5.73,
+  5.73
+ ],
+ "hwm": "320"
+}
