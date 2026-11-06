@@ -192,6 +192,9 @@ void MibSystem::make_safe_for_ota() {
     state_.store(SystemState::IDLE);
   }
   logger_.warn("Firmware update: drive disabled, overrides dropped, motors commanded DISARMED");
+  // The flash erase that follows stalls every task for seconds: let DISARMED reach the boards
+  // first, or they run on their last command until their own watchdog faults them.
+  std::this_thread::sleep_for(2 * mib::config::motor_command_task_interval);
 }
 
 bool MibSystem::any_override_active() const {
