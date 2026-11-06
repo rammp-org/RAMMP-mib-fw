@@ -374,7 +374,8 @@ void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
   constexpr uint8_t kNoDrive = rammp::kHandleForceLeftZeroAtLimit |
                                rammp::kHandleForceRightZeroAtLimit | rammp::kHandleForceUpdating;
   if ((force.flags & kNeedOk) != kNeedOk || (force.flags & kNoDrive) != 0) {
-    twist_until_ = {};
+    // A flagged sample stops the chair but the board is still heard: stay in PUSH_ASSIST.
+    twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
     drive_controller_.stop();
     return;
   }
@@ -535,6 +536,18 @@ void MibSystem::stop_if_twist_lapsed() {
   }
 }
 
+void MibSystem::leave_push_assist_if_lapsed() {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
+  if (state_.load() != SystemState::PUSH_ASSIST ||
+      std::chrono::steady_clock::now() < twist_until_) {
+    return;
+  }
+  twist_until_ = {};
+  drive_controller_.stop();
+  state_.store(SystemState::IDLE);
+  logger_.warn("Handle forces went quiet: leaving PUSH_ASSIST - back to IDLE");
+}
+
 bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
   if (state_.load() != SystemState::IDLE) {
     logger_.warn("Ignoring seat control command while system is not IDLE");
@@ -622,7 +635,10 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
       return true; // already stopped
     }
     std::lock_guard<std::mutex> lock(twist_mutex_);
-    twist_until_ = {};
+    // Push assist starts its deadline here, so a board that never answers also ends it.
+    twist_until_ = command.push_assist
+                       ? std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout
+                       : std::chrono::steady_clock::time_point{};
     drive_controller_.stop();
     state_.store(command.push_assist ? SystemState::PUSH_ASSIST : SystemState::IDLE);
     logger_.info(command.push_assist ? "Entering PUSH_ASSIST" : "Drive disabled");
@@ -1257,7 +1273,7 @@ void MibSystem::run_state_step() {
     break;
   case SystemState::PUSH_ASSIST:
     logger_.debug("System state: PUSH_ASSIST - running push-assist placeholder");
-    stop_if_twist_lapsed();
+    leave_push_assist_if_lapsed();
     break;
   case SystemState::ESTOP:
     run_estop_step();

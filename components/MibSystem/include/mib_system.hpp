@@ -165,6 +165,14 @@ private:
   /// Stop the drive once external controller setpoints go quiet. State task only.
   void stop_if_twist_lapsed();
 
+  /**
+   * @brief Leave PUSH_ASSIST for IDLE if no HandleForce arrived within twist_setpoint_timeout.
+   *
+   * Runs on the state task. Any sample counts, flagged or not, so this means the board has
+   * gone (cable, power, reboot). Returning to PUSH_ASSIST takes a new request.
+   */
+  void leave_push_assist_if_lapsed();
+
   /// Enter CALIBRATE from IDLE.
   /// \note The trigger (a joystick command or another source) is not finalized; nothing
   ///       calls this yet. Only valid from IDLE.
