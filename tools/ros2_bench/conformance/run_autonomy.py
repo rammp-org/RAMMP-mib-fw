@@ -185,7 +185,7 @@ def check_untokened_stops(ch: Chair):
 
 def check_release_to_idle(ch: Chair):
     r = ch.ctx.release(ch.token)
-    if not r.accepted:
+    if not r.released:
         return Result("", FAIL, f"release refused: {r.message}")
     ok, got = ch.wait_state(MibStatus.SYSTEM_STATE_IDLE)
     cs = ch.ctx.control_status()
@@ -221,7 +221,7 @@ def check_revoke_to_idle(ch: Chair):
         return Result("", FAIL, f"could not re-enter AUTONOMOUS: {name(got)}")
     ch.drive(ch.token, ch.speed, 0.8)
     r = ch.ctx.revoke(reason="autonomy_check operator revoke")
-    if not r.accepted:
+    if not r.revoked:
         return Result("", FAIL, f"revoke refused: {r.message}")
     ok, got = ch.wait_state(MibStatus.SYSTEM_STATE_IDLE)
     cs = ch.ctx.control_status()
@@ -266,8 +266,8 @@ def check_seize(ch: Chair):
         return Result("", FAIL, f"the new owner's twists did not drive (peak {peak:.3f} m/s)")
     r = ch.ctx.release(second)
     ok, got = ch.wait_state(MibStatus.SYSTEM_STATE_IDLE)
-    if not (r.accepted and ok):
-        return Result("", FAIL, f"release by the new owner: accepted={r.accepted}, state {name(got)}")
+    if not (r.released and ok):
+        return Result("", FAIL, f"release by the new owner: released={r.released}, state {name(got)}")
     return Result(
         "", PASS, f"first token refused ({after - before}), state stayed, second drove {peak:.3f} m/s"
     )
