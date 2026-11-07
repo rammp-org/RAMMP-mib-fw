@@ -9,12 +9,15 @@ cd tools/ros2_bench
 pixi run setup                          # once: fetch and build the interfaces
 pixi run conformance                    # against a running MIB
 pixi run conformance --serial /dev/cu.usbmodem5B901579871   # and read its console
+pixi run autonomy                       # an autonomy session on the chair: IT MOVES
+pixi run autonomy --manual              # plus the prompted stick touch and e-stop
 ```
 
-Runs against the main firmware (the services and status topic are served from
-`MibSystem`) or against `components/ArbitrationServer/example`. The two
-console-dependent checks read the example's status line, so with the main
-firmware they skip; the wire checks are the same for both.
+`conformance` runs against the main firmware (the services and status topic are
+served from `MibSystem`) or against `components/ArbitrationServer/example`. The
+two console-dependent checks read the example's status line, so with the main
+firmware they skip; the wire checks are the same for both. `autonomy` needs the
+main firmware on a chair whose wheels are free or lifted.
 
 ## What it checks
 
@@ -33,6 +36,18 @@ check; the exit code is non-zero on any FAIL.
   a seized owner's token stops working; every change of owner halts the base,
   and an idle revoke does not; a pre-supplied token is adopted. The checks that
   must see an admitted command read the MIB's console, so they need `--serial`.
+
+- **autonomy** (`pixi run autonomy`, separate from `conformance` because the chair
+  moves): the Jetson's session end to end, from IDLE. An untokened `DriveCommand`
+  AUTONOMOUS switches the state; with no owner twists are refused and nothing moves;
+  acquire; the owner's twists drive (`MibStatus.speed` rises on a nudge of `--speed`
+  m/s for `--nudge` s each way, 0.1 and 1.5 by default); a token off by one byte is
+  refused and the chair stops within the lapse; release and revoke in AUTONOMOUS each
+  return to IDLE with no owner; a grant alone does not drive in IDLE; a second acquire
+  seizes (old token refused, state stays, new owner drives). `--manual` adds two
+  prompted checks: a joystick touch ends AUTONOMOUS and revokes the grant, and the
+  e-stop latches the Arbiter, refuses acquire, and clears to IDLE with no owner. It
+  leaves the chair in IDLE with no owner.
 
 `harness.py` has the same interface as the arm's, so the arm's checks run
 unchanged; it makes every endpoint once, up front, as a real client does.

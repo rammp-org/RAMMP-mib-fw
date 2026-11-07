@@ -21,6 +21,10 @@ pyserial = ">=3.5,<4"
 [tasks]
 # Once: fetch and build the rammp-interfaces-ros2 messages the bench speaks.
 setup = "./setup.sh"
-# Against a running MIB (components/ArbitrationServer/example). Pass --serial <port>
-# to also read the MIB's USB console.
+# Against a running MIB (main firmware or components/ArbitrationServer/example). Pass
+# --serial <port> to also read the MIB's USB console.
 conformance = "./conformance.sh"
+# An autonomy session on the chair with the main firmware: DriveCommand AUTONOMOUS,
+# acquire, tokened twists drive, untokened ones do not, release, revoke, seize. THE CHAIR
+# MOVES. --manual adds the prompted stick-touch and e-stop checks.
+autonomy = "./autonomy.sh"
