@@ -11,7 +11,10 @@ pixi run conformance                    # against a running MIB
 pixi run conformance --serial /dev/cu.usbmodem5B901579871   # and read its console
 ```
 
-Flash `components/ArbitrationServer/example` first.
+Runs against the main firmware (the services and status topic are served from
+`MibSystem`) or against `components/ArbitrationServer/example`. The two
+console-dependent checks read the example's status line, so with the main
+firmware they skip; the wire checks are the same for both.
 
 ## What it checks
 

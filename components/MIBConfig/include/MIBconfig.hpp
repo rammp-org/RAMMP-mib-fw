@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 
+#include "arbiter.hpp"
 #include "driver/gpio.h"
 
 namespace mib::config {
@@ -48,6 +49,14 @@ inline constexpr auto service_override_timeout = std::chrono::milliseconds{300};
 
 /// @brief External controller TwistSetpoints stop the chair this long after the last admitted one.
 inline constexpr auto twist_setpoint_timeout = std::chrono::milliseconds{300};
+
+/// @brief Which external controller may drive the base (docs/arbitration.md). ENFORCED: a
+/// TwistSetpoint drives only with the token its sender was granted through
+/// /base/acquire_control. DISABLED: every setpoint is admitted; ownership is still tracked and
+/// reported on /base/control_status, and the e-stop still refuses everything. For bring-up
+/// of a Jetson tool that does not acquire yet. The joystick and the push-assist board carry
+/// no token and are not arbitrated in either mode.
+inline constexpr mib::ArbitrationMode arbitration_mode = mib::ArbitrationMode::ENFORCED;
 
 /// @brief Ceilings on panel motor overrides; a limit of 0 from the panel means this value.
 inline constexpr float service_max_velocity_radps = 8.0f;

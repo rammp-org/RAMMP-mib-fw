@@ -7,6 +7,8 @@
 #include <mutex>
 #include <string>
 
+#include "arbiter.hpp"
+#include "arbitration_server.hpp"
 #include "base_component.hpp"
 #include "bsp.hpp"
 #include "diff_drive_odometry.hpp"
@@ -24,6 +26,15 @@
 /// publication task that reports system / seat state to the rest of the robot,
 /// and the motor command task that commands every rammp::kAxes board and
 /// reports them to the joystick as rammp::Motors.
+///
+/// Which external controller may drive is the mib::Arbiter's call (docs/arbitration.md);
+/// what an admitted command means is the state machine's. The Jetson acquires through the
+/// mib::ArbitrationServer's services and stamps its token on every rammp::TwistSetpoint,
+/// the only tokened input; ending autonomy (a stick touch, a DISABLE) revokes it, and the
+/// e-stop latch latches the Arbiter. The joystick's and push-assist board's messages
+/// carry no token and are not arbitrated: their states are the state machine's alone.
+/// Every change of owner halts the drive through on_arbiter_halt(), which also drops an
+/// autonomy state to IDLE when nobody holds the base any more.
 ///
 /// \note Construction does no hardware work; call start() to bring the system up.
 class MibSystem : public espp::BaseComponent {
@@ -118,6 +129,16 @@ private:
   /// Apply a stick sample (the HMI joystick's or the control panel's) to the state: it drives
   /// in DRIVE_ENABLED, and a touch ends AUTONOMOUS.
   void apply_stick(const rammp::XYTwist &sample);
+
+  /// The Arbiter's halt: stop the drive, and go to IDLE from AUTONOMOUS or SHARED when nobody
+  /// holds the base any more (OWNERSHIP_REVOKED). Idempotent and never calls arbiter_.
+  /// \note Runs on the task that changed ownership (an RTPS thread, or the state task for
+  ///       the e-stop), sometimes under the Arbiter's mutex. Takes twist_mutex_.
+  void on_arbiter_halt(mib::HaltReason reason);
+
+  /// Publish /base/control_status now if it changed, after acting on arbiter_ locally.
+  /// \note Never from on_arbiter_halt(): it reads the Arbiter's status under its mutex.
+  void publish_control_status();
 
   /// Disable drive and drop every override before a firmware update starts.
   /// \note Runs on a service-link worker task.
@@ -257,6 +278,9 @@ private:
 
   mib::bsp::MIB &mib_;                    ///< Board support: Ethernet and RTPS participant.
   mib::DriveController drive_controller_; ///< Chassis and seat motion controller.
+  mib::Arbiter arbiter_; ///< Which external controller may command the base. Its mutex is
+                         ///< ordered BEFORE every mutex on_arbiter_halt() takes
+                         ///< (twist_mutex_): never call into it while holding one of those.
   estop::Latch latch_; ///< Robot-wide e-stop latch (~6.4 KB: keep MibSystem static).
   std::atomic<SystemState> state_{SystemState::INIT}; ///< Current state; shared across tasks.
   std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
@@ -305,6 +329,8 @@ private:
   float panel_stick_y_{0.0f};
   std::chrono::steady_clock::time_point panel_stick_until_{}; ///< Panel stick lapses here.
   std::mutex twist_mutex_; ///< Orders setpoints against leaving autonomy; guards twist_until_.
+                           ///< Ordered after arbiter_'s mutex: on_arbiter_halt() takes it.
+  std::unique_ptr<mib::ArbitrationServer> arbitration_server_; ///< /base control services.
   std::unique_ptr<espp::Subscriber<rammp::HandleForce>>
       push_assist_subscriber_;                          ///< Push-assist handles.
   std::chrono::steady_clock::time_point twist_until_{};       ///< Twist setpoints lapse here.
