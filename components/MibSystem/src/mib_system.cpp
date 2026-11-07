@@ -23,8 +23,13 @@ using namespace std::chrono_literals;
 namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
-/// /base/odom and /tf: reliable, so stateful writers, in the per-participant limit only.
-constexpr size_t kReliableWriters = 2;
+/// Reliable, so stateful, writers: /base/odom, /tf, and the ArbitrationServer's
+/// /base/control_status and three service replies. In the stateful and per-participant
+/// limits, not the stateless one.
+constexpr size_t kReliableWriters = 6;
+/// Reliable readers: the ArbitrationServer's three service requests. In the stateful and
+/// per-participant limits and the reader callbacks, not the stateless one.
+constexpr size_t kReliableReaders = 3;
 /// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
 /// the external controller's TwistSetpoint, estop-core's EStop, SPDP and push assist board's
 /// HandleForce.
@@ -98,18 +103,29 @@ static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS with the axis table");
 static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS >= kReaders,
               "raise CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= kReaders,
+static_assert(CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS >= kReaders + kReliableReaders,
               "raise CONFIG_RTPS_LIMIT_MAX_NUM_READER_CALLBACKS with the axis table");
 static_assert(CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT >=
                   kWriters + kReliableWriters + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT with the axis table");
-static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >= kReaders + kSedpEndpoints,
+static_assert(CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT >=
+                  kReaders + kReliableReaders + kSedpEndpoints,
               "raise CONFIG_RTPS_LIMIT_NUM_READERS_PER_PARTICIPANT with the axis table");
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATEFUL_WRITERS >= kReliableWriters + kSedpEndpoints,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATEFUL_WRITERS for the reliable writers");
+static_assert(CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS >= kReliableReaders + kSedpEndpoints,
+              "raise CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS for the reliable readers");
+// SEDP announces every endpoint from one stateful history, one sample each.
+static_assert(CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kWriters + kReliableWriters &&
+                  CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kReaders + kReliableReaders,
+              "raise CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL with the endpoint count");
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
     , mib_(mib::bsp::MIB::instance())
     , drive_controller_()
+    , arbiter_({.mode = mib::config::arbitration_mode,
+                .on_halt = [this](mib::HaltReason reason) { on_arbiter_halt(reason); }})
     , latch_({.watched = mib::config::estop_watch_hmi
                              ? std::span<const std::string_view>(estop::kDefaultWatched)
                              : std::span<const std::string_view>(kNoWatchedNodes, 0),
@@ -264,8 +280,12 @@ bool MibSystem::initialize_pubsub() {
                                    .type_name = rammp::kBaseTwistSetpoint.type,
                                    .reliability = Reliability::BEST_EFFORT,
                                    .on_message = [this](const rammp::TwistSetpoint &setpoint) {
-                                     handle_autonomy_setpoint(setpoint.twist.linear.x,
-                                                              setpoint.twist.angular.z);
+                                     // A setpoint without the live token is dropped here, so
+                                     // it neither drives nor refreshes the lapse deadline.
+                                     arbiter_.run_if_admitted(setpoint.token, [&] {
+                                       handle_autonomy_setpoint(setpoint.twist.linear.x,
+                                                                setpoint.twist.angular.z);
+                                     });
                                    }});
 
   if (!twist_subscriber_->is_valid()) {
@@ -356,6 +376,14 @@ bool MibSystem::initialize_pubsub() {
 
   if (!odometry_publisher_->is_valid() || !tf_publisher_->is_valid()) {
     logger_.error("Failed to create odometry publisher");
+    return false;
+  }
+
+  // The Arbiter's services and status topic (all reliable; see the counts above).
+  arbitration_server_ = std::make_unique<mib::ArbitrationServer>(
+      mib::ArbitrationServer::Config{.arbiter = arbiter_, .participant = mib_.rtps_participant()});
+  if (!arbitration_server_->is_valid()) {
+    logger_.error("Failed to create the base arbitration endpoints");
     return false;
   }
 
@@ -478,10 +506,50 @@ bool MibSystem::enter_autonomy(SystemState autonomy_state, const char *name) {
 }
 
 void MibSystem::leave_autonomy(const char *reason) {
+  {
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    drive_controller_.stop();
+    state_.store(SystemState::IDLE);
+  }
+  logger_.info("Autonomy ended ({}) - back to IDLE", reason);
+  // Take the base from the Jetson: it sees owned=false and a generation bump in
+  // control_status. Outside twist_mutex_, which on_arbiter_halt() takes.
+  arbiter_.revoke();
+  publish_control_status();
+}
+
+void MibSystem::on_arbiter_halt(mib::HaltReason reason) {
+  // Runs on whichever task changed ownership, sometimes under the Arbiter's mutex: stop,
+  // settle the state, and never call back into arbiter_ (arbiter.hpp's rules).
   std::lock_guard<std::mutex> lock(twist_mutex_);
   drive_controller_.stop();
-  state_.store(SystemState::IDLE);
-  logger_.info("Autonomy ended ({}) - back to IDLE", reason);
+  switch (reason) {
+  case mib::HaltReason::OWNERSHIP_REVOKED: {
+    // Nobody holds the base now: the Jetson released it, or an operator revoked it. An
+    // autonomy state has nothing left to drive it, so back to IDLE, as a stick touch
+    // does. leave_autonomy() moves the state before it revokes, and sees no change here.
+    // The stick's own states carry no token and are not the Arbiter's: untouched.
+    auto state = state_.load();
+    if (state == SystemState::AUTONOMOUS || state == SystemState::SHARED) {
+      state_.store(SystemState::IDLE);
+      logger_.warn("Base ownership revoked in autonomy - back to IDLE");
+    }
+    break;
+  }
+  case mib::HaltReason::OWNERSHIP_SEIZED:
+    // Another client took the base; the chair has stopped and the state stays, so the
+    // new owner's setpoints drive it.
+    break;
+  case mib::HaltReason::EMERGENCY_STOP:
+    // enter_estop() moved the state before latching the Arbiter.
+    break;
+  }
+}
+
+void MibSystem::publish_control_status() {
+  if (arbitration_server_) {
+    arbitration_server_->publish_status_if_changed();
+  }
 }
 
 void MibSystem::handle_autonomous_request() {
@@ -634,14 +702,22 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
     } else if (current_state == SystemState::IDLE) {
       return true; // already stopped
     }
-    std::lock_guard<std::mutex> lock(twist_mutex_);
-    // Push assist starts its deadline here, so a board that never answers also ends it.
-    twist_until_ = command.push_assist
-                       ? std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout
-                       : std::chrono::steady_clock::time_point{};
-    drive_controller_.stop();
-    state_.store(command.push_assist ? SystemState::PUSH_ASSIST : SystemState::IDLE);
+    {
+      std::lock_guard<std::mutex> lock(twist_mutex_);
+      // Push assist starts its deadline here, so a board that never answers also ends it.
+      twist_until_ = command.push_assist
+                         ? std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout
+                         : std::chrono::steady_clock::time_point{};
+      drive_controller_.stop();
+      state_.store(command.push_assist ? SystemState::PUSH_ASSIST : SystemState::IDLE);
+    }
     logger_.info(command.push_assist ? "Entering PUSH_ASSIST" : "Drive disabled");
+    // Ending autonomy takes the base from the Jetson, as leave_autonomy() does. After the
+    // state change, so the halt finds nothing left to drop to IDLE.
+    if (current_state == SystemState::AUTONOMOUS || current_state == SystemState::SHARED) {
+      arbiter_.revoke();
+      publish_control_status();
+    }
 
   } else if (autonomy_requested(command)) {
     // The Jetson's request (rammp-rtps#18): AUTONOMOUS or SHARED from IDLE or DRIVE_ENABLED,
@@ -1297,14 +1373,20 @@ void MibSystem::enter_estop() {
     return;
   }
 
-  std::lock_guard<std::mutex> lock(twist_mutex_);
-  drive_controller_.stop();
-  estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
-  state_.store(SystemState::ESTOP);
+  {
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    drive_controller_.stop();
+    estop_hold_until_ = std::chrono::steady_clock::now() + mib::config::estop_hold_duration;
+    state_.store(SystemState::ESTOP);
+  }
   logger_.warn(
       "E-stop: entering ESTOP, asking the latch to clear after {} ms",
       std::chrono::duration_cast<std::chrono::milliseconds>(mib::config::estop_hold_duration)
           .count());
+  // Latch the Arbiter too: the grant is dropped, control_status reports estopped=true, and
+  // no token is admitted until run_estop_step() clears it with the latch.
+  arbiter_.estop();
+  publish_control_status();
 }
 
 void MibSystem::enter_calibrate() {
@@ -1320,6 +1402,8 @@ void MibSystem::enter_calibrate() {
 void MibSystem::run_estop_step() {
   if (!latch_.is_active()) {
     state_.store(SystemState::IDLE);
+    arbiter_.estop_clear(); // to "no owner": the Jetson must acquire again
+    publish_control_status();
     logger_.info("E-stop: latch cleared - back to IDLE (drive must be re-enabled)");
     return;
   }
