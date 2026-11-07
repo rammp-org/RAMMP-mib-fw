@@ -15,7 +15,7 @@ The MIB's other endpoints, which the joystick and the PACE RACER boards use (`ra
 | `/base/odom` | `nav_msgs/msg/Odometry` | MIB → ROS 2 | Wheel odometry, 20 Hz: pose in `odom`, twist in `base_link`. Nothing is published until both drive boards have reported, and nothing new while neither does, so a silent `/base/odom` means the boards are not talking. |
 | `/tf` | `tf2_msgs/msg/TFMessage` | MIB → ROS 2 | The `odom` → `base_link` transform, alongside each odometry sample. |
 
-`/base/odom` and `/tf` are reliable; every other topic is best-effort. All are volatile. On the wire, ROS 2 prefixes topic names with `rt/` and turns `pkg/msg/T` into `pkg::msg::dds_::T_`, so the MIB publishes `rt/rammp/mib/status` with type `rammp_base_interfaces::msg::dds_::MibStatus_`.
+`/base/odom` and `/tf` are reliable; every other topic is best-effort. The MIB's writers advertise transient-local durability with a history of one, so a late subscriber gets the latest sample; a volatile subscriber matches too. On the wire, ROS 2 prefixes topic names with `rt/` and turns `pkg/msg/T` into `pkg::msg::dds_::T_`, so the MIB publishes `rt/rammp/mib/status` with type `rammp_base_interfaces::msg::dds_::MibStatus_`.
 
 ## Requirements
 
