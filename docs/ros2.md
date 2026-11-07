@@ -8,12 +8,14 @@ The MIB's other endpoints, which the joystick and the PACE RACER boards use (`ra
 
 | ROS 2 topic | Type | Direction | What it is |
 |---|---|---|---|
-| `/rammp/mib/status` | `rammp_base_interfaces/msg/MibStatus` | MIB → ROS 2 | The MIB's state, twice a second: `system_state` (0 INITIALIZING, 1 IDLE, 2 ENABLED, 3 ERROR, 4 AUTONOMOUS, 5 SHARED, 6 ESTOP, 7 PUSH_ASSIST), `active_profile`, the seat, `error_message`, a `seq` that wraps at 255. `speed` and `epoch_s` are 0 until #57 fills them. |
-| `/rammp/drive_command` | `rammp_base_interfaces/msg/DriveCommand` | ROS 2 → MIB | Ask for a drive state: `request` 0 DISABLE, 1 ENABLE (the joystick's), 2 AUTONOMOUS, 3 SHARED; `profile` 0 LOW, 1 NORMAL, 2 HIGH; `push_assist` with DISABLE asks for PUSH_ASSIST, which the MIB refuses with a warning until it exists. AUTONOMOUS and SHARED are accepted from IDLE and ENABLED; a stick touch ends AUTONOMOUS; DISABLE ends either. |
+| `/rammp/mib/status` | `rammp_base_interfaces/msg/MibStatus` | MIB → ROS 2 | The MIB's state, twice a second: `system_state` (0 INITIALIZING, 1 IDLE, 2 ENABLED, 3 ERROR, 4 AUTONOMOUS, 5 SHARED, 6 ESTOP, 7 PUSH_ASSIST), `active_profile`, the seat, `error_message`, a `seq` that wraps at 255. `speed` is the commanded ground speed in m/s (the average of the two wheel commands, 0 unless the chair is driving). `epoch_s` and `utc_offset_min` are 0 until the MIB's clock is set over SNTP. |
+| `/rammp/drive_command` | `rammp_base_interfaces/msg/DriveCommand` | ROS 2 → MIB | Ask for a drive state: `request` 0 DISABLE, 1 ENABLE (the joystick's), 2 AUTONOMOUS, 3 SHARED; `profile` 0 LOW, 1 NORMAL, 2 HIGH; `push_assist` with DISABLE asks for PUSH_ASSIST, where the push-handle force sensor drives (profile forced to NORMAL) and which ends on its own when the handle readings stop for 300 ms. AUTONOMOUS and SHARED are accepted from IDLE, ENABLED and PUSH_ASSIST; a stick touch ends AUTONOMOUS; DISABLE ends any of them. In SHARED the stick is not yet blended in: only the twist setpoint drives. |
 | `/rammp/joystick/xy_twist` | `rammp_peripheral_interfaces/msg/XYTwist` | joystick → MIB | The physical stick. ROS 2 can read it. Do not publish on it from ROS 2: it would fight the stick. |
-| `/base/setpoint/twist` | `rammp_base_interfaces/msg/TwistSetpoint` | ROS 2 → MIB | With #58: drive on `twist.linear.x` (m/s) and `twist.angular.z` (rad/s, positive counter-clockwise) in AUTONOMOUS and SHARED. The chair stops 300 ms after the setpoints stop. The `token` is ignored until the Arbiter (#42). |
+| `/base/setpoint/twist` | `rammp_base_interfaces/msg/TwistSetpoint` | ROS 2 → MIB | Drive on `twist.linear.x` (m/s) and `twist.angular.z` (rad/s, positive counter-clockwise) in AUTONOMOUS and SHARED. The chair stops 300 ms after the setpoints stop. The `token` is not checked yet: the Arbiter exists as a component but is not wired into the drive path ([docs/arbitration.md](arbitration.md)). |
+| `/base/odom` | `nav_msgs/msg/Odometry` | MIB → ROS 2 | Wheel odometry, 20 Hz: pose in `odom`, twist in `base_link`. Nothing is published until both drive boards have reported, and nothing new while neither does, so a silent `/base/odom` means the boards are not talking. |
+| `/tf` | `tf2_msgs/msg/TFMessage` | MIB → ROS 2 | The `odom` → `base_link` transform, alongside each odometry sample. |
 
-Every topic is best-effort and volatile. On the wire, ROS 2 prefixes topic names with `rt/` and turns `pkg/msg/T` into `pkg::msg::dds_::T_`, so the MIB publishes `rt/rammp/mib/status` with type `rammp_base_interfaces::msg::dds_::MibStatus_`.
+`/base/odom` and `/tf` are reliable; every other topic is best-effort. All are volatile. On the wire, ROS 2 prefixes topic names with `rt/` and turns `pkg/msg/T` into `pkg::msg::dds_::T_`, so the MIB publishes `rt/rammp/mib/status` with type `rammp_base_interfaces::msg::dds_::MibStatus_`.
 
 ## Requirements
 
@@ -54,12 +56,15 @@ Every topic is best-effort and volatile. On the wire, ROS 2 prefixes topic names
 On the ROS 2 host, once `ping 192.168.4.1` answers. Nothing here moves the wheels.
 
 ```bash
-ros2 topic list -t --no-daemon --spin-time 10 | grep -E 'rammp|base'
+ros2 topic list -t --no-daemon --spin-time 10 | grep -E 'rammp|base|^/tf '
 #   /rammp/drive_command       [rammp_base_interfaces/msg/DriveCommand]
 #   /rammp/joystick/xy_twist   [rammp_peripheral_interfaces/msg/XYTwist]
 #   /rammp/mib/status          [rammp_base_interfaces/msg/MibStatus]
-#   /base/setpoint/twist       [rammp_base_interfaces/msg/TwistSetpoint]   (with #58)
+#   /base/setpoint/twist       [rammp_base_interfaces/msg/TwistSetpoint]
+#   /base/odom                 [nav_msgs/msg/Odometry]
+#   /tf                        [tf2_msgs/msg/TFMessage]
 ros2 topic echo /rammp/mib/status            # system_state 1, seq counting, twice a second
+ros2 topic echo /base/odom --once            # pose and twist; silent until both drive boards report
 ros2 topic pub --once /rammp/drive_command rammp_base_interfaces/msg/DriveCommand \
   "{request: 9, profile: 1, push_assist: false}"   # unknown request: refused, logged, no state change
 ```
