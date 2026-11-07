@@ -40,15 +40,13 @@ CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
 
 The example's `sdkconfig.defaults` has them.
 
-The main firmware does not run the server yet, and its `sdkconfig.defaults`
-sets none of these but the proxies (24, for other reasons). Every endpoint here
-is reliable, so wiring it into `MibSystem` costs 4 stateful writers (the status
-and 3 replies) and 3 stateful readers (the requests), beside SEDP's 2 of each:
-past the profile's 5 stateful writers, and exactly at its 5 readers. In the
-per-participant pools, `MibSystem`'s 15 writers become 19 of 20 and its 13
-readers 16 of 20. The request readers also take reader callbacks: 11 of 14
-become 14 of 14. Add the server's endpoints to the counts and `static_assert`s
-in `mib_system.cpp` when it is wired in.
+The main firmware runs the server from `MibSystem`, and the root
+`sdkconfig.defaults` sets them too (with the proxies at 24, for other reasons).
+Every endpoint here is reliable, so it costs 4 stateful writers (the status and
+3 replies) and 3 stateful readers (the requests), beside SEDP's 2 of each, and
+the request readers take reader callbacks. `mib_system.cpp` counts them in its
+`static_assert`s against the limits, so a pool that is too small fails the
+build rather than the bring-up.
 
 ## Example
 

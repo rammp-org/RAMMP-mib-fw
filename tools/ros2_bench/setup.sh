@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Fetch what the bench needs, pinned, and build it. Run through pixi: `pixi run setup`.
-# - rammp-interfaces-ros2 at the dev commit that adds AcquireControl's pre-supplied
-#   token and rammp_base_interfaces' TwistSetpoint, built with colcon.
+# - rammp-interfaces-ros2 at the v2.0.0 release: AcquireControl's pre-supplied token,
+#   rammp_base_interfaces' TwistSetpoint, DriveCommand and MibStatus, built with colcon.
 # - The arm's arbitration conformance checks from kinova-gen3-ros2, run unchanged.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-rev=672a329 # rammp-interfaces-ros2 dev, PR #19
+rev=c2e3c0d # rammp-interfaces-ros2 main, v2.0.0: adds DriveCommand and MibStatus
 src="$here/ws/src/rammp-interfaces-ros2"
 if [ ! -d "$src" ]; then
   git clone -q https://github.com/rammp-org/rammp-interfaces-ros2.git "$src"

@@ -2,14 +2,16 @@
 
 Who may command the base, how the base finds out, and how that stays separate
 from what the base does. Written while the first piece, the `Arbiter`
-component, was being built. Sections marked **planned** are not implemented.
+component, was being built; the Arbiter is now wired into `MibSystem` (see
+[Roadmap](#roadmap) for what is done). Sections marked **planned** are not
+implemented.
 
 ## Why
 
-Several things can ask the base to move: the joystick, and autonomy on the
-Jetson. Later, a load cell for power-assisted pushing. Only one of them may be
-in control at a time, the handover has to stop the base, and a human choosing
-to drive must win.
+Several things can ask the base to move: the joystick, autonomy on the
+Jetson, and the push-assist handles. Only one of them may be in control at a
+time, the handover has to stop the base, and a human choosing to drive must
+win.
 
 The arm already solves this with a token arbiter. The base copies it
 one-to-one, in the subset that the base needs, so that one orchestrator and one
@@ -44,25 +46,33 @@ granted.
 |---|---|---|
 | Jetson (autonomy, teleop relay, operator tool) | the token it was granted | yes, on every command |
 | Joystick | its own topics, which nothing else publishes on | no |
-| Load cell (later) | its own topic | no |
+| Push-assist board | its own topic | no |
 
-The joystick must drive the base with no Jetson attached, so its messages stay
-exactly as they are and the base keeps reading them. On the arm the joystick's
-broadcast is turned into tokened commands by a teleop node on the Jetson. On
-the base that node lives inside the firmware, **planned** as a small in-process
-*joystick client* that holds a token from the base's own Arbiter and stamps
-joystick input before it enters the arbiter like any other owner's. The Arbiter
-itself never learns the word "joystick".
+The joystick must drive the base with no Jetson attached, and its messages
+(`XYTwist`, `DriveCommand`) carry no token and are fixed, so the joystick is
+not an owner: the base keeps reading them as it always has, and `DRIVE_ENABLED`
+and `PUSH_ASSIST` are the state machine's alone. The Arbiter decides only
+which **external controller** may drive, and the one tokened input is
+`TwistSetpoint`. (On the arm the joystick's broadcast is turned into tokened
+commands by a teleop node on the Jetson; the base has no such node, in the
+firmware or out of it.)
 
-Ownership follows the system state rather than a client policy:
+Ownership is the Jetson's and follows its autonomy session:
 
-- Entering `DRIVE_ENABLED` acquires the base for the joystick. If someone else
-  held it (the end of an autonomous action) that seizes, and the resulting
-  `OWNERSHIP_SEIZED` halt is ignored because the joystick is the new owner.
-- Entering `IDLE` releases it. The stick goes back to being a GUI input and the
-  base shows no owner.
-- A stick deflection during autonomy revokes the Jetson's grant. The Jetson sees
-  `owned=false` and a generation bump in `control_status`.
+- The Jetson acquires through `/base/acquire_control` before it asks for
+  `AUTONOMOUS` or `SHARED` with `DriveCommand`; the request itself carries no
+  token and the state machine accepts it as before. A Jetson that asks without
+  acquiring gets the state but not the base: its setpoints are refused until it
+  acquires, which `control_status` shows.
+- A stick deflection during `AUTONOMOUS` ends it and revokes the Jetson's
+  grant, as does a drive disable from either autonomy state. The Jetson sees
+  `owned=false` and a generation bump in `control_status`. The human wins
+  through the state machine, not through a competing token.
+- If the Jetson releases its grant, or an operator revokes it, while the base
+  is in `AUTONOMOUS` or `SHARED`, the chair stops and drops to IDLE; the user
+  restarts from the joystick's GUI. Nothing re-grants on its own.
+- If another client seizes the base during autonomy, the chair stops and the
+  state stays: the new owner's setpoints drive it.
 - Seat commands only happen in IDLE with nothing moving, so they need no
   ownership change.
 
@@ -81,10 +91,10 @@ The subset of the arm's surface that the base needs, with the same types:
 | `arbitration_mode` | launch parameter | `ArbitrationMode` in the Arbiter's config |
 
 Done: `components/ArbitrationServer` serves the first five rows' base column,
-with C++ mirrors of the types in rammp-rtps, and its example subscribes to the
-twist. `tools/ros2_bench` runs the arm's own arbitration conformance checks
-against it from ROS 2, unchanged, and passes them (bar the `/estop` ones,
-skipped).
+with C++ mirrors of the types in rammp-rtps, from `MibSystem` and from its own
+example, which subscribes to the twist and counts instead of driving.
+`tools/ros2_bench` runs the arm's own arbitration conformance checks against
+either from ROS 2, unchanged, and passes them (bar the `/estop` ones, skipped).
 
 Not ported: the stream session services (`OpenStream`, `CloseStream`,
 `StreamStatus`, `ListControllers`). They exist on the arm because it has
@@ -151,11 +161,11 @@ What it took for a ROS 2 host to reach the MIB at all, each one hiding the next:
 
 ## Modes, stick interrupts, and history (planned)
 
-Main has since taken a simpler path. The Jetson asks for `AUTONOMOUS` or
-`SHARED` with an untokened `DriveCommand` (#61), drives on `TwistSetpoint` in
-both (#58), and a stick touch ends `AUTONOMOUS`. The design below predates
-those and is to be reconciled with them when the Arbiter is wired in (roadmap
-step 5).
+Main has taken a simpler path, which the wiring keeps. The Jetson asks for
+`AUTONOMOUS` or `SHARED` with an untokened `DriveCommand`, drives on tokened
+`TwistSetpoint`s in both, and a stick touch ends `AUTONOMOUS` and revokes its
+grant. The design below predates that; what is still open is the `ModeCommand`
+and the history return, which would replace the untokened request.
 
 The Jetson asks the base for a control mode with a tokened `ModeCommand`:
 MANUAL, COMBINED, or AUTONOMOUS, with the profile to use. It must hold the
@@ -180,15 +190,21 @@ same way during autonomy: **a deflection stops the autonomous owner.**
   moves while the Jetson is alive. No change to the arm driver. How that node
   knows which owners are interruptible is the orchestrator's business.
 
-## Halt, deadline, and error (planned)
+## Halt, deadline, and error
 
 Every change of ownership, the e-stop, and a deadline expiry stop the drive
 controller through the planner. What the state machine does next depends on
-why. A halt with `OWNERSHIP_REVOKED` means nobody owns the base, so it drops to
-IDLE and the stick returns to the GUI. A halt with `OWNERSHIP_SEIZED` means a
-new owner has it and the chair has stopped; the state does not change, and the
-new owner's next command decides what happens. That distinction is the one
-place the base's Arbiter adds a halt reason the arm's does not have.
+why (`MibSystem::on_arbiter_halt`). A halt with `OWNERSHIP_REVOKED` means
+nobody owns the base, so an autonomy state (`AUTONOMOUS`, `SHARED`) drops to
+IDLE and the stick returns to the GUI; the exits `MibSystem` starts itself
+change the state first, so those halts find nothing to do. A halt with
+`OWNERSHIP_SEIZED` means a new owner has it and the chair has stopped; the
+state does not change, and the new owner's next command decides what happens.
+That distinction is the one place the base's Arbiter adds a halt reason the
+arm's does not have. The halt runs on whichever task changed
+ownership and may run under the Arbiter's mutex, so it takes `twist_mutex_`
+and nothing else, and nothing in `MibSystem` calls the Arbiter while holding
+that mutex.
 
 The **deadline** is a liveness watchdog on the owner-to-MIB link. A latest-wins
 twist stream has no stop message; if the publisher dies the last twist would be
@@ -199,10 +215,12 @@ refresh it: a sender with a bad token is not evidence the stream is healthy.
 The joystick publishes continuously even at rest, so it is covered too; pick
 the timeout from its rate, a handful of publish periods.
 
-`MibSystem` already has the lapse half of this (#58): after
-`twist_setpoint_timeout` (300 ms) with no setpoint the chair stops, stays in
-`AUTONOMOUS`, and drives again on the next setpoint. Every setpoint refreshes it
-for now, since the token is not checked yet.
+`MibSystem` has the lapse half of this: after `twist_setpoint_timeout`
+(300 ms) with no admitted setpoint the chair stops, stays in `AUTONOMOUS`, and
+drives again on the next admitted setpoint. A refused setpoint is dropped
+before it reaches the deadline, so a sender without the live token stops the
+chair within the timeout instead of driving it; it is counted in
+`control_status`, not stopped at once.
 
 Deadline expiry is routine, every autonomy restart will trigger it, so it
 halts and returns to IDLE. It is **not** an error. `ERROR`, with the motor
@@ -212,10 +230,11 @@ is already watched downstream: a board that gets no command for 200 ms safe
 stops and holds on its own.
 
 The physical e-stop is the hardware safety chain and freezes everything
-regardless of state. The software `/estop` stays in the port for one-to-one
-with the arm and for operator tools. If the MIB can read the e-stop line, it
-should latch the Arbiter so `control_status` reports it and commands are
-refused until cleared. That is reporting, not safety.
+regardless of state. On the MIB the e-stop is estop-core's latch: entering
+`ESTOP` latches the Arbiter, so `control_status` reports `estopped=true`, the
+grant is dropped and every command and acquire is refused, and the Arbiter is
+cleared, to "no owner", when the latch clears and the state returns to IDLE.
+That is reporting, not safety.
 
 ## Profiles
 
@@ -229,19 +248,21 @@ twist cannot command a jerk or exceed what the chair allows a human.
 
 1. **`Arbiter` component.** Done: `components/Arbiter`, with an example.
 2. **RTPS server face.** Done: `components/ArbitrationServer`, tested from
-   ROS 2 on hardware. Not done: an `/estop` subscription; the MIB's e-stop is
-   estop-core's latch (RAMMP-mib-fw#36, #39), which should latch the Arbiter.
-3. **Twist input.** Done on main (#58): `MibSystem` subscribes to
-   `/base/setpoint/twist` and drives on it in `AUTONOMOUS` and `SHARED`, with
-   the token ignored. What is left is the check in that one handler: wrap it
-   in `run_if_admitted`, so a refused setpoint is dropped and does not refresh
-   the lapse. Whether a refusal should also stop the chair at once is for the
-   wiring to decide; it needs the server running, so it waits for step 5.
-4. **Joystick client.** The in-process owner described above.
-5. **Wire into `MibSystem`.** Handlers call `run_if_admitted`; `on_halt` feeds
-   the state machine; the deadline runs on the state task; `arbitration_mode`
-   in `MIBconfig.hpp`, defaulting to `DISABLED` so the joystick keeps working
-   with no Jetson until it is flipped. The server's reliable endpoints need
-   the stateful pools raised in the root `sdkconfig.defaults` and counted in
-   `mib_system.cpp`'s checks; see the
-   [ArbitrationServer README](../components/ArbitrationServer/README.md#configuration-the-firmware-needs).
+   ROS 2 on hardware. No `/estop` subscription: the MIB's e-stop is
+   estop-core's latch, which latches the Arbiter from `MibSystem`.
+3. **Twist input.** Done: `MibSystem` subscribes to `/base/setpoint/twist`,
+   checks the token in `run_if_admitted`, and drives on an admitted setpoint
+   in `AUTONOMOUS` and `SHARED`. A refused setpoint is dropped and does not
+   refresh the lapse, and does not stop the chair at once.
+4. **Joystick client.** Dropped: the joystick's messages carry no token and
+   are fixed, so the joystick is not an owner (see
+   [Who holds tokens](#who-holds-tokens)). The stick keeps driving untokened.
+5. **Wire into `MibSystem`.** Done: the twist handler calls `run_if_admitted`;
+   `on_arbiter_halt` feeds the state machine; the deadline runs on the state
+   task; ending autonomy revokes; `ESTOP` latches and clears the Arbiter; the
+   server runs beside the other endpoints, with its reliable pools in the root
+   `sdkconfig.defaults` and counted in `mib_system.cpp`'s checks.
+   `arbitration_mode` in `MIBconfig.hpp` is `ENFORCED`; `DISABLED` is there
+   for a Jetson tool that does not acquire yet.
+6. **Still open.** The `ModeCommand` and history return above; the stream
+   session services.
