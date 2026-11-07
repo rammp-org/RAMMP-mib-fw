@@ -80,7 +80,7 @@ The MIB's console then prints `Ignoring unknown drive request 9`. A `--once` pub
 | Topic listed, `echo` silent | CycloneDDS not pinned to the MIB's interface; or espp/rtps older than 1.3.11. |
 | `echo` works, then stops after about 10 s | espp/rtps older than 1.4.0 (esp-cpp/espp#871): the MIB dropped the peer at its lease. Restarting the node buys another 10 s. |
 | `Dropping UDP send ... to 192.168.1.x` on the MIB's console | A process on the host has CycloneDDS on another interface. Pin it (above). |
-| `malformed packet received from vendor 13.37` on the host | espp/rtps older than 1.3.11. |
+| `malformed packet received from vendor 13.37` on the host | Some espp device on the LAN runs espp/rtps older than 1.3.11: the MIB or a wheel board. The 12 bytes after `02020d25` in the dumped packet are the sender's GUID prefix with each word byte-swapped; it starts with that board's MAC. Harmless if the sender is a wheel, since the wheels never need to talk to ROS 2. |
 | `The message type ... is invalid` | The rammp-interfaces-ros2 packages are not sourced in this shell. |
 
 Credit: Alex Chun Lin's #52 wrote the first version of this page; the CycloneDDS setup and the first troubleshooting table came from the `ewang360/MIB-to-Jetson-Communication` handoff on #51.
