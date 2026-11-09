@@ -31,6 +31,7 @@
 *.out
 *.app
 build/
+build-*/
 sdkconfig
 sdkconfig.old
 dependencies.lock
