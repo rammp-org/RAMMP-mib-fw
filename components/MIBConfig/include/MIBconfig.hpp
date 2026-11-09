@@ -136,12 +136,24 @@ struct DifferentialDriveConfig {
   bool invert_right;
 };
 
+/// Compile-time per robot: idf.py -DMIB_ROBOT=flatbot build. The default is the chair.
+#if defined(MIB_ROBOT_FLATBOT)
+/// The office rover: 9 in wheels, 28 in between the drive wheels. Its caster is 19.5 in
+/// from them, which the differential drive maths does not use.
+inline constexpr DifferentialDriveConfig differential_drive{
+    .wheel_diameter_m = 0.2286f,
+    .wheel_separation_m = 0.7112f,
+    .invert_left = false,
+    .invert_right = true,
+};
+#else
 inline constexpr DifferentialDriveConfig differential_drive{
     .wheel_diameter_m = 0.355f,
     .wheel_separation_m = 0.6096f,
     .invert_left = false,
     .invert_right = true,
 };
+#endif
 
 /// @brief Diagonal of the published pose covariance: x, y, z, roll, pitch, yaw.
 ///        A planar base cannot observe z, roll, or pitch, so they carry a large variance.
