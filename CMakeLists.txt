@@ -25,4 +25,6 @@ set(
 # Project metadata for the RAMMP MIB firmware
 project(rammp_mib)
 
+include(cmake/espp_rtps_on_subnet_only.cmake)
+
 set(CMAKE_CXX_STANDARD 20)
