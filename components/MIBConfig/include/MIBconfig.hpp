@@ -108,6 +108,26 @@ inline constexpr std::uint8_t ethernet_netmask[4] = {255, 255, 255, 0};
 /// also have Wi-Fi send their internet traffic here whenever Wi-Fi drops (#73).
 inline constexpr std::uint8_t ethernet_gateway[4] = {0, 0, 0, 0};
 
+/// @brief DHCP pool layout: the MIB serves one window of addresses each boot, the next on the next.
+/// @details The lease table is RAM-only, so a restart forgets every client, while the clients keep
+/// their 2 h leases. Serving from the same addresses again hands out ones still in use (#75). Six
+/// windows keep the last five boots' addresses out of the pool, covering restarts close together.
+/// A window must hold at least CONFIG_LWIP_DHCPS_MAX_STATION_NUM leases (checked in the BSP), or
+/// it fills before the server starts evicting. Hosts on static addresses stay above the last
+/// window.
+inline constexpr std::uint8_t dhcp_pool_first_host = 2;
+inline constexpr std::uint8_t dhcp_pool_window_size = 40;
+inline constexpr std::uint8_t dhcp_pool_window_count = 6;
+
+/// @brief Last host address of the last DHCP pool window.
+inline constexpr unsigned dhcp_pool_last_host =
+    dhcp_pool_first_host + dhcp_pool_window_size * dhcp_pool_window_count - 1;
+
+static_assert(dhcp_pool_last_host <= 254, "the DHCP pool windows must fit in the /24");
+static_assert(dhcp_pool_window_size <= 100, "ESP-IDF's DHCP server takes at most 100 addresses");
+static_assert(ethernet_ip[3] < dhcp_pool_first_host || ethernet_ip[3] > dhcp_pool_last_host,
+              "the MIB's own address must stay out of the DHCP pool");
+
 /// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
 inline constexpr const char *ntp_server = "snorlax.local";
 
