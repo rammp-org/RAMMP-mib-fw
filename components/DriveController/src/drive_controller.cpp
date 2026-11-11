@@ -75,8 +75,7 @@ const config::DriveProfileConfig &DriveController::profile_values(rammp::DrivePr
   }
 }
 
-espp::TrajectoryPlanner::Config
-DriveController::profile_config(rammp::DriveProfile profile) {
+espp::TrajectoryPlanner::Config DriveController::profile_config(rammp::DriveProfile profile) {
   const config::DriveProfileConfig &values = profile_values(profile);
   espp::TrajectoryPlanner::Config config{};
   config.max_linear_velocity = values.max_linear_velocity_mps;
@@ -96,8 +95,7 @@ DriveController::profile_config(rammp::DriveProfile profile) {
     config.stopping_profile.max_linear_acceleration = values.stopping_linear_acceleration_mps2;
   }
   if (values.stopping_angular_acceleration_radps2 > 0.0f) {
-    config.stopping_profile.max_angular_acceleration =
-        values.stopping_angular_acceleration_radps2;
+    config.stopping_profile.max_angular_acceleration = values.stopping_angular_acceleration_radps2;
   }
   return config;
 }
@@ -116,10 +114,10 @@ float DriveController::max_wheel_acceleration_radps2() const {
     return 0.0f;
   }
   const float half_separation_m = differential_drive_.wheel_separation() / 2.0f;
-  const float linear = std::max(values.max_linear_acceleration_mps2,
-                                values.stopping_linear_acceleration_mps2);
-  const float angular = std::max(values.max_angular_acceleration_radps2,
-                                 values.stopping_angular_acceleration_radps2);
+  const float linear =
+      std::max(values.max_linear_acceleration_mps2, values.stopping_linear_acceleration_mps2);
+  const float angular =
+      std::max(values.max_angular_acceleration_radps2, values.stopping_angular_acceleration_radps2);
   return (linear + angular * half_separation_m) / radius_m;
 }
 

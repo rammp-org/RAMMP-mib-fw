@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <ctime>
 #include <condition_variable>
+#include <ctime>
 #include <mutex>
 #include <span>
 #include <string>
@@ -745,8 +745,8 @@ void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state)
     std::lock_guard<std::mutex> lock(motor_state_mutex_);
     const rammp::MotorState &previous = motor_states_[index];
     const bool first_report = motor_state_times_[index] == std::chrono::steady_clock::time_point{};
-    changed = first_report || state.state != previous.state ||
-              state.fault_code != previous.fault_code;
+    changed =
+        first_report || state.state != previous.state || state.fault_code != previous.fault_code;
     const rammp::AxisId id = rammp::kAxes[index].id;
     if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
       // A board counts its shaft angle from boot, so a first report or a reboot
@@ -1297,9 +1297,9 @@ void MibSystem::publish_motor_commands() {
   if (cap_left != inside_cap_left_ || cap_right != inside_cap_right_) {
     inside_cap_left_ = cap_left;
     inside_cap_right_ = cap_right;
-    logger_.info("Inside-wheel torque cap: drive_left {} drive_right {} (cmd {:.2f} / {:.2f} rad/s)",
-                 cap_left ? "CAPPED" : "full", cap_right ? "CAPPED" : "full", left_radps,
-                 right_radps);
+    logger_.info(
+        "Inside-wheel torque cap: drive_left {} drive_right {} (cmd {:.2f} / {:.2f} rad/s)",
+        cap_left ? "CAPPED" : "full", cap_right ? "CAPPED" : "full", left_radps, right_radps);
   }
 }
 
@@ -1328,8 +1328,8 @@ void MibSystem::publish_motor_states() {
         if (fault != rammp::FaultCode::NONE) {
           logger_.error("Motor {} fault {}: hottest {:.1f} C, vbus {:.1f} V, iq {:.2f} A, "
                         "drv_status 0x{:04x}",
-                        rammp::kAxes[i].label, mib::fault_name(fault), hottest_temp(state), state.vbus, state.iq,
-                        state.drv_status);
+                        rammp::kAxes[i].label, mib::fault_name(fault), hottest_temp(state),
+                        state.vbus, state.iq, state.drv_status);
         } else if (online) {
           logger_.info("Motor {} fault {} cleared", rammp::kAxes[i].label,
                        mib::fault_name(motor_fault_[i]));

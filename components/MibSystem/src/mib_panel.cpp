@@ -417,9 +417,9 @@ std::string MibSystem::status_json() {
         i ? "," : "", i, rammp::kAxes[i].segment, rammp::kAxes[i].label, online ? "true" : "false",
         age_ms, s.api_version, s.fw_version >> 24, (s.fw_version >> 16) & 0xFF,
         s.fw_version & 0xFFFF, mib::board_state_name(s.state), static_cast<int>(s.mode),
-        mib::fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus), fin(tmax),
-        fin(s.torque_limit_eff), fin(s.vel_limit_eff), fin(s.accel_limit_eff), s.tuning_ack,
-        a.tuning.tuning_req_id, fin(s.speed_kp), fin(s.speed_ki), fin(s.hall_pll_hz),
+        mib::fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus),
+        fin(tmax), fin(s.torque_limit_eff), fin(s.vel_limit_eff), fin(s.accel_limit_eff),
+        s.tuning_ack, a.tuning.tuning_req_id, fin(s.speed_kp), fin(s.speed_ki), fin(s.hall_pll_hz),
         now < a.override_until ? "true" : "false", a.clear_fault_req, s.clear_fault_ack,
         static_cast<int>(a.last_command.requested_state), static_cast<int>(a.last_command.mode),
         fin(a.last_command.velocity));
