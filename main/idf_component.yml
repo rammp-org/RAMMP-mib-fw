@@ -6,11 +6,14 @@ dependencies:
   # 1.4.0 carries the RTPS fixes the MIB needs against the Jetson's CycloneDDS: the
   # SPDP participant-pool knob (esp-cpp/espp#870), SPDP DATA addressed to
   # ENTITYID_UNKNOWN reaching the SPDP reader (#871), and same-subnet locator
-  # selection (#866, #867).
-  espp/rtps: '>=1.4.0'
+  # selection (#866, #867). 1.4.1 drops the `while (1)` in SPDPAgent::processProxyData:
+  # before it, one participant past SPDP_MAX_NUMBER_FOUND_PARTICIPANTS froze the RTPS
+  # receive task for good.
+  espp/rtps: '>=1.4.1'
   espp/cdr: '>=1.3'
   espp/logger: '>=1.3'
   espp/task: '>=1.3'
+  espp/timer: '>=1.3'
   # Left to itself the component manager settles on LVGL 9.4.0, whose Kconfig rejects
   # CONFIG_LV_MEM_SIZE_KILOBYTES=0 ("LV_MEM_SIZE >= 2kB is required"); 9.6 builds.
   lvgl/lvgl: '>=9.6.0'

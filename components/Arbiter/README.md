@@ -50,22 +50,26 @@ A command is admitted iff the e-stop is clear **and** (the mode is `DISABLED`
 already fails to match, but it lets a client notice it was dispossessed and
 makes a rejection diagnosable.
 
-## How the rest of the firmware will use it
+## How the rest of the firmware uses it
 
 Each RTPS command handler wraps its work in `run_if_admitted`, and the system
-state machine supplies `on_halt`:
+state machine supplies `on_halt` (`MibSystem::on_arbiter_halt`):
 
 ```cpp
 mib::Arbiter arbiter_({
     .mode = mib::config::arbitration_mode,
-    .on_halt = [this](mib::HaltReason reason) {
-      drive_controller_.stop();          // every halt stops the chair
-      post_event(HaltEvent{reason});     // the state machine decides what follows:
-                                         // REVOKED -> IDLE, SEIZED -> stay put
-    },
+    .on_halt = [this](mib::HaltReason reason) { on_arbiter_halt(reason); },
 });
 
-// MibSystem's TwistSetpoint subscriber (#58), with the check added:
+void MibSystem::on_arbiter_halt(mib::HaltReason reason) {
+  std::lock_guard<std::mutex> lock(twist_mutex_);
+  drive_controller_.stop();              // every halt stops the chair
+  if (reason == mib::HaltReason::OWNERSHIP_REVOKED && in_autonomy(state_.load())) {
+    state_.store(SystemState::IDLE);     // nobody owns the base: back to IDLE
+  }                                      // SEIZED: stay put; EMERGENCY_STOP: in ESTOP already
+}
+
+// MibSystem's TwistSetpoint subscriber, with the check:
 .on_message = [this](const rammp::TwistSetpoint &setpoint) {
   arbiter_.run_if_admitted(setpoint.token, [&] {
     handle_autonomy_setpoint(setpoint.twist.linear.x, setpoint.twist.angular.z);

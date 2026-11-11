@@ -17,12 +17,14 @@ endif()
 
 set(
   COMPONENTS
-  "main esptool_py bsp MIBConfig MibSystem ServiceLink Arbiter DifferentialDrive DriveController rammp_rtps_messages"
+  "main esptool_py bsp MIBConfig MibSystem ServiceLink Arbiter ArbitrationServer DifferentialDrive DriveController rammp_rtps_messages"
   CACHE STRING
   "List of components to include"
   )
 
 # Project metadata for the RAMMP MIB firmware
 project(rammp_mib)
+
+include(cmake/espp_rtps_on_subnet_only.cmake)
 
 set(CMAKE_CXX_STANDARD 20)

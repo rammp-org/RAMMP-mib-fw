@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 
+#include "arbiter.hpp"
 #include "driver/gpio.h"
 
 namespace mib::config {
@@ -48,6 +49,14 @@ inline constexpr auto service_override_timeout = std::chrono::milliseconds{300};
 
 /// @brief External controller TwistSetpoints stop the chair this long after the last admitted one.
 inline constexpr auto twist_setpoint_timeout = std::chrono::milliseconds{300};
+
+/// @brief Which external controller may drive the base (docs/arbitration.md). ENFORCED: a
+/// TwistSetpoint drives only with the token its sender was granted through
+/// /base/acquire_control. DISABLED: every setpoint is admitted; ownership is still tracked and
+/// reported on /base/control_status, and the e-stop still refuses everything. For bring-up
+/// of a Jetson tool that does not acquire yet. The joystick and the push-assist board carry
+/// no token and are not arbitrated in either mode.
+inline constexpr mib::ArbitrationMode arbitration_mode = mib::ArbitrationMode::ENFORCED;
 
 /// @brief Ceilings on panel motor overrides; a limit of 0 from the panel means this value.
 inline constexpr float service_max_velocity_radps = 8.0f;
@@ -96,8 +105,11 @@ inline constexpr std::uint8_t ethernet_ip[4] = {192, 168, 4, 1};
 /// @brief IPv4 netmask used by the MIB Ethernet interface.
 inline constexpr std::uint8_t ethernet_netmask[4] = {255, 255, 255, 0};
 
-/// @brief IPv4 gateway address advertised by the MIB DHCP server.
-inline constexpr std::uint8_t ethernet_gateway[4] = {192, 168, 4, 1};
+/// @brief IPv4 gateway of the MIB Ethernet interface, also offered to DHCP clients as their router.
+/// @details 0.0.0.0 means no gateway: the robot LAN has no uplink, and ESP-IDF's DHCP server only
+/// sends the router option when this is nonzero. Advertising the MIB as a router makes hosts that
+/// also have Wi-Fi send their internet traffic here whenever Wi-Fi drops (#73).
+inline constexpr std::uint8_t ethernet_gateway[4] = {0, 0, 0, 0};
 
 /// @brief NTP server the MIB syncs its clock to: the ROS host, resolved over mDNS.
 inline constexpr const char *ntp_server = "snorlax.local";
@@ -130,12 +142,24 @@ struct DifferentialDriveConfig {
   bool invert_right;
 };
 
+/// Compile-time per robot: idf.py -DMIB_ROBOT=flatbot build. The default is the chair.
+#if defined(MIB_ROBOT_FLATBOT)
+/// The office rover: 9 in wheels, 28 in between the drive wheels. Its caster is 19.5 in
+/// from them, which the differential drive maths does not use.
+inline constexpr DifferentialDriveConfig differential_drive{
+    .wheel_diameter_m = 0.2286f,
+    .wheel_separation_m = 0.7112f,
+    .invert_left = false,
+    .invert_right = true,
+};
+#else
 inline constexpr DifferentialDriveConfig differential_drive{
     .wheel_diameter_m = 0.355f,
     .wheel_separation_m = 0.6096f,
     .invert_left = false,
     .invert_right = true,
 };
+#endif
 
 /// @brief Diagonal of the published pose covariance: x, y, z, roll, pitch, yaw.
 ///        A planar base cannot observe z, roll, or pitch, so they carry a large variance.
@@ -251,5 +275,22 @@ inline constexpr DriveProfileConfig drive_profile_high{
     .max_linear_acceleration_mps2 = 2.0f,
     .max_angular_acceleration_radps2 = 4.0f,
 };
+
+/// @brief Gains for the push-assist system.
+struct PushAssistGains {
+  float dead_band_n;    // per handle; below this a handle reads as 0
+  float forward_full_n; // forward force past the dead bands for linear = 1
+  float turn_full_n;    // left - right past the dead bands for |angular| = 1
+  float reverse_max;    // cap on backing up when the handles are pulled, 0..1
+};
+
+//---Stand-in for Alex's code---
+inline constexpr PushAssistGains push_assist_gains{
+    .dead_band_n = 5.0f,
+    .forward_full_n = 40.0f,
+    .turn_full_n = 20.0f,
+    .reverse_max = 0.3f,
+};
+//--------------------------------
 
 } // namespace mib::config

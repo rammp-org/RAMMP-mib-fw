@@ -141,8 +141,17 @@ void MibSystem::make_safe_for_ota() {
     state_.store(SystemState::IDLE);
   } else if (state == SystemState::AUTONOMOUS || state == SystemState::SHARED) {
     leave_autonomy("firmware update");
+  } else if (state == SystemState::PUSH_ASSIST) {
+    // Under twist_mutex_, so no handle-force sample can land a target after the stop.
+    std::lock_guard<std::mutex> lock(twist_mutex_);
+    twist_until_ = {};
+    drive_controller_.stop();
+    state_.store(SystemState::IDLE);
   }
   logger_.warn("Firmware update: drive disabled, overrides dropped, motors commanded DISARMED");
+  // The flash erase that follows stalls every task for seconds: let DISARMED reach the boards
+  // first, or they run on their last command until their own watchdog faults them.
+  std::this_thread::sleep_for(2 * mib::config::motor_command_task_interval);
 }
 
 bool MibSystem::any_override_active() const {
@@ -344,6 +353,9 @@ std::string MibSystem::status_json() {
     break;
   case SystemState::SHARED:
     state = "SHARED";
+    break;
+  case SystemState::PUSH_ASSIST:
+    state = "PUSH_ASSIST";
     break;
   case SystemState::ESTOP:
     state = "ESTOP";
