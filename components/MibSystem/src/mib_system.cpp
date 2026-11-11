@@ -404,7 +404,12 @@ void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
   // Over full scale: scale both down together, so the turn radius holds
   // (as DriveController::set_velocity does).
   const float scale = std::max({1.0f, std::fabs(linear), std::fabs(angular)});
-  drive_controller_.set_target(linear / scale, angular / scale);
+  // The same rule as the stick: never one wheel on its own.
+  if (drive_boards_ready()) {
+    drive_controller_.set_target(linear / scale, angular / scale);
+  } else {
+    drive_controller_.stop();
+  }
   //--------------------------------placeholder until Alex's conversion code is
   // implemented--------------------------------
 
