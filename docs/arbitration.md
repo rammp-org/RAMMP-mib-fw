@@ -262,7 +262,10 @@ twist cannot command a jerk or exceed what the chair allows a human.
    task; ending autonomy revokes; `ESTOP` latches and clears the Arbiter; the
    server runs beside the other endpoints, with its reliable pools in the root
    `sdkconfig.defaults` and counted in `mib_system.cpp`'s checks.
-   `arbitration_mode` in `MIBconfig.hpp` is `ENFORCED`; `DISABLED` is there
-   for a Jetson tool that does not acquire yet.
+   `arbitration_mode` in `MIBconfig.hpp` follows the `MIB_ARBITRATION` build
+   option and defaults to `DISABLED`, as the arm driver's `arbitration_mode`
+   parameter does, until the orchestrator acquires the base for the task
+   nodes; `idf.py -DMIB_ARBITRATION=enforced build` turns the token check on.
+   `/base/control_status` reports the mode in force as `arbitration_enabled`.
 6. **Still open.** The `ModeCommand` and history return above; the stream
    session services.
