@@ -154,6 +154,13 @@ public:
   bool move_relative(int32_t delta, const Profile &profile);
   bool increment();                     ///< One jog step, in counts.
   bool decrement();
+  /// By `delta` counts from where the joint is now, or from the previous target while that
+  /// still lies ahead in the same direction (within ten steps), so a run of jogs from a
+  /// held button advances the target steadily even before the joint breaks free. The one
+  /// move accepted in calibration mode. A delta of 0 retargets the joint to where it is,
+  /// which ends a move in progress without leaving its target in the controller (unlike
+  /// stop()).
+  bool jog(int32_t delta);
   bool stop();                          ///< CiA 402 quick stop; the next move re-enables.
   /// The move engine; call it every few tens of milliseconds, only while the joint may
   /// move (the owner's IDLE), from a task that may block on CAN. While a move is in

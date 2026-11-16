@@ -107,6 +107,7 @@ function setConnected(on, label) {
   if (typeof fwRefresh === 'function') fwRefresh();
   $('transport').disabled = on; $('ethTarget').disabled = on; $('ethBridge').disabled = on;
   document.querySelectorAll('#seatGrid button').forEach(b => { b.disabled = !on; });
+  document.querySelectorAll('#poseButtons button, #poseFromCurrent, #legTable button').forEach(b => { b.disabled = !on; });
 }
 $('connectBtn').onclick = async () => {
   if (link) return disconnect();
@@ -188,7 +189,7 @@ function renderStatus() {
   $('tMotors').textContent = `${online.length}/${s.axes.length}`;
   const faults = s.axes.filter(a => a.online && a.state === 'FAULT');
   $('tMotorsSub').innerHTML = faults.length ? `<span class="ax-status critical">${faults.map(a => a.label + ' ' + a.fault).join(', ')}</span>` : online.length ? `<span class="ax-status good">${online.map(a => a.label).join(', ')}</span>` : '<span class="ax-status warning">None reporting</span>';
-  renderAxesTable(s); renderTuneInForce(s); renderSeatReported(s);
+  renderAxesTable(s); renderTuneInForce(s); renderSeatReported(s); renderLegs(s); renderCalibration(s);
   $('drEnable').disabled = !link || !(s.state === 'IDLE' || s.state === 'DRIVE_ENABLED');
   $('drDisable').disabled = !link || !['DRIVE_ENABLED', 'AUTONOMOUS', 'SHARED'].includes(s.state);
   $('padHint').textContent = s.state === 'DRIVE_ENABLED' ? 'Hold and drag on the pad. Up is forward, right is a right turn. Let go to stop.' : s.state === 'AUTONOMOUS' ? 'The Jetson is driving. Touch the pad to take control back (drive then needs re-enabling).' : 'Enable drive, then hold and drag on the pad.';
@@ -240,8 +241,8 @@ function stopAllOverrides(release = true) {
   if (release && link) link.release(MIBP.ALL).catch(() => {});
 }
 // Anything that takes the page away from the operator stops the motors.
-document.addEventListener('visibilitychange', () => { if (document.hidden) { stopAllOverrides(true); padRelease(); if (autotune.running) autotune.abortReason = 'page hidden'; if (stepTest.running) stepTest.abortReason = 'page hidden'; } });
-window.addEventListener('blur', () => { if (padState.down) padRelease(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { stopAllOverrides(true); padRelease(); stopJog(); if (autotune.running) autotune.abortReason = 'page hidden'; if (stepTest.running) stepTest.abortReason = 'page hidden'; } });
+window.addEventListener('blur', () => { if (padState.down) padRelease(); stopJog(); });
 
 // ---------------------------------------------------------------- motor tuning tab
 for (const sel of [$('tuAxis')]) sel.innerHTML = AXES.map(a => `<option value="${a.id}" ${a.id === 2 ? 'selected' : ''}>${a.label}</option>`).join('');
@@ -520,6 +521,154 @@ for (const card of $('seatGrid').children) {
 }
 function renderSeatReported(s) {
   for (const card of $('seatGrid').children) { const i = +card.dataset.seat, el = card.querySelector('[data-rep]'); axSet(el, s.seat[i], { digits: 1 }); }
+}
+
+// ---------------------------------------------------------------- leg poses
+// A pose is one encoder count per leg, by the leg's MIBconfig.hpp name, from the MIB
+// poses in the repo's config/poses.json (served by eth_bridge.py, and copied beside the
+// hosted page by the Pages workflow). "Go to <pose>" is one LEG_MOVE per leg listed, and a
+// leg left out of a pose is not moved. A
+// pose is a reference position, meant to stay fixed: the page shows it read-only until
+// "Hold to edit poses"; an edit lives only on the page until "Export poses.json" writes
+// the file back out for the repo.
+let poses = [], posesLoaded = null, poseEditing = false, legSig = '', legNames = [];
+const poseEdited = () => posesLoaded !== null && JSON.stringify(poses) !== posesLoaded;
+const editingPose = () => poses.find(p => p.id === $('poseSelect').value) || poses[0];
+// A pose entry is a number (move to that count) or { delta: N } (move by N from where the leg is; 0 = stays).
+const entry = v => v === undefined ? null : typeof v === 'object' && v !== null && 'delta' in v ? { rel: true, counts: +v.delta } : { rel: false, counts: +v };
+const entryText = e => !e ? 'not in pose' : e.rel ? (e.counts === 0 ? 'stays' : `by ${e.counts > 0 ? '+' : ''}${e.counts}`) : `to ${e.counts}`;
+function buildPoseControls() {
+  $('poseSelect').innerHTML = poses.map(p => `<option value="${p.id}">${p.label}</option>`).join('');
+  $('poseButtons').innerHTML = poses.map(p => `<button class="ax-btn primary" data-pose="${p.id}" ${link ? '' : 'disabled'} title="Send each leg of the ${p.label} pose its count, all at once">⌂ Go to ${p.label}</button>`).join('');
+  legSig = ''; if (status) renderLegs(status);
+}
+(async () => {
+  try {
+    const r = await fetch('config/poses.json', { cache: 'no-store' }); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const file = await r.json(); poses = file.poses || []; posesLoaded = JSON.stringify(poses);
+    buildPoseControls();
+  } catch (e) { $('poseMsg').textContent = `config/poses.json not loaded (${e.message}): run eth_bridge.py from the repo, or add the file beside the page`; }
+})();
+$('poseSelect').onchange = () => { legSig = ''; if (status) renderLegs(status); };
+async function goToPose(pose) {
+  const legs = Object.entries(pose.legs).filter(([name]) => legNames.includes(name)).map(([name, v]) => [name, entry(v)]);
+  if (!legs.length) return toast(`${pose.label}: none of its legs is reported by the MIB`, 'err');
+  const refused = [];
+  for (const [name, e] of legs) { if (e.rel && e.counts === 0) continue; try { await link.legMove(legNames.indexOf(name), e.counts, e.rel); } catch (err) { refused.push(`${name}: ${err.message}`); } }
+  $('poseMsg').textContent = refused.length ? `${pose.label}: ${refused.join('; ')}` : `${pose.label}: ${legs.map(([n, e]) => `${n} ${entryText(e)}`).join(', ')}`;
+  if (refused.length) toast(`Go to ${pose.label}: ${refused.join('; ')}`, 'err'); else sys(`Go to ${pose.label} sent`);
+}
+$('poseButtons').onclick = e => { const b = e.target.closest('[data-pose]'); if (b && link) goToPose(poses.find(p => p.id === b.dataset.pose)); };
+// The export is config/poses.json in the repo's form, so the file is replaced as is and committed.
+$('poseExport').onclick = () => {
+  const text = JSON.stringify({ _comment: 'MIB poses: one encoder count per leg, by the leg\'s name in MIBconfig.hpp. Edit on the control panel, export, replace this file, commit.', poses }, null, 2) + '\n';
+  download('poses.json', text);
+  sys('poses.json exported' + (poseEdited() ? ' with the edits made on this page' : ''));
+};
+// One button: hold to unlock editing, then click to lock again.
+function setPoseEditing(on) {
+  poseEditing = on; $('poseEditBox').hidden = !on; $('poseEdit').textContent = on ? 'Lock poses' : 'Hold to edit poses'; legSig = '';
+  if (status) renderLegs(status);
+}
+{
+  const btn = $('poseEdit'); let timer = null;
+  const up = () => { clearInterval(timer); timer = null; btn.classList.remove('active'); if (!poseEditing) btn.textContent = 'Hold to edit poses'; };
+  btn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (poseEditing) return setPoseEditing(false);
+    btn.classList.add('active'); const t0 = performance.now();
+    timer = setInterval(() => { const left = 2000 - (performance.now() - t0); if (left <= 0) { up(); setPoseEditing(true); } else btn.textContent = `Hold ${(left / 1000).toFixed(1)} s`; }, 50);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, up));
+}
+$('poseFromCurrent').onclick = () => { const p = editingPose(); if (!p) return; for (const l of (status && status.legs) || []) if (l.pos !== null) p.legs[l.name] = l.pos; legSig = ''; $('poseMsg').textContent = `${p.label} set from the current positions; export poses.json to keep it`; };
+$('poseReset').onclick = () => { if (posesLoaded === null) return; poses = JSON.parse(posesLoaded); buildPoseControls(); $('poseMsg').textContent = 'poses reset to config/poses.json'; };
+
+function renderLegs(s) {
+  const legs = s.legs || [], tb = $('legTable').querySelector('tbody'), pose = editingPose();
+  legNames = legs.map(l => l.name);
+  if (!pose) { $('legNote').textContent = legs.length ? 'No poses loaded: see the message above.' : 'The MIB reports no leg actuators (CAN bus not up, or a firmware without the actuator driver).'; return; }
+  const canGo = link && s.state === 'IDLE' && !s.estop.latched;
+  document.querySelectorAll('#poseButtons button').forEach(b => { const p = poses.find(x => x.id === b.dataset.pose); b.disabled = !canGo || !Object.keys(p.legs).some(n => legNames.includes(n)); });
+  $('poseHead').textContent = pose.label + (poseEdited() ? ' (edited, not exported)' : '');
+  $('legNote').textContent = !legs.length ? 'The MIB reports no leg actuators (CAN bus not up, or a firmware without the actuator driver).'
+    : !canGo ? 'The MIB moves the legs only while IDLE with the e-stop clear.'
+    : 'Positions are the joint encoders\' counts, read with every status poll. A leg not in the pose is left where it is.';
+  const sig = legs.map(l => `${l.name}|${pose.legs[l.name]}|${l.min}|${l.max}|${l.ready}|${l.online}`).join(';') + `|${pose.id}|${poseEditing}`;
+  if (sig !== legSig) {
+    legSig = sig;
+    const ent = n => entry(pose.legs[n]);
+    tb.innerHTML = legs.map((l, i) => { const e = ent(l.name); return `<tr data-leg="${i}"><td><b>${l.name}</b></td><td class="ax-mono" data-pos>–</td>
+      <td class="ax-mono">${poseEditing ? `<select class="ax-input" data-mode title="to: an absolute count. by: a delta from where the leg is; 0 means it stays"><option value="abs" ${e && e.rel ? '' : 'selected'}>to</option><option value="rel" ${e && e.rel ? 'selected' : ''}>by</option></select> <input class="ax-input ax-mono" type="number" step="1" placeholder="not in pose" style="width:90px" value="${e ? e.counts : ''}" data-counts>` : e ? entryText(e) : '<span class="ax-muted">not in pose</span>'}</td>
+      <td class="ax-mono"><span class="ax-muted" title="Calibrated travel; set it on the Calibration tab">${l.min} to ${l.max}</span></td><td>${!l.online ? '<span class="ax-status critical">no answer</span>' : l.ready ? '<span class="ax-status good">ready</span>' : '<span class="ax-status warning">not homed</span>'}</td>
+      <td><div class="row" style="margin-top:0;gap:4px"><button class="ax-btn" data-go title="Send this leg its move from the pose">Move</button>${poseEditing ? '<button class="ax-btn" data-here title="Copy this leg\'s current position into the pose as an absolute count">← current</button><button class="ax-btn" data-drop title="Leave this leg out of the pose">Drop</button>' : ''}</div></td></tr>`; }).join('');
+    for (const tr of tb.children) {
+      const i = +tr.dataset.leg, name = legs[i].name, input = tr.querySelector('[data-counts]'), mode = tr.querySelector('[data-mode]');
+      const store = () => { const v = parseInt(input.value, 10); if (!Number.isFinite(v)) return; pose.legs[name] = mode.value === 'rel' ? { delta: v } : v; legSig = ''; };
+      if (input) { input.onchange = store; mode.onchange = () => { if (input.value === '') input.value = 0; store(); }; }
+      tr.querySelector('[data-go]').onclick = async () => { const e = entry(pose.legs[name]); if (!e) return toast(`${name} is not in the ${pose.label} pose`, 'err'); if (e.rel && e.counts === 0) { $('poseMsg').textContent = `${name} stays`; return; } try { await link.legMove(i, e.counts, e.rel); $('poseMsg').textContent = `${name} ${entryText(e)}`; } catch (err) { toast(`${name}: ${err.message}`, 'err'); } };
+      const here = tr.querySelector('[data-here]'); if (here) here.onclick = () => { const l = (status.legs || [])[i]; if (!l || l.pos === null) return toast(`${name}: no position yet`, 'err'); pose.legs[name] = l.pos; legSig = ''; };
+      const drop = tr.querySelector('[data-drop]'); if (drop) drop.onclick = () => { delete pose.legs[name]; legSig = ''; };
+      tr.querySelectorAll('button').forEach(b => { b.disabled = !link; });
+    }
+  }
+  for (const tr of tb.children) { const l = legs[+tr.dataset.leg]; tr.querySelector('[data-pos]').textContent = l.pos === null ? '–' : l.pos; }
+}
+
+// ---------------------------------------------------------------- calibration tab
+// A leg is driven to its mechanical ends by holding a jog button: while held, the page
+// sends LEG_JOG by the step every 200 ms (the MIB adds them up, the target running ahead
+// of the leg by up to ten steps), and the release sends a jog of 0, which retargets the
+// leg to where it is. "Lift clamp" is the actuator's calibration mode, in which jogs may pass
+// the current range; the ends are then taken into min / max and installed with Set range.
+let calSig = '', calJog = null;
+const calStep = () => { const v = parseInt($('calStep').value, 10); return Number.isFinite(v) && v > 0 ? v : 500; };
+function stopJog(send = true) {
+  if (!calJog) return;
+  const { leg, btn, timer } = calJog; calJog = null; clearInterval(timer); btn.classList.remove('active');
+  if (send && link) link.legJog(leg, 0).catch(err => toast(`${legNames[leg]}: ${err.message}`, 'err'));
+}
+function startJog(leg, sign, btn) {
+  if (calJog || !link || btn.disabled) return;
+  const send = () => link.legJog(leg, sign * calStep()).catch(err => { toast(`${legNames[leg]}: ${err.message}`, 'err'); stopJog(false); });
+  btn.classList.add('active'); calJog = { leg, btn, timer: setInterval(send, 200) }; send();
+}
+function renderCalibration(s) {
+  const legs = s.legs || [], tb = $('calTable').querySelector('tbody');
+  const canJog = link && s.state === 'IDLE' && !s.estop.latched;
+  $('calNote').textContent = !legs.length ? 'The MIB reports no leg actuators (CAN bus not up, or a firmware without the actuator driver).'
+    : !canJog ? 'The MIB jogs the legs only while IDLE with the e-stop clear.'
+    : 'Hold a jog button to drive the leg, release to stop it. Positions are the joint encoders\' counts, read with every status poll.';
+  const sig = legs.map(l => `${l.name}|${l.min}|${l.max}|${l.cal}|${l.ready}|${l.online}`).join(';') + `|${canJog}`;
+  if (sig !== calSig) {
+    calSig = sig; stopJog(false); // the buttons are rebuilt; a leg mid-jog was stopped by whatever changed the state, or finishes its step
+    tb.innerHTML = legs.map((l, i) => `<tr data-leg="${i}"><td><b>${l.name}</b></td><td class="ax-mono" data-pos>–</td>
+      <td><button class="ax-btn" data-cal title="${l.cal ? 'Put the range clamp back on the controller' : 'Take the range clamp off the controller so jogs can pass the current range (the MIB\'s calibration mode for this leg)'}">${l.cal ? 'Restore clamp' : 'Lift clamp'}</button> ${l.cal ? '<span class="ax-status warning">lifted</span>' : ''}</td>
+      <td><div class="row" style="margin-top:0;gap:4px"><button class="ax-btn" data-jog="-1" title="Hold: jog toward lower counts">◀ −</button><button class="ax-btn" data-jog="1" title="Hold: jog toward higher counts">+ ▶</button></div></td>
+      <td class="ax-mono"><input class="ax-input ax-mono" type="number" step="1" style="width:84px" value="${l.min}" data-min title="Lowest count the leg may be sent to"><button class="ax-btn" data-min-here title="Current position into min">←</button></td>
+      <td class="ax-mono"><input class="ax-input ax-mono" type="number" step="1" style="width:84px" value="${l.max}" data-max title="Highest count the leg may be sent to"><button class="ax-btn" data-max-here title="Current position into max">←</button></td>
+      <td><button class="ax-btn primary" data-range title="Install this range on the MIB: the leg clamps to it, the controller gets it, and it is saved there across reboots and reflashes">Set range</button></td>
+      <td>${!l.online ? '<span class="ax-status critical">no answer</span>' : l.ready ? '<span class="ax-status good">ready</span>' : '<span class="ax-status warning">not homed</span>'}</td></tr>`).join('');
+    for (const tr of tb.children) {
+      const i = +tr.dataset.leg, name = legs[i].name, rmin = tr.querySelector('[data-min]'), rmax = tr.querySelector('[data-max]');
+      tr.querySelector('[data-cal]').onclick = async () => { const on = !legs[i].cal; try { await link.legCalibrate(i, on); sys(`${name}: clamp ${on ? 'lifted' : 'restored'}`); } catch (err) { toast(`${name}: ${err.message}`, 'err'); } };
+      for (const b of tr.querySelectorAll('[data-jog]')) {
+        b.addEventListener('pointerdown', e => { e.preventDefault(); startJog(i, +b.dataset.jog, b); });
+        ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => { if (calJog && calJog.btn === b) stopJog(); }));
+        b.disabled = !canJog;
+      }
+      const here = field => () => { const l = (status.legs || [])[i]; if (!l || l.pos === null) return toast(`${name}: no position yet`, 'err'); field.value = l.pos; };
+      tr.querySelector('[data-min-here]').onclick = here(rmin); tr.querySelector('[data-max-here]').onclick = here(rmax);
+      tr.querySelector('[data-range]').onclick = async () => {
+        const lo = parseInt(rmin.value, 10), hi = parseInt(rmax.value, 10);
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return toast(`${name}: min and max must be whole counts`, 'err');
+        if (lo >= hi) return toast(`${name}: min must be below max`, 'err');
+        try { await link.legRange(i, lo, hi); toast(`${name} range set to ${lo} to ${hi} and saved on the MIB`); sys(`${name} range ${lo} to ${hi}`); } catch (err) { toast(`${name}: ${err.message}`, 'err'); }
+      };
+      tr.querySelectorAll('[data-cal],[data-range],[data-min-here],[data-max-here]').forEach(b => { b.disabled = !link; });
+    }
+  }
+  for (const tr of tb.children) { const l = legs[+tr.dataset.leg]; tr.querySelector('[data-pos]').textContent = l.pos === null ? '–' : l.pos; }
 }
 
 // ---------------------------------------------------------------- sensors tab

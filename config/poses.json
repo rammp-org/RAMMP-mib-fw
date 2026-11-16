@@ -1,0 +1,21 @@
+{
+  "_comment": "MIB poses: one entry per leg, by the leg's name in MIBconfig.hpp. A number is an absolute encoder count to move to; {\"delta\": N} moves the leg by N counts from where it is, so {\"delta\": 0} means the leg stays. Edit on the control panel, export, replace this file, commit.",
+  "poses": [
+    {
+      "id": "home",
+      "label": "Home",
+      "legs": {
+        "FC": 40000,
+        "RC": 40000,
+        "ML": 40000,
+        "MR": 40000,
+        "LCarr": {
+          "delta": 0
+        },
+        "RCarr": {
+          "delta": 0
+        }
+      }
+    }
+  ]
+}

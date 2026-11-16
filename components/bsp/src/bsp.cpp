@@ -227,6 +227,7 @@ bool MIB::init_actuators() {
 		}
 	}
 	logger_.info("{} of {} leg actuators ready", ready, actuators_.size());
+	actuators_up_ = true;
 	return true;
 }
 

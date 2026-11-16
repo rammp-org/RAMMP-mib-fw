@@ -25,6 +25,12 @@ float get_f32(const std::vector<uint8_t> &p, size_t offset) {
   return v;
 }
 
+int32_t get_i32(const std::vector<uint8_t> &p, size_t offset) {
+  int32_t v;
+  std::memcpy(&v, p.data() + offset, sizeof(v));
+  return v;
+}
+
 std::vector<uint8_t> reply_frame(uint8_t type, std::span<const uint8_t> payload) {
   return espp::stream_frame::build_frame(true, mib::panel::kModule, type, payload);
 }
@@ -347,6 +353,46 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
       reply_error(reply, f.type, "refused: seat moves only in IDLE");
     return;
   }
+  case P::kLegMove: {
+    if (!need(6))
+      return;
+    std::string why;
+    if (move_leg(p[0], get_i32(p, 2), p[1] != 0, why))
+      reply_ok(reply, f.type, p[0]);
+    else
+      reply_error(reply, f.type, why);
+    return;
+  }
+  case P::kLegRange: {
+    if (!need(9))
+      return;
+    std::string why;
+    if (set_leg_range(p[0], get_i32(p, 1), get_i32(p, 5), why))
+      reply_ok(reply, f.type, p[0]);
+    else
+      reply_error(reply, f.type, why);
+    return;
+  }
+  case P::kLegJog: {
+    if (!need(5))
+      return;
+    std::string why;
+    if (jog_leg(p[0], get_i32(p, 1), why))
+      reply_ok(reply, f.type, p[0]);
+    else
+      reply_error(reply, f.type, why);
+    return;
+  }
+  case P::kLegCalibrate: {
+    if (!need(2))
+      return;
+    std::string why;
+    if (set_leg_calibration(p[0], p[1] != 0, why))
+      reply_ok(reply, f.type, p[0]);
+    else
+      reply_error(reply, f.type, why);
+    return;
+  }
   case P::kEstop: {
     if (!need(1))
       return;
@@ -440,32 +486,56 @@ std::string MibSystem::status_json() {
     states = motor_states_;
     state_times = motor_state_times_;
   }
-  std::lock_guard<std::mutex> lock(axes_mutex_);
-  for (size_t i = 0; i < rammp::kAxisCount; i++) {
-    const auto &a = axes_[i];
-    const auto &s = states[i];
-    const bool seen = state_times[i] != std::chrono::steady_clock::time_point{};
-    const auto age_ms =
-        seen ? std::chrono::duration_cast<std::chrono::milliseconds>(now - state_times[i]).count()
-             : -1;
-    const bool online = seen && age_ms < mib::config::motor_state_timeout.count();
-    const float tmax = *std::max_element(s.temps.begin(), s.temps.end());
-    json += fmt::format(
-        "{}{{\"axis\":{},\"segment\":\"{}\",\"label\":\"{}\",\"online\":{},\"age_ms\":{},"
-        "\"api\":{},\"fw\":\"{}.{}.{}\",\"state\":\"{}\",\"mode\":{},\"fault\":\"{}\","
-        "\"drv_status\":{},\"cmd_age_ms\":{},\"uptime_ms\":{},\"vbus\":{:.2f},\"temp_max\":{:.1f},"
-        "\"limits\":[{:.3f},{:.3f},{:.3f}],\"tuning\":{{\"ack\":{},\"req\":{},\"kp\":{:.5f},"
-        "\"ki\":{:.5f},\"pll\":{:.2f}}},\"override\":{},\"clear_req\":{},\"clear_ack\":{},"
-        "\"cmd\":{{\"state\":{},\"mode\":{},\"vel\":{:.3f}}}}}",
-        i ? "," : "", i, rammp::kAxes[i].segment, rammp::kAxes[i].label, online ? "true" : "false",
-        age_ms, s.api_version, s.fw_version >> 24, (s.fw_version >> 16) & 0xFF,
-        s.fw_version & 0xFFFF, board_state_name(s.state), static_cast<int>(s.mode),
-        fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus), fin(tmax),
-        fin(s.torque_limit_eff), fin(s.vel_limit_eff), fin(s.accel_limit_eff), s.tuning_ack,
-        a.tuning.tuning_req_id, fin(s.speed_kp), fin(s.speed_ki), fin(s.hall_pll_hz),
-        now < a.override_until ? "true" : "false", a.clear_fault_req, s.clear_fault_ack,
-        static_cast<int>(a.last_command.requested_state), static_cast<int>(a.last_command.mode),
-        fin(a.last_command.velocity));
+  {
+    std::lock_guard<std::mutex> lock(axes_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      const auto &a = axes_[i];
+      const auto &s = states[i];
+      const bool seen = state_times[i] != std::chrono::steady_clock::time_point{};
+      const auto age_ms =
+          seen ? std::chrono::duration_cast<std::chrono::milliseconds>(now - state_times[i]).count()
+               : -1;
+      const bool online = seen && age_ms < mib::config::motor_state_timeout.count();
+      const float tmax = *std::max_element(s.temps.begin(), s.temps.end());
+      json += fmt::format(
+          "{}{{\"axis\":{},\"segment\":\"{}\",\"label\":\"{}\",\"online\":{},\"age_ms\":{},"
+          "\"api\":{},\"fw\":\"{}.{}.{}\",\"state\":\"{}\",\"mode\":{},\"fault\":\"{}\","
+          "\"drv_status\":{},\"cmd_age_ms\":{},\"uptime_ms\":{},\"vbus\":{:.2f},\"temp_max\":{:.1f},"
+          "\"limits\":[{:.3f},{:.3f},{:.3f}],\"tuning\":{{\"ack\":{},\"req\":{},\"kp\":{:.5f},"
+          "\"ki\":{:.5f},\"pll\":{:.2f}}},\"override\":{},\"clear_req\":{},\"clear_ack\":{},"
+          "\"cmd\":{{\"state\":{},\"mode\":{},\"vel\":{:.3f}}}}}",
+          i ? "," : "", i, rammp::kAxes[i].segment, rammp::kAxes[i].label, online ? "true" : "false",
+          age_ms, s.api_version, s.fw_version >> 24, (s.fw_version >> 16) & 0xFF,
+          s.fw_version & 0xFFFF, board_state_name(s.state), static_cast<int>(s.mode),
+          fault_name(s.fault_code), s.drv_status, s.cmd_age_ms, s.uptime_ms, fin(s.vbus), fin(tmax),
+          fin(s.torque_limit_eff), fin(s.vel_limit_eff), fin(s.accel_limit_eff), s.tuning_ack,
+          a.tuning.tuning_req_id, fin(s.speed_kp), fin(s.speed_ki), fin(s.hall_pll_hz),
+          now < a.override_until ? "true" : "false", a.clear_fault_req, s.clear_fault_ack,
+          static_cast<int>(a.last_command.requested_state), static_cast<int>(a.last_command.mode),
+          fin(a.last_command.velocity));
+    }
+  }
+  // The axes lock is released before the leg reads: those go over CAN and may wait on a
+  // silent controller, and the motor command task needs the lock at its own rate.
+  json += "],\"legs\":[";
+  if (mib_.actuators_ready()) {
+    // One encoder read per leg that is up (a silent controller fails fast while it is
+    // marked offline). The panel's Seat tab shows these against its pose table.
+    for (size_t i = 0; i < mib::config::leg_count; i++) {
+      auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+      int32_t counts = 0;
+      const bool have_pos = actuator.online() && actuator.read_position(counts);
+      const auto target = actuator.last_target();
+      const auto range = actuator.range();
+      json += fmt::format("{}{{\"name\":\"{}\",\"pos\":{},\"target\":{},\"min\":{},"
+                          "\"max\":{},\"ready\":{},\"online\":{},\"cal\":{}}}",
+                          i ? "," : "", actuator.name(),
+                          have_pos ? std::to_string(counts) : "null",
+                          target ? std::to_string(*target) : "null", range.min, range.max,
+                          actuator.ready() ? "true" : "false",
+                          actuator.online() ? "true" : "false",
+                          actuator.calibration_mode() ? "true" : "false");
+    }
   }
   json += "]}";
   return json;

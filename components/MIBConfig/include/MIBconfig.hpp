@@ -206,6 +206,10 @@ inline constexpr DriveProfileConfig drive_profile_high{
     .max_angular_acceleration_radps2 = 4.0f,
 };
 
+/// @brief After an e-stop quick-stops the leg actuators, how long to let the stop ramp
+/// settle before each leg's position is read and commanded as its new target.
+inline constexpr std::chrono::milliseconds estop_leg_settle{250};
+
 /// @brief CAN bus to the MCP266 motor controllers (TWAI peripheral).
 inline constexpr int can_tx_gpio = 17;
 inline constexpr int can_rx_gpio = 16;

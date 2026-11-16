@@ -72,8 +72,33 @@ environment deploys from `main` only).
   while held; let go and the MIB brakes to a stop within 300 ms. In
   AUTONOMOUS, touching the pad ends autonomy (back to IDLE) as the HMI's
   stick does.
-- **Seat actuators**: targets for the four seat axes (rammp-rtps seat table).
-  The MIB accepts and reports them; it has no actuator driver yet.
+- **Seat actuators**: the leg actuators the MIB drives over CAN (MCP266s, in
+  encoder counts) and the MIB **poses**. A pose is one entry per leg from
+  `config/poses.json` in the repo (Home is the first; `eth_bridge.py` serves it
+  and the Pages workflow copies it beside the hosted page): a count to move to,
+  or a delta to move by from where the leg is, delta 0 meaning the leg stays.
+  **Go to Home** sends each leg of the pose its move, one `LEG_MOVE` per leg; the MIB takes a leg
+  move only when IDLE with the e-stop clear; an e-stop quick-stops the legs
+  and makes where each one stopped its target, so nothing resumes afterwards. A pose is a reference position and is shown
+  read-only; **Hold to edit poses** unlocks it for a hardware or calibration
+  change (set it from the legs' current positions or type the counts) and the
+  same button locks it again. The edit lives only on the page: **Export
+  poses.json** downloads the file to replace `config/poses.json` with and
+  commit, which is what every panel shares. Below that, targets for
+  the four seat axes (rammp-rtps seat table), which the MIB accepts and reports
+  but does not yet map onto the legs.
+- **Calibration**: each leg's **range**, the calibrated travel in encoder
+  counts that the MIB clamps it to. **Lift clamp** sends `LEG_CALIBRATE`,
+  the actuator's calibration mode, in which jogs may pass the current range;
+  **holding** a jog button sends `LEG_JOG` by the step every 200 ms and the
+  release sends a jog of 0, which retargets the leg to where it is. Drive the
+  leg to each mechanical end, take the position with ← into min or max, and
+  **Set range** sends `LEG_RANGE`: the MIB clamps the leg to it, writes it to
+  the controller and saves it in NVS, which overrides the compiled default in
+  `MIBconfig.hpp` from then on. Restore the clamp when done; every boot
+  restores it anyway. Jogs, like moves, are taken only in IDLE with the
+  e-stop clear, and with the clamp lifted nothing limits travel but the
+  controller's current limit and any limit switches.
 - **Sensors and data**: every telemetry channel, with live values, plots of
   any six, and CSV export. Channels named `sensor.*` get a tile. Today that is
   the P4's die temperature; a sensor added to the firmware shows up by adding

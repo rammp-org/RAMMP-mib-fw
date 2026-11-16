@@ -10,6 +10,7 @@ Endpoints:
     GET  /builds               JSON list of firmware builds: this repo's build*/, and --racer's
     GET  /builds/<source>/<dir>/<file>   a file that build's flasher_args.json names
     GET  /discover             PACE RACER boards answering "PACE?" on udp :5556
+    GET  /config/poses.json    the repo's config/poses.json (the chair's leg poses)
     GET  /bridge.json          {"bridge": true, "default_target": "192.168.4.1"}: tells
                                the page it can use this origin's /ws
     WS   /ws?target=<ip>[:port]   raw bytes <-> tcp <ip>:<port, 5555>, one socket per page
@@ -261,6 +262,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, "application/json", json.dumps(discover()).encode())
         if u.path == "/bridge.json":
             return self.reply(200, "application/json", json.dumps({"bridge": True, "default_target": DEFAULT_TARGET}).encode())
+        if u.path == "/config/poses.json":
+            # The chair's poses are version-controlled in the repo, not in the panel folder.
+            try:
+                with open(os.path.join(REPO, "config", "poses.json"), "rb") as fh:
+                    return self.reply(200, "application/json", fh.read())
+            except OSError:
+                return self.send_error(404, "config/poses.json not found in the repo")
         name = "index.html" if u.path == "/" else u.path.lstrip("/")
         # Only plain files in this directory: no path tricks.
         if "/" in name or name.startswith(".") or os.path.splitext(name)[1] not in TYPES or not os.path.isfile(os.path.join(HERE, name)):
