@@ -512,6 +512,107 @@ bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
   return true;
 }
 
+bool MibSystem::move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why) {
+  if (!mib_.actuators_ready()) {
+    why = "leg actuators are not up (CAN)";
+    return false;
+  }
+  if (leg >= mib::config::leg_count) {
+    why = "no such leg";
+    return false;
+  }
+  if (state_.load() != SystemState::IDLE) {
+    why = "legs move only in IDLE";
+    return false;
+  }
+  if (latch_.is_active()) {
+    why = "e-stop is latched";
+    return false;
+  }
+  auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(leg));
+  if (!(relative ? actuator.move_relative(counts) : actuator.move_absolute(counts))) {
+    why = std::string(actuator.name()) + " refused the move: see the log";
+    return false;
+  }
+  return true;
+}
+
+bool MibSystem::jog_leg(uint8_t leg, int32_t delta, std::string &why) {
+  if (!mib_.actuators_ready()) {
+    why = "leg actuators are not up (CAN)";
+    return false;
+  }
+  if (leg >= mib::config::leg_count) {
+    why = "no such leg";
+    return false;
+  }
+  if (state_.load() != SystemState::IDLE) {
+    why = "legs jog only in IDLE";
+    return false;
+  }
+  if (latch_.is_active()) {
+    why = "e-stop is latched";
+    return false;
+  }
+  auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(leg));
+  if (!actuator.jog(delta)) {
+    why = std::string(actuator.name()) + " refused the jog: see the log";
+    return false;
+  }
+  return true;
+}
+
+bool MibSystem::set_leg_calibration(uint8_t leg, bool on, std::string &why) {
+  if (!mib_.actuators_ready()) {
+    why = "leg actuators are not up (CAN)";
+    return false;
+  }
+  if (leg >= mib::config::leg_count) {
+    why = "no such leg";
+    return false;
+  }
+  if (state_.load() != SystemState::IDLE) {
+    why = "calibration mode changes only in IDLE";
+    return false;
+  }
+  auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(leg));
+  if (!actuator.set_calibration_mode(on)) {
+    why = std::string(actuator.name()) + " did not take the clamp change: see the log";
+    return false;
+  }
+  logger_.info("{}: calibration mode {} from the control panel", actuator.name(),
+               on ? "on, range clamp lifted" : "off, range clamp restored");
+  return true;
+}
+
+bool MibSystem::set_leg_range(uint8_t leg, int32_t min_counts, int32_t max_counts,
+                              std::string &why) {
+  if (!mib_.actuators_ready()) {
+    why = "leg actuators are not up (CAN)";
+    return false;
+  }
+  if (leg >= mib::config::leg_count) {
+    why = "no such leg";
+    return false;
+  }
+  if (min_counts >= max_counts) {
+    why = "min must be below max";
+    return false;
+  }
+  if (state_.load() != SystemState::IDLE) {
+    why = "leg ranges change only in IDLE";
+    return false;
+  }
+  const auto which = static_cast<mib::config::Leg>(leg);
+  if (!mib_.set_actuator_range(which, {min_counts, max_counts})) {
+    why = std::string(mib_.actuator(which).name()) + " did not take the range: see the log";
+    return false;
+  }
+  logger_.info("{}: range set to [{}, {}] from the control panel and saved",
+               mib_.actuator(which).name(), min_counts, max_counts);
+  return true;
+}
+
 bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
   const auto current_state = state_.load();
   if (drive_enable_requested(command)) {
@@ -1102,6 +1203,12 @@ void MibSystem::run_state_step() {
       service_->start_tcp();
     }
 
+    // The leg actuators need only the CAN bus. A controller that does not answer is left
+    // offline and retried on use, so a bench MIB with nothing on CAN still boots.
+    if (!mib_.init_actuators()) {
+      logger_.warn("Leg actuators unavailable: CAN bus did not come up");
+    }
+
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");
     while (!mib_.ethernet_connected()) {
@@ -1221,8 +1328,48 @@ void MibSystem::enter_calibrate() {
 void MibSystem::run_estop_step() {
   if (!latch_.is_active()) {
     state_.store(SystemState::IDLE);
+    estop_actuators_stopped_ = false;
     logger_.info("E-stop: latch cleared - back to IDLE (drive must be re-enabled)");
     return;
+  }
+  // Once per ESTOP: every leg this boot has commanded is quick-stopped, and once the ramp
+  // has settled, where it stopped becomes its target. The quick stop alone leaves the
+  // profile target in the controller, and the leg carries on to it as soon as the drive is
+  // enabled again (seen on the bench); the move to its own position replaces that target.
+  // Only commanded legs: a drive that was never enabled refuses the quick stop, and the
+  // boot latch puts every boot through here. Here rather than in enter_estop(), which runs
+  // on callers that must not block on CAN.
+  if (!estop_actuators_stopped_) {
+    estop_actuators_stopped_ = true;
+    if (mib_.actuators_ready()) {
+      std::array<bool, mib::config::leg_count> stopped{};
+      for (size_t i = 0; i < mib::config::leg_count; i++) {
+        auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+        if (!actuator.last_target()) {
+          continue;
+        }
+        stopped[i] = actuator.stop();
+        if (!stopped[i]) {
+          logger_.warn("E-stop: {} did not accept the quick stop", actuator.name());
+        }
+      }
+      if (std::any_of(stopped.begin(), stopped.end(), [](bool s) { return s; })) {
+        std::this_thread::sleep_for(mib::config::estop_leg_settle);
+      }
+      for (size_t i = 0; i < mib::config::leg_count; i++) {
+        if (!stopped[i]) {
+          continue;
+        }
+        auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+        // A jog of 0, not an absolute move: a leg being calibrated accepts only jogs.
+        int32_t here = 0;
+        if (actuator.read_position(here) && actuator.jog(0)) {
+          logger_.info("E-stop: {} held at {}", actuator.name(), here);
+        } else {
+          logger_.warn("E-stop: {} could not be retargeted to where it stopped", actuator.name());
+        }
+      }
+    }
   }
   const auto now = std::chrono::steady_clock::now();
   if (now < estop_hold_until_) {

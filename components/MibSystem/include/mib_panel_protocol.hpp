@@ -29,6 +29,27 @@
 ///   0x07 SEAT           [axis u8][target f32]     rammp::SeatCommand. Reply OK / ERROR.
 ///   0x08 ESTOP          [action u8]               1 = engage, 2 = start a clear attempt.
 ///   0x09 STATUS                                    Reply STATUS_REPLY, UTF-8 JSON.
+///   0x0A LEG_MOVE       [leg u8][relative u8][counts i32]  Move one leg actuator
+///        (MIBconfig.hpp `Leg` order): relative 0 = to the absolute encoder count,
+///        1 = by `counts` from where the leg is now (the encoder is read first). Clamped
+///        to the leg's range by the actuator. The panel's "Go to Home" is one of these per
+///        leg, from the MIB poses in config/poses.json. In IDLE with the e-stop clear
+///        only. Reply OK / ERROR [reason].
+///   0x0B LEG_RANGE      [leg u8][min i32][max i32]  Install one leg's calibrated range,
+///        in encoder counts: the actuator clamps its targets to it, writes it to the
+///        controller and saves it in the MIB's NVS, which overrides the compiled default in
+///        MIBconfig.hpp from then on. STATUS reports it as the leg's min / max. In IDLE
+///        only. Reply OK [leg] / ERROR [reason].
+///   0x0C LEG_JOG        [leg u8][counts i32]      Jog one leg by `counts` from where it is
+///        (the encoder is read first), or on from its previous target while that still
+///        lies ahead, so a run of these adds up; 0 retargets it to where it is, which
+///        ends a jog without leaving a stale target in the controller. A jog is the one move the
+///        actuator accepts with its clamp lifted (LEG_CALIBRATE), so the panel's
+///        Calibration tab sends these while a jog button is held, and a 0 on release. In
+///        IDLE with the e-stop clear only. Reply OK [leg] / ERROR [reason].
+///   0x0D LEG_CALIBRATE  [leg u8][on u8]           1 = lift one leg's range clamp on the
+///        controller so jogs can reach its mechanical ends, 0 = restore it. Off at every
+///        boot. STATUS reports it as the leg's `cal`. In IDLE only. Reply OK [leg] / ERROR.
 ///
 /// MIB -> host
 ///   0x81 OK           [request type u8][value u8]
@@ -47,6 +68,10 @@ inline constexpr uint8_t kStick = 0x06;
 inline constexpr uint8_t kSeat = 0x07;
 inline constexpr uint8_t kEstop = 0x08;
 inline constexpr uint8_t kStatus = 0x09;
+inline constexpr uint8_t kLegMove = 0x0A;
+inline constexpr uint8_t kLegRange = 0x0B;
+inline constexpr uint8_t kLegJog = 0x0C;
+inline constexpr uint8_t kLegCalibrate = 0x0D;
 
 inline constexpr uint8_t kOk = 0x81;
 inline constexpr uint8_t kStatusReply = 0x89;

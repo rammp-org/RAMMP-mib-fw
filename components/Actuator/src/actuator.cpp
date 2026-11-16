@@ -1,6 +1,7 @@
 #include "actuator.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <thread>
 
 namespace mib {
@@ -11,6 +12,8 @@ namespace {
 /// The clamp installed while calibrating or homing: wide enough for any travel, narrow
 /// enough that max - min still fits a 32-bit integer if the controller computes the span.
 constexpr Actuator::Range kUnlimited{-1'000'000'000, 1'000'000'000};
+// How far ahead of the joint, in jog steps, a run of jogs may push the target (see jog()).
+constexpr int64_t kJogLeadSteps = 10;
 /// Homing: the motor is given this long to start moving before a stall counts.
 constexpr auto kHomingGrace = 2s;
 constexpr auto kHomingPoll = 100ms;
@@ -403,7 +406,13 @@ bool Actuator::do_move(int32_t counts, const Profile &profile, bool jog) {
   }
   const int32_t clamped = clamp(counts);
   if (clamped != counts) {
-    logger_.warn("{}: target {} clamped to {}", config_.name, counts, clamped);
+    // A held jog button sends jogs past the end several times a second; that is the clamp
+    // doing its job, not something to warn about each time.
+    if (jog) {
+      logger_.debug("{}: jog target {} clamped to {}", config_.name, counts, clamped);
+    } else {
+      logger_.warn("{}: target {} clamped to {}", config_.name, counts, clamped);
+    }
   }
   if (!release_quick_stop()) {
     return false;
@@ -474,15 +483,32 @@ bool Actuator::move_relative(int32_t delta, const Profile &profile) {
                  profile);
 }
 
-bool Actuator::increment() {
+bool Actuator::jog(int32_t delta) {
   int32_t current = 0;
-  return read_position(current) && do_move(current + config_.jog_step, config_.profile, true);
+  if (!read_position(current)) {
+    return false;
+  }
+  // A held jog button sends these faster than the joint moves, and a joint that has not
+  // broken free yet has not moved at all (seen on the bench: a 500-count target gave no
+  // motion). Jogging on from the previous target while it still lies ahead in the same
+  // direction advances the target steadily; from the position, every jog would re-aim at
+  // the same point. The lead is capped so the joint never chases a far-off target.
+  int64_t base = current;
+  if (const auto previous = last_target(); previous && delta != 0) {
+    const int64_t lead = static_cast<int64_t>(*previous) - current;
+    const bool ahead = delta > 0 ? lead > 0 : lead < 0;
+    if (ahead && std::abs(lead) <= kJogLeadSteps * static_cast<int64_t>(std::abs(delta))) {
+      base = *previous;
+    }
+  }
+  const int64_t target = base + delta;
+  return do_move(static_cast<int32_t>(std::clamp<int64_t>(target, INT32_MIN, INT32_MAX)),
+                 config_.profile, true);
 }
 
-bool Actuator::decrement() {
-  int32_t current = 0;
-  return read_position(current) && do_move(current - config_.jog_step, config_.profile, true);
-}
+bool Actuator::increment() { return jog(config_.jog_step); }
+
+bool Actuator::decrement() { return jog(-config_.jog_step); }
 
 bool Actuator::stop() {
   if (!check_online()) {

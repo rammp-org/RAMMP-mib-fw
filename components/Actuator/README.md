@@ -31,6 +31,7 @@ layer that wants the other meaning).
 | `move_absolute(counts)` | Profile move, clamped to the range; a per-move `Profile` overload exists |
 | `move_relative(delta)` | Read the encoder, add, move |
 | `increment()`, `decrement()` | One jog step in counts |
+| `jog(delta)` | By `delta` counts from where the joint is, or on from the previous target while it still lies ahead (a held button's run of jogs adds up); the one move accepted in calibration mode. 0 retargets the joint to where it is, ending a move without a stale target |
 | `stop()` | CiA 402 quick stop |
 | `is_target_reached(reached)`, `get_drive_state(state)` | The controller's arrival flag and decoded CiA 402 state |
 

@@ -129,8 +129,9 @@ public:
   /// the actuator). Call from the periodic actuator poll.
   void save_actuator_positions();
 
-  /// @brief Whether init_actuators() brought the bus up.
-  bool actuators_ready() const { return twai_ != nullptr; }
+  /// @brief Whether init_actuators() brought the bus up and built every actuator, so
+  /// actuator() may be called (from any task).
+  bool actuators_ready() const { return actuators_up_.load(); }
 
   /// @brief The actuator of one leg. Only valid after init_actuators().
   Actuator &actuator(config::Leg leg) { return *actuators_[static_cast<size_t>(leg)]; }
@@ -198,6 +199,7 @@ private:
   std::vector<std::unique_ptr<Controller>> controllers_;
   std::array<std::unique_ptr<Actuator>, config::leg_count> actuators_;
   ActuatorStore store_;
+  std::atomic<bool> actuators_up_{false};
 };
 
 } // namespace mib::bsp

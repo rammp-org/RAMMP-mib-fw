@@ -192,6 +192,39 @@ private:
   /// \return False if the command was refused.
   bool handle_drive_command(const rammp::DriveCommand &command);
 
+  /// Move one leg actuator (the panel's LEG_MOVE).
+  /// \param leg A MIBconfig.hpp Leg index.
+  /// \param counts The absolute target, or with `relative` the delta from the current
+  ///        position; either way clamped to the leg's range by the actuator.
+  /// \param relative Move by `counts` instead of to it.
+  /// \param why On refusal, the reason for the caller's reply.
+  /// \note Blocks for the CAN exchanges (tens of ms): a service-link worker or a task,
+  ///       never an RTPS receive thread. Accepted in IDLE with the e-stop clear.
+  /// \return False if refused, or if the actuator refused the move.
+  bool move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why);
+
+  /// Install one leg's calibrated range (the panel's LEG_RANGE): the actuator clamps to
+  /// it, writes it to the controller and saves it in NVS.
+  /// \param leg A MIBconfig.hpp Leg index.
+  /// \param min_counts, max_counts The travel, inclusive; min must be below max.
+  /// \param why On refusal, the reason for the caller's reply.
+  /// \note Blocks for the CAN exchanges; a service-link worker or a task. Accepted in IDLE.
+  /// \return False if refused, or if the actuator did not take the range.
+  bool set_leg_range(uint8_t leg, int32_t min_counts, int32_t max_counts, std::string &why);
+
+  /// Jog one leg by `delta` counts from where it is (the panel's LEG_JOG); 0 retargets it
+  /// to where it is, ending a jog. The one move the actuator accepts with its clamp
+  /// lifted, so this is how a leg reaches its mechanical ends during calibration.
+  /// \note Blocks for the CAN exchanges. Accepted in IDLE with the e-stop clear.
+  /// \return False if refused, or if the actuator refused the jog.
+  bool jog_leg(uint8_t leg, int32_t delta, std::string &why);
+
+  /// Lift (on) or restore (off) one leg's range clamp for calibration (the panel's
+  /// LEG_CALIBRATE). Off at every boot.
+  /// \note Blocks for the CAN exchanges. Accepted in IDLE.
+  /// \return False if refused, or if the controller did not take the clamp change.
+  bool set_leg_calibration(uint8_t leg, bool on, std::string &why);
+
   /// Handle one board's state report.
   /// \param index The board's row in rammp::kAxes.
   /// \param state The received state.
@@ -250,6 +283,7 @@ private:
   std::atomic<bool> error_reported_{false};    ///< This stay in ERROR has been logged.
   std::chrono::steady_clock::time_point estop_hold_until_{}; ///< End of the ESTOP hold; default = no hold (boot latch). State task only.
   std::chrono::steady_clock::time_point estop_last_clear_attempt_{}; ///< Last start_clear_attempt(). State task only.
+  bool estop_actuators_stopped_{false};        ///< The leg actuators were quick-stopped for this ESTOP. State task only.
   std::atomic<rammp::DriveProfile> drive_profile_{rammp::DriveProfile::NORMAL}; ///< Active drive profile.
   rammp::SeatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.

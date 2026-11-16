@@ -173,6 +173,10 @@ inline constexpr DriveProfileConfig drive_profile_high{
     .max_angular_acceleration_radps2 = 4.0f,
 };
 
+/// @brief After an e-stop quick-stops the leg actuators, how long to let the stop ramp
+/// settle before each leg's position is read and commanded as its new target.
+inline constexpr std::chrono::milliseconds estop_leg_settle{250};
+
 /// @brief CAN bus to the MCP266 motor controllers (TWAI peripheral).
 inline constexpr int can_tx_gpio = 17;
 inline constexpr int can_rx_gpio = 16;
@@ -218,20 +222,21 @@ struct ActuatorConfig {
   std::int32_t home_count;   ///< Count installed at the home switch (incremental only).
 };
 
-// TODO(bench): node ids, channels, ranges and profiles are placeholders. Node ids follow
-// espp's default of 10 for the first controller. Confirm each with the debugger's
-// MCP266 / CAN page, calibrate the ranges, then replace these values.
+// TODO(bench): bench values, not the chair's: three MCP266s at nodes 1 (casters), 2
+// (carriages) and 3 (main legs) driving rotary motors on absolute encoders that count to
+// 80000. Confirm the chair's node ids with the debugger's MCP266 / CAN page, calibrate
+// the ranges, then replace these values.
 // The four casters and main legs carry absolute encoders: calibrated once per
 // installation. The carriages carry incremental (AB) optical encoders on the rail and
 // limit switches: homed against the switch at min every boot, or restored from the
 // position saved while running.
 inline constexpr ActuatorConfig actuators[leg_count] = {
-    {Leg::FRONT_CASTER, "FC", 10, 0, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
-    {Leg::REAR_CASTER, "RC", 10, 1, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
-    {Leg::MAIN_LEFT, "ML", 11, 0, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
-    {Leg::MAIN_RIGHT, "MR", 11, 1, 0, 4095, 500, 500, 500, 50, 10, false, false, 0, 0},
-    {Leg::LEFT_CARRIAGE, "LCarr", 12, 0, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
-    {Leg::RIGHT_CARRIAGE, "RCarr", 12, 1, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
+    {Leg::FRONT_CASTER, "FC", 1, 0, 0, 80000, 2000, 2000, 2000, 2000, 10, false, false, 0, 0},
+    {Leg::REAR_CASTER, "RC", 1, 1, 0, 80000, 2000, 2000, 2000, 2000, 10, false, false, 0, 0},
+    {Leg::MAIN_LEFT, "ML", 3, 0, 0, 80000, 2000, 2000, 2000, 2000, 10, false, false, 0, 0},
+    {Leg::MAIN_RIGHT, "MR", 3, 1, 0, 80000, 2000, 2000, 2000, 2000, 10, false, false, 0, 0},
+    {Leg::LEFT_CARRIAGE, "LCarr", 2, 0, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
+    {Leg::RIGHT_CARRIAGE, "RCarr", 2, 1, 0, 20000, 500, 500, 500, 50, 10, true, true, -1, 0},
 };
 
 inline constexpr const ActuatorConfig &actuator_config(Leg leg) {
