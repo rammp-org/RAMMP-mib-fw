@@ -53,10 +53,18 @@ inline constexpr auto twist_setpoint_timeout = std::chrono::milliseconds{300};
 /// @brief Which external controller may drive the base (docs/arbitration.md). ENFORCED: a
 /// TwistSetpoint drives only with the token its sender was granted through
 /// /base/acquire_control. DISABLED: every setpoint is admitted; ownership is still tracked and
-/// reported on /base/control_status, and the e-stop still refuses everything. For bring-up
-/// of a Jetson tool that does not acquire yet. The joystick and the push-assist board carry
-/// no token and are not arbitrated in either mode.
+/// reported on /base/control_status, and the e-stop still refuses everything. The joystick and
+/// the push-assist board carry no token and are not arbitrated in either mode.
+///
+/// Compile-time, like the arm driver's read-only arbitration_mode launch parameter, and with
+/// the same default: DISABLED until the orchestrator acquires the base for the task nodes.
+/// idf.py -DMIB_ARBITRATION=enforced build turns the token check on; the mode in force is
+/// reported as arbitration_enabled on /base/control_status.
+#if defined(MIB_ARBITRATION_ENFORCED)
 inline constexpr mib::ArbitrationMode arbitration_mode = mib::ArbitrationMode::ENFORCED;
+#else
+inline constexpr mib::ArbitrationMode arbitration_mode = mib::ArbitrationMode::DISABLED;
+#endif
 
 /// @brief Ceilings on panel motor overrides; a limit of 0 from the panel means this value.
 inline constexpr float service_max_velocity_radps = 8.0f;
