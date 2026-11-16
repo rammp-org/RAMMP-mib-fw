@@ -46,8 +46,9 @@ check; the exit code is non-zero on any FAIL.
   return to IDLE with no owner; a grant alone does not drive in IDLE; a second acquire
   seizes (old token refused, state stays, new owner drives). `--manual` adds two
   prompted checks: a joystick touch ends AUTONOMOUS and revokes the grant, and the
-  e-stop latches the Arbiter, refuses acquire, and clears to IDLE with no owner. It
-  leaves the chair in IDLE with no owner.
+  e-stop latches the Arbiter, refuses acquire, and clears to IDLE with no owner. On a
+  build with arbitration disabled (the default) the refusal checks are skipped and
+  "untokened twists drive" runs instead. It leaves the chair in IDLE with no owner.
 
 `harness.py` has the same interface as the arm's, so the arm's checks run
 unchanged; it makes every endpoint once, up front, as a real client does.

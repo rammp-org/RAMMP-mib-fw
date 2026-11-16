@@ -131,6 +131,14 @@ directory:
 idf.py -B build-flatbot -DMIB_ROBOT=flatbot -p PORT flash monitor
 ```
 
+Arbitration of the Jetson's base commands is off by default, as the arm driver's is: any
+node may drive on `TwistSetpoint` without a token (`docs/arbitration.md`). To require the
+token from `/base/acquire_control`, build with the check on:
+
+```
+idf.py -B build-enforced -DMIB_ARBITRATION=enforced -p PORT flash monitor
+```
+
 (To exit the serial monitor, type ``Ctrl-]``.)
 
 See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.

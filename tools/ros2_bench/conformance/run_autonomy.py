@@ -23,6 +23,10 @@ What it checks, in order:
     --manual: a joystick touch ends AUTONOMOUS and revokes the grant
     --manual: the e-stop latches the Arbiter, refuses acquire, and clears to no owner
 
+On a build with arbitration DISABLED (the default, MIB_ARBITRATION in MIBconfig.hpp) the
+refusal checks are skipped and one takes their place: untokened twists drive. Everything
+else, including the e-stop refusing acquire, holds in both modes.
+
 Exit code is non-zero if anything failed. The chair is left in IDLE with no owner.
 """
 
@@ -135,6 +139,25 @@ def check_no_owner_no_motion(ch: Chair):
     if peak > MOVING:
         return Result("", FAIL, f"the chair moved ({peak:.3f} m/s) with nobody owning it")
     return Result("", PASS, f"{after - before} refused, speed stayed {peak:.3f} m/s")
+
+
+def check_no_owner_untokened_drives(ch: Chair):
+    """DISABLED mode: a task node drives in AUTONOMOUS with no grant and a zero token."""
+    before = ch.rejected()
+    fwd = ch.drive(ZERO_TOKEN, ch.speed, ch.nudge)
+    back = ch.drive(ZERO_TOKEN, -ch.speed, ch.nudge)
+    ch.drive(ZERO_TOKEN, 0.0, 0.3)
+    after = ch.rejected()
+    st = ch.state()
+    if st != MibStatus.SYSTEM_STATE_AUTONOMOUS:
+        return Result("", FAIL, f"state left AUTONOMOUS while driving untokened: {name(st)}")
+    if after != before:
+        return Result("", FAIL, f"rejected_count {before} -> {after}: untokened twists refused")
+    if max(fwd, back) <= MOVING:
+        return Result(
+            "", FAIL, f"peak speed {max(fwd, back):.3f} m/s on untokened twists: nothing moved"
+        )
+    return Result("", PASS, f"forward peak {fwd:.3f} m/s, back {back:.3f} m/s, none refused")
 
 
 def check_acquire(ch: Chair):
@@ -312,20 +335,23 @@ def check_estop(ch: Chair):
     return Result("", PASS, f"e-stop refused acquire ({a.message}); cleared to IDLE, no owner")
 
 
+ENFORCED, DISABLED, ANY = "enforced", "disabled", None
+# (label, check, the arbitration mode it needs; None runs in both)
 CHECKS = [
-    ("an untokened DriveCommand AUTONOMOUS switches the state", check_request_switches_state),
-    ("with no owner, twists are refused and the chair does not move", check_no_owner_no_motion),
-    ("acquire_control grants", check_acquire),
-    ("the owner's twists drive the chair", check_owner_drives),
-    ("a wrong token is refused and the chair stops within the lapse", check_untokened_stops),
-    ("release_control in AUTONOMOUS returns to IDLE with no owner", check_release_to_idle),
-    ("a grant alone does not drive: tokened twists in IDLE do nothing", check_grant_alone_does_not_drive),
-    ("revoke_control in AUTONOMOUS returns to IDLE with no owner", check_revoke_to_idle),
-    ("a second acquire seizes: old token refused, state stays, new owner drives", check_seize),
+    ("an untokened DriveCommand AUTONOMOUS switches the state", check_request_switches_state, ANY),
+    ("with no owner, twists are refused and the chair does not move", check_no_owner_no_motion, ENFORCED),
+    ("with no owner, untokened twists drive (arbitration disabled)", check_no_owner_untokened_drives, DISABLED),
+    ("acquire_control grants", check_acquire, ANY),
+    ("the owner's twists drive the chair", check_owner_drives, ANY),
+    ("a wrong token is refused and the chair stops within the lapse", check_untokened_stops, ENFORCED),
+    ("release_control in AUTONOMOUS returns to IDLE with no owner", check_release_to_idle, ANY),
+    ("a grant alone does not drive: tokened twists in IDLE do nothing", check_grant_alone_does_not_drive, ANY),
+    ("revoke_control in AUTONOMOUS returns to IDLE with no owner", check_revoke_to_idle, ANY),
+    ("a second acquire seizes: old token refused, state stays, new owner drives", check_seize, ENFORCED),
 ]
 MANUAL = [
-    ("a joystick touch ends AUTONOMOUS and revokes the grant", check_stick_touch),
-    ("the e-stop latches the Arbiter and clears to no owner", check_estop),
+    ("a joystick touch ends AUTONOMOUS and revokes the grant", check_stick_touch, ANY),
+    ("the e-stop latches the Arbiter and clears to no owner", check_estop, ANY),
 ]
 
 
@@ -348,10 +374,8 @@ def main() -> int:
         print(f"{RED}no status from the MIB. Is it up, on this network, and running the main firmware?{RESET}")
         rclpy.shutdown()
         return 2
-    print(f"attached. arbitration = {'enforced' if cs.arbitration_enabled else 'disabled'}, "
-          f"state = {name(st)}, owned = {cs.owned}")
-    if not cs.arbitration_enabled:
-        print(f"{YELLOW}arbitration is DISABLED on this build: the refusal checks will fail{RESET}")
+    mode = ENFORCED if cs.arbitration_enabled else DISABLED
+    print(f"attached. arbitration = {mode}, state = {name(st)}, owned = {cs.owned}")
     if st != MibStatus.SYSTEM_STATE_IDLE:
         print(f"{RED}the MIB must start in IDLE (disable drive from the joystick or the panel){RESET}")
         rclpy.shutdown()
@@ -363,11 +387,14 @@ def main() -> int:
 
     results = []
     try:
-        for label, fn in CHECKS + (MANUAL if args.manual else []):
-            try:
-                r = fn(ch)
-            except Exception as e:  # a raising check is a failing one
-                r = Result("", FAIL, f"{type(e).__name__}: {e}")
+        for label, fn, needs_mode in CHECKS + (MANUAL if args.manual else []):
+            if needs_mode and needs_mode != mode:
+                r = Result("", SKIP, f"needs arbitration {needs_mode}, MIB is {mode}")
+            else:
+                try:
+                    r = fn(ch)
+                except Exception as e:  # a raising check is a failing one
+                    r = Result("", FAIL, f"{type(e).__name__}: {e}")
             r.name = label
             results.append(r)
             print(f"  {MARK[r.status]}  {label}")
