@@ -622,6 +622,25 @@ bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
     return false;
   }
 
+  // Elevation moves the legs, with the seat level and the carriages where they are (at zero:
+  // nothing drives them yet). Solved here, so an unreachable height is refused to the sender.
+  std::optional<mib::SeatLegCounts> elevation_target;
+  if (command.axis == rammp::SeatAxis::ELEVATION) {
+    const auto map = seat_leg_map();
+    if (!map) {
+      return false;
+    }
+    elevation_target = map->counts_for({.pitch_deg = 0.0f,
+                                        .roll_deg = 0.0f,
+                                        .elevation_mm = command.target,
+                                        .translation_mm = 0.0f});
+    if (!elevation_target) {
+      logger_.warn("Seat elevation {} mm refused: no leg position reaches it with a level seat",
+                   command.target);
+      return false;
+    }
+  }
+
   std::lock_guard<std::mutex> lock(seat_state_mutex_);
   switch (command.axis) {
   case rammp::SeatAxis::FRONT_BACK_TILT:
@@ -631,7 +650,10 @@ bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
     seat_state_.lateral_tilt = command.target;
     break;
   case rammp::SeatAxis::ELEVATION:
-    seat_state_.elevation = command.target;
+    seat_request_ = elevation_target;
+    logger_.info("Seat elevation {} mm: legs to ML {} MR {} RC {} counts", command.target,
+                 elevation_target->main_left, elevation_target->main_right,
+                 elevation_target->rear_caster);
     break;
   case rammp::SeatAxis::TRANSLATION:
     seat_state_.translation = command.target;
@@ -642,9 +664,179 @@ bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
   }
 
   drive_controller_.set_seat_target(static_cast<uint8_t>(command.axis), command.target);
-  logger_.info("Seat control command applied: axis={} target={} - placeholder",
-               static_cast<uint8_t>(command.axis), command.target);
+  logger_.info("Seat control command applied: axis={} target={}{}",
+               static_cast<uint8_t>(command.axis), command.target,
+               elevation_target ? "" : " - placeholder");
   return true;
+}
+
+namespace {
+// The legs that set the seat's height and tilt, in SeatLegCounts order.
+constexpr std::array<mib::config::Leg, 3> kSeatLegs{
+    mib::config::Leg::MAIN_LEFT, mib::config::Leg::MAIN_RIGHT, mib::config::Leg::REAR_CASTER};
+
+std::array<int32_t, 3> as_array(const mib::SeatLegCounts &counts) {
+  return {counts.main_left, counts.main_right, counts.rear_caster};
+}
+} // namespace
+
+std::optional<mib::SeatLegMap> MibSystem::seat_leg_map() {
+  if (!mib_.actuators_ready()) {
+    logger_.warn("Seat legs unavailable: the leg actuators are not up (CAN)");
+    return std::nullopt;
+  }
+  auto range = [this](mib::config::Leg leg) {
+    const auto r = mib_.actuator(leg).range();
+    return mib::CountRange{r.min, r.max};
+  };
+  auto map = mib::SeatLegMap::create(mib::config::seat_geometry, mib::config::seat_leg_calibration,
+                                     range(mib::config::Leg::MAIN_LEFT),
+                                     range(mib::config::Leg::MAIN_RIGHT),
+                                     range(mib::config::Leg::REAR_CASTER));
+  if (!map) {
+    logger_.error("Seat legs: calibration invalid (a leg range not min < max, or a leg's two "
+                  "end angles equal in seat_leg_calibration)");
+  }
+  return map;
+}
+
+void MibSystem::start_seat_task() {
+  if (!mib_.actuators_ready()) {
+    logger_.warn("Seat task not started: the leg actuators are not up; elevation is refused");
+    return;
+  }
+  log_seat_position("Seat at boot");
+  seat_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        run_seat_step();
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_for(lock, mib::config::seat_task_interval);
+        return false;
+      },
+      .task_config = {.name = "MIB Seat", .stack_size_bytes = 6 * 1024},
+  });
+  seat_task_->start();
+}
+
+void MibSystem::run_seat_step() {
+  std::optional<mib::SeatLegCounts> request;
+  {
+    std::lock_guard<std::mutex> lock(seat_state_mutex_);
+    request.swap(seat_request_);
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (request) {
+    if (state_.load() != SystemState::IDLE || latch_.is_active()) {
+      logger_.warn("Seat move dropped: the system left IDLE before it started");
+    } else if (start_seat_move(*request)) {
+      seat_moving_ = true;
+      seat_move_deadline_ = now + mib::config::seat_move_timeout;
+      seat_next_report_ = now + mib::config::seat_report_interval;
+    }
+  }
+  if (!seat_moving_) {
+    return;
+  }
+  if (state_.load() == SystemState::ESTOP) {
+    // run_estop_step() stops the legs and holds them where they stopped.
+    seat_moving_ = false;
+    logger_.warn("Seat move ended by the e-stop");
+    return;
+  }
+  if (now < seat_next_report_) {
+    return;
+  }
+  seat_next_report_ = now + mib::config::seat_report_interval;
+
+  bool all_reached = true;
+  for (const auto leg : kSeatLegs) {
+    bool reached = false;
+    all_reached = mib_.actuator(leg).is_target_reached(reached) && reached && all_reached;
+  }
+  log_seat_position(all_reached ? "Seat move done" : "Seat moving");
+  if (all_reached) {
+    seat_moving_ = false;
+    return;
+  }
+  if (now >= seat_move_deadline_) {
+    seat_moving_ = false;
+    for (const auto leg : kSeatLegs) {
+      mib_.actuator(leg).stop();
+    }
+    logger_.error("Seat move did not finish in {} s: legs stopped",
+                  std::chrono::duration_cast<std::chrono::seconds>(mib::config::seat_move_timeout)
+                      .count());
+  }
+}
+
+bool MibSystem::start_seat_move(const mib::SeatLegCounts &target) {
+  const auto to = as_array(target);
+  std::array<int32_t, 3> from{};
+  for (size_t i = 0; i < kSeatLegs.size(); i++) {
+    if (!mib_.actuator(kSeatLegs[i]).read_position(from[i])) {
+      logger_.error("Seat move not started: {} position unreadable",
+                    mib_.actuator(kSeatLegs[i]).name());
+      return false;
+    }
+  }
+
+  // At its own profile speed each leg needs |to - from| / velocity; the slowest sets the pace
+  // and the others slow down to arrive with it, so the seat stays close to level on the way.
+  float slowest_s = 0.0f;
+  for (size_t i = 0; i < kSeatLegs.size(); i++) {
+    const auto velocity = mib_.actuator(kSeatLegs[i]).config().profile.velocity;
+    const float distance = std::fabs(static_cast<float>(to[i]) - static_cast<float>(from[i]));
+    slowest_s = std::max(slowest_s, distance / static_cast<float>(std::max<uint32_t>(velocity, 1)));
+  }
+
+  std::array<uint32_t, 3> velocities{};
+  for (size_t i = 0; i < kSeatLegs.size(); i++) {
+    auto &actuator = mib_.actuator(kSeatLegs[i]);
+    auto profile = actuator.config().profile;
+    if (slowest_s > 0.0f) {
+      const float distance = std::fabs(static_cast<float>(to[i]) - static_cast<float>(from[i]));
+      const float floor = mib::config::seat_min_speed_fraction * profile.velocity;
+      profile.velocity = static_cast<uint32_t>(
+          std::max({distance / slowest_s, floor, 1.0f}));
+    }
+    velocities[i] = profile.velocity;
+    if (!actuator.move_absolute(to[i], profile)) {
+      logger_.error("Seat move: {} refused the move; stopping the seat legs", actuator.name());
+      for (size_t j = 0; j < i; j++) {
+        mib_.actuator(kSeatLegs[j]).stop();
+      }
+      return false;
+    }
+  }
+  logger_.info("Seat move: ML {} -> {} at {}/s, MR {} -> {} at {}/s, RC {} -> {} at {}/s", from[0],
+               to[0], velocities[0], from[1], to[1], velocities[1], from[2], to[2], velocities[2]);
+  return true;
+}
+
+void MibSystem::log_seat_position(const char *what) {
+  std::array<int32_t, 3> counts{};
+  for (size_t i = 0; i < kSeatLegs.size(); i++) {
+    if (!mib_.actuator(kSeatLegs[i]).read_position(counts[i])) {
+      logger_.warn("{}: {} position unreadable", what, mib_.actuator(kSeatLegs[i]).name());
+      return;
+    }
+  }
+  const mib::SeatLegCounts legs{counts[0], counts[1], counts[2]};
+  const auto map = seat_leg_map();
+  const auto joints = map ? map->joints_at(legs, 0.0f) : std::nullopt;
+  const auto pose = joints ? map->kinematics().forward(*joints) : std::nullopt;
+  if (!pose) {
+    logger_.info("{}: ML {} MR {} RC {} counts (no seat pose for these counts)", what, counts[0],
+                 counts[1], counts[2]);
+    return;
+  }
+  logger_.info("{}: elevation {:.1f} mm, pitch {:.2f} deg, roll {:.2f} deg | ML {} ({:.1f} deg) "
+               "MR {} ({:.1f} deg) RC {} ({:.1f} deg)",
+               what, pose->elevation_mm, pose->pitch_deg, pose->roll_deg, counts[0],
+               joints->main_left_arm_deg, counts[1], joints->main_right_arm_deg, counts[2],
+               joints->rear_caster_arm_deg);
+  std::lock_guard<std::mutex> lock(seat_state_mutex_);
+  seat_state_.elevation = pose->elevation_mm;
 }
 
 bool MibSystem::move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why) {
@@ -1379,6 +1571,7 @@ void MibSystem::run_state_step() {
     if (!mib_.init_actuators()) {
       logger_.warn("Leg actuators unavailable: CAN bus did not come up");
     }
+    start_seat_task();
 
     // RTPS discovery multicast fails on an interface with no carrier.
     logger_.info("Waiting for Ethernet link...");

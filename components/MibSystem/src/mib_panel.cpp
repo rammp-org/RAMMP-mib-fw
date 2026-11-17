@@ -350,7 +350,7 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     if (handle_seat_control_command(command))
       reply_ok(reply, f.type);
     else
-      reply_error(reply, f.type, "refused: seat moves only in IDLE");
+      reply_error(reply, f.type, "refused: not IDLE, or out of reach (see the log)");
     return;
   }
   case P::kLegMove: {

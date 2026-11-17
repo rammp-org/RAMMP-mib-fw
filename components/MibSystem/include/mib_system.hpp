@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "arbiter.hpp"
@@ -16,6 +17,7 @@
 #include "estop/estop.hpp"
 #include "messages.hpp"
 #include "rtps_pubsub.hpp"
+#include "seat_leg_map.hpp"
 #include "service_link.hpp"
 #include "task.hpp"
 
@@ -210,11 +212,36 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_joystick_message(const rammp::XYTwist &sample);
 
-  /// Handle a seat control command.
+  /// Handle a seat control command. ELEVATION is solved for a level seat into leg counts and
+  /// queued for the seat task; the other axes are still placeholders.
   /// \param command The requested seat axis and target position.
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
-  /// \return False if the command was refused.
+  /// \return False if the command was refused: not IDLE, or an elevation the legs cannot reach.
   bool handle_seat_control_command(const rammp::SeatCommand &command);
+
+  /// The seat legs' map, from MIBconfig.hpp's geometry and calibration and each leg's
+  /// calibrated range. Empty, with the reason logged, if the legs are not up or the
+  /// calibration is invalid.
+  /// \note No CAN traffic: safe on any task.
+  std::optional<mib::SeatLegMap> seat_leg_map();
+
+  /// Start the seat task once the leg actuators are up.
+  /// \note Runs on the state task during INIT.
+  void start_seat_task();
+
+  /// Start a queued seat move, and while one runs report the seat's pose and stop it on timeout.
+  /// \note Runs on the seat task.
+  void run_seat_step();
+
+  /// Move the three seat legs to `target`, each at the speed that makes them arrive together.
+  /// \return False, with every leg already started stopped again, if a leg refused.
+  /// \note Blocks for the CAN exchanges. Seat task only.
+  bool start_seat_move(const mib::SeatLegCounts &target);
+
+  /// Read the three seat legs and log their counts and the seat pose they give; the measured
+  /// elevation becomes seat_state_.elevation.
+  /// \note Blocks for the CAN exchanges. State task (INIT) or seat task.
+  void log_seat_position(const char *what);
 
   /// Handle a drive enable or disable command.
   /// \param command The requested drive state and response profile.
@@ -323,6 +350,7 @@ private:
   std::atomic<rammp::DriveProfile> drive_profile_{rammp::DriveProfile::NORMAL}; ///< Active drive profile.
   rammp::SeatState seat_state_{};                ///< Placeholder for the current seat position.
   mutable std::mutex seat_state_mutex_;        ///< Protects seat state across RTPS and publish tasks.
+  std::optional<mib::SeatLegCounts> seat_request_; ///< Queued seat leg target. Under seat_state_mutex_.
   rammp::XYTwist latest_joystick_{};           ///< Most recent joystick sample for diagnostics.
   mutable std::mutex joystick_mutex_;          ///< Protects the latest joystick sample.
   mib::DiffDriveOdometry odometry_;            ///< Wheel odometry; used only on the odometry task.
@@ -385,4 +413,8 @@ private:
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
   std::unique_ptr<espp::Task> odometry_task_; ///< Publishes odometry at 20 Hz.
+  std::unique_ptr<espp::Task> seat_task_;     ///< Moves the seat legs; see run_seat_step().
+  bool seat_moving_{false};                   ///< A seat move is running. Seat task only.
+  std::chrono::steady_clock::time_point seat_move_deadline_{}; ///< Seat task only.
+  std::chrono::steady_clock::time_point seat_next_report_{};   ///< Seat task only.
 };
