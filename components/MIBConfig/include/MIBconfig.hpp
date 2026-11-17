@@ -218,9 +218,10 @@ struct ActuatorConfig {
   std::int32_t home_count;   ///< Count installed at the home switch (incremental only).
 };
 
-// TODO(bench): channels, ranges and profiles are placeholders. Node ids are those set in Motion
-// Studio: 1 casters, 2 carriages, 3 main legs. Confirm the channels with the debugger's
-// MCP266 / CAN page, calibrate the ranges, then replace these values.
+// TODO(bench): ranges and profiles are placeholders; calibrate the ranges, then replace them.
+// Node ids are those set in Motion Studio: 1 casters, 2 carriages, 3 main legs. The main
+// legs' channels are confirmed from the chair's wiring: M1 is the right leg, M2 the left.
+// Confirm the caster and carriage channels the same way.
 // The four casters and main legs carry absolute encoders: calibrated once per
 // installation. The carriages carry incremental (AB) optical encoders on the rail and
 // limit switches: homed against the switch at min every boot, or restored from the
@@ -228,8 +229,8 @@ struct ActuatorConfig {
 inline constexpr ActuatorConfig actuators[leg_count] = {
     {Leg::FRONT_CASTER, "FC", 1, 0, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
     {Leg::REAR_CASTER, "RC", 1, 1, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
-    {Leg::MAIN_LEFT, "ML", 3, 0, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
-    {Leg::MAIN_RIGHT, "MR", 3, 1, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
+    {Leg::MAIN_LEFT, "ML", 3, 1, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
+    {Leg::MAIN_RIGHT, "MR", 3, 0, 0, 4095, 500, 500, 500, 50, 200, false, false, 0, 0},
     {Leg::LEFT_CARRIAGE, "LCarr", 2, 0, 0, 20000, 500, 500, 500, 50, 200, true, true, -1, 0},
     {Leg::RIGHT_CARRIAGE, "RCarr", 2, 1, 0, 20000, 500, 500, 500, 50, 200, true, true, -1, 0},
 };
