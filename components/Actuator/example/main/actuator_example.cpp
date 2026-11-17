@@ -71,7 +71,7 @@ constexpr uint32_t kBitrate = 1'000'000;
 constexpr uint8_t kNodeId = 3;
 constexpr auto kAxis = mib::Actuator::Axis::M1;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
-constexpr bool kHomingRequired = true;
+constexpr bool kHomingRequired = false;
 // "Forward" (positive count, `inc`) is toward the FRONT of the rack. The carriage homes at
 // the front switch, which becomes count kTravel; the back switch is the 0 end. On the
 // controller: front switch = M1FLimit, back switch = M1RLimit, encoder counting up
@@ -82,11 +82,11 @@ constexpr int32_t kTravel = 12600;
 const mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
     .axis = kAxis,
-    .range = {0, kTravel},          // calibrated travel; a range saved to NVS overrides it
-    .profile = {500, 500, 500},     // counts/s, counts/s^2, counts/s^2
-    .jog_step = 500,                // counts per inc / dec
-    .tolerance = 10,                // counts within which a position counts as at target
-    .hardware_limits = true,        // limit switches at both ends, configured on the controller
+    .range = {10000, 18000},         // calibrated travel; a range saved to NVS overrides it
+    .profile = {1000, 1000, 3000},  // counts/s, counts/s^2, counts/s^2
+    .jog_step = 500,               // counts per inc / dec
+    .tolerance = 200,               // counts within which a position counts as at target
+    .hardware_limits = false,       // bench motors have no limit switches
     .homing = {.required = kHomingRequired,
                .direction = kHomeDirection,
                .home_count = kTravel,
