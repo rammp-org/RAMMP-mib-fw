@@ -31,13 +31,38 @@ layer that wants the other meaning).
 | `move_absolute(counts)` | Profile move, clamped to the range; a per-move `Profile` overload exists |
 | `move_relative(delta)` | Read the encoder, add, move |
 | `increment()`, `decrement()` | One jog step in counts |
-| `stop()` | CiA 402 quick stop |
+| `stop()` | CiA 402 quick stop; also ends the rest watch |
+| `poll()` | The move engine: streams the trapezoid's setpoints, releases the drive once the joint has arrived, then keeps the resting joint within `tolerance` of its target |
 | `is_target_reached(reached)`, `get_drive_state(state)` | The controller's arrival flag and decoded CiA 402 state |
 
 Every method returns true on success and logs the reason on failure, as the
 rest of the firmware does; espp's error codes stay inside. Every method that
 talks to the controller blocks for one or more SDO round trips, a few
 milliseconds each, and must be called from a task that may wait.
+
+On the MCP266 firmware tested a profile-position target is taken as a step:
+the profile acceleration and deceleration objects are accepted but no ramp is
+applied, and only the controller's stored default speed caps the motion. So the
+Actuator generates the trapezoid itself. A move sends the current position as
+the first target to enable the drive, and from then on every `poll()` call
+advances the setpoint at the profile's acceleration, cruise velocity and
+deceleration and writes it to the controller, until the setpoint lands on the
+target. A retarget mid-move continues from the setpoint and velocity in flight.
+The owner therefore calls `poll()` every few tens of milliseconds; each call
+during a move costs one setpoint write (a few SDOs).
+
+A move leaves the controller's position loop holding the target, which on a
+geared motor is audible hunting and holding current for nothing. So, once the
+setpoints have reached the target, the joint counts as arrived when the
+controller reports target reached, or when its count has sat within
+`tolerance` of the target without changing between two polls (a P-only loop
+can stall short of the controller's own window and never raise its flag), and
+half a second later the drive is released (CiA 402 "switch on disabled": zero
+duty, no loop). The released joint is then watched
+at a slow rate: if its count leaves the target by more than `tolerance`, under
+load, through a shock absorber in the linkage or from a bump, it is moved back
+and released again, at most once a second. A quick stop, calibration mode or a
+rewritten encoder count ends the watch; the next move restarts it.
 
 Two actuators share one controller (its M1 and M2) through a mutex passed to
 both. A controller that stops answering is marked offline and skipped until a

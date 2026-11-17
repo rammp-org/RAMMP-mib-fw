@@ -46,6 +46,9 @@
 #include <string>
 #include <thread>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 #include "actuator.hpp"
 #include "actuator_store.hpp"
 #include "canopen_client.hpp"
@@ -565,6 +568,18 @@ extern "C" void app_main(void) {
     }
     fcntl(STDIN_FILENO, F_SETFL, flags);
   }
+  // The owner's periodic poll, in its own task because the console below blocks this
+  // one: releases the motor once a move has arrived, then keeps the resting joint
+  // within its tolerance of the target.
+  xTaskCreate(
+      [](void *) {
+        for (;;) {
+          actuator->poll();
+          vTaskDelay(pdMS_TO_TICKS(50));
+        }
+      },
+      "actuator poll", 6 * 1024, nullptr, 5, nullptr);
+
   fmt::print("Type 'help' for the commands.\n");
   input.Start();
 
