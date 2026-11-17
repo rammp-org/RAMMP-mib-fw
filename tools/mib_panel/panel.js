@@ -366,7 +366,11 @@ $('atStart').onclick = async () => {
 async function autotuneAxis(axis, o) {
   const a0 = status.axes[axis], seg = a0.segment, guard = guardFor(autotune), cols = SERIES();
   autotune.previous[axis] = { kp: a0.tuning.kp, ki: a0.tuning.ki, pll: a0.tuning.pll };
-  const vl = o.A * 1.6 + 1, tl = Math.max(o.tau * 1.5, 6);
+  // The MIB clamps a panel override's torque to service_max_torque_nm (MIBconfig, 20 N·m). A
+  // step above it reached the board clipped, never matched the torque asked for below, and
+  // read as "no motion" while the wheel turned. Keep every request inside the cap.
+  const SERVICE_MAX_TORQUE = 20;
+  const vl = o.A * 1.6 + 1, tl = Math.min(Math.max(o.tau * 1.5, 6), SERVICE_MAX_TORQUE);
   const steps = [
     { name: `${a0.label}: drag`, detail: '' }, { name: `${a0.label}: plant gain`, detail: '' },
     ...o.wns.map(w => ({ name: `${a0.label}: verify ω<sub>n</sub> ${w} rad/s`, detail: '' })), { name: `${a0.label}: apply`, detail: '' }];
@@ -405,7 +409,7 @@ async function autotuneAxis(axis, o) {
     const kt = mean(torq.map(r => Math.abs(r[4]))) / mean(torq.map(r => Math.abs(r[2])));
     return { rows, win, fit, iNet, kt, tau, s };
   };
-  let tau = o.tau, res = null;
+  let tau = Math.min(o.tau, tl), res = null;
   for (let tries = 0; tries < 5; tries++) {
     mark(1, 'now', `torque step ${fmt(tau, 2)} N·m${tries ? ` (try ${tries + 1})` : ''}`);
     res = await torqueStep(flip(), tau);

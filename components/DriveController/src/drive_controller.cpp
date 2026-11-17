@@ -63,39 +63,62 @@ bool DriveController::update_drive_profile(rammp::DriveProfile profile) {
   return true;
 }
 
-espp::TrajectoryPlanner::Config
-DriveController::profile_config(rammp::DriveProfile profile) {
-  espp::TrajectoryPlanner::Config config{};
+const config::DriveProfileConfig &DriveController::profile_values(rammp::DriveProfile profile) {
   switch (profile) {
   case rammp::DriveProfile::LOW:
-    config.max_linear_velocity = config::drive_profile_low.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_low.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_low.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_low.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
-  case rammp::DriveProfile::NORMAL:
-    config.max_linear_velocity = config::drive_profile_normal.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_normal.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_normal.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_normal.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
+    return config::drive_profile_low;
   case rammp::DriveProfile::HIGH:
-    config.max_linear_velocity = config::drive_profile_high.max_linear_velocity_mps;
-    config.max_angular_velocity = config::drive_profile_high.max_angular_velocity_radps;
-    config.driving_profile.max_linear_acceleration =
-      config::drive_profile_high.max_linear_acceleration_mps2;
-    config.driving_profile.max_angular_acceleration =
-      config::drive_profile_high.max_angular_acceleration_radps2;
-    config.stopping_profile = config.driving_profile;
-    break;
+    return config::drive_profile_high;
+  case rammp::DriveProfile::NORMAL:
+  default:
+    return config::drive_profile_normal;
+  }
+}
+
+espp::TrajectoryPlanner::Config DriveController::profile_config(rammp::DriveProfile profile) {
+  const config::DriveProfileConfig &values = profile_values(profile);
+  espp::TrajectoryPlanner::Config config{};
+  config.max_linear_velocity = values.max_linear_velocity_mps;
+  config.max_angular_velocity = values.max_angular_velocity_radps;
+  config.max_centripetal_acceleration = values.max_centripetal_acceleration_mps2;
+  config.max_reverse_linear_velocity = values.max_reverse_linear_velocity_mps;
+  config.driving_profile.max_linear_acceleration = values.max_linear_acceleration_mps2;
+  config.driving_profile.max_angular_acceleration = values.max_angular_acceleration_radps2;
+  config.driving_profile.max_linear_jerk = values.max_linear_jerk_mps3;
+  config.driving_profile.max_angular_jerk = values.max_angular_jerk_radps3;
+  // Same accelerations, trapezoidal: espp recommends jerk 0 when stopping so the
+  // S-curve cannot overshoot past zero.
+  config.stopping_profile = config.driving_profile;
+  config.stopping_profile.max_linear_jerk = 0.0f;
+  config.stopping_profile.max_angular_jerk = 0.0f;
+  if (values.stopping_linear_acceleration_mps2 > 0.0f) {
+    config.stopping_profile.max_linear_acceleration = values.stopping_linear_acceleration_mps2;
+  }
+  if (values.stopping_angular_acceleration_radps2 > 0.0f) {
+    config.stopping_profile.max_angular_acceleration = values.stopping_angular_acceleration_radps2;
   }
   return config;
+}
+
+bool DriveController::at_rest() const {
+  const auto target = trajectory_planner_.get_target();
+  const auto command = trajectory_planner_.output();
+  return target.first == 0.0f && target.second == 0.0f && command.linear_velocity == 0.0f &&
+         command.angular_velocity == 0.0f;
+}
+
+float DriveController::max_wheel_acceleration_radps2() const {
+  const config::DriveProfileConfig &values = profile_values(active_profile_);
+  const float radius_m = differential_drive_.wheel_diameter() / 2.0f;
+  if (radius_m <= 0.0f) {
+    return 0.0f;
+  }
+  const float half_separation_m = differential_drive_.wheel_separation() / 2.0f;
+  const float linear =
+      std::max(values.max_linear_acceleration_mps2, values.stopping_linear_acceleration_mps2);
+  const float angular =
+      std::max(values.max_angular_acceleration_radps2, values.stopping_angular_acceleration_radps2);
+  return (linear + angular * half_separation_m) / radius_m;
 }
 
 DifferentialDrive::WheelSpeeds DriveController::wheel_speeds() const {

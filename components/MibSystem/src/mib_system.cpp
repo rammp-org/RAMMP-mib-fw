@@ -3,15 +3,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <ctime>
 #include <condition_variable>
+#include <ctime>
 #include <mutex>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 
 #include "MIBconfig.hpp"
+#include "motor_names.hpp"
 #include "sdkconfig.h"
 
 using namespace std::chrono_literals;
@@ -69,34 +71,6 @@ float hottest_temp(const rammp::MotorState &state) {
   return *std::max_element(state.temps.begin(), state.temps.end());
 }
 
-/// FaultCode's name for the logs; "?" for a code this build does not know.
-const char *fault_name(rammp::FaultCode code) {
-  switch (code) {
-  case rammp::FaultCode::NONE:
-    return "NONE";
-  case rammp::FaultCode::WATCHDOG:
-    return "WATCHDOG";
-  case rammp::FaultCode::OVERCURRENT:
-    return "OVERCURRENT";
-  case rammp::FaultCode::VDS_OCP:
-    return "VDS_OCP";
-  case rammp::FaultCode::OVERTEMP:
-    return "OVERTEMP";
-  case rammp::FaultCode::ENCODER:
-    return "ENCODER";
-  case rammp::FaultCode::DRV_FAULT:
-    return "DRV_FAULT";
-  case rammp::FaultCode::UNASSIGNED_AXIS:
-    return "UNASSIGNED_AXIS";
-  case rammp::FaultCode::SAMPLER:
-    return "SAMPLER";
-  case rammp::FaultCode::HALL:
-    return "HALL";
-  case rammp::FaultCode::STALL:
-    return "STALL";
-  }
-  return "?";
-}
 } // namespace
 
 static_assert(CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS >= kWriters,
@@ -430,7 +404,12 @@ void MibSystem::handle_push_assist_force(const rammp::HandleForce &force) {
   // Over full scale: scale both down together, so the turn radius holds
   // (as DriveController::set_velocity does).
   const float scale = std::max({1.0f, std::fabs(linear), std::fabs(angular)});
-  drive_controller_.set_target(linear / scale, angular / scale);
+  // The same rule as the stick: never one wheel on its own.
+  if (drive_boards_ready()) {
+    drive_controller_.set_target(linear / scale, angular / scale);
+  } else {
+    drive_controller_.stop();
+  }
   //--------------------------------placeholder until Alex's conversion code is
   // implemented--------------------------------
 
@@ -465,7 +444,11 @@ void MibSystem::apply_stick(const rammp::XYTwist &sample) {
     // stick frame is converted to the base frame. If the chair turns the wrong way, the
     // cause is on the chair (the HMI's "Stick left/right" mirror, which must stay off, a
     // swapped drive board, or the wheel invert flags), not this sign. See #59.
-    drive_controller_.set_target(sample.y, -sample.x);
+    if (drive_boards_ready()) {
+      drive_controller_.set_target(sample.y, -sample.x);
+    } else {
+      drive_controller_.stop();
+    }
     break;
   case SystemState::AUTONOMOUS:
     // Touching the joystick ends autonomy and hands control back to the joystick.
@@ -585,7 +568,12 @@ void MibSystem::handle_autonomy_setpoint(float linear_mps, float angular_radps) 
       logger_.warn("Dropping non-finite twist setpoint");
       break;
     }
-    drive_controller_.set_velocity(linear_mps, angular_radps);
+    // The same rule as the stick: never one wheel on its own.
+    if (drive_boards_ready()) {
+      drive_controller_.set_velocity(linear_mps, angular_radps);
+    } else {
+      drive_controller_.stop();
+    }
     twist_until_ = std::chrono::steady_clock::now() + mib::config::twist_setpoint_timeout;
     break;
   }
@@ -752,20 +740,118 @@ bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
 }
 
 void MibSystem::handle_motor_state(size_t index, const rammp::MotorState &state) {
-  std::lock_guard<std::mutex> lock(motor_state_mutex_);
-  const rammp::AxisId id = rammp::kAxes[index].id;
-  if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
-    // A board counts its shaft angle from boot, so a first report or a reboot
-    // (uptime going backwards) restarts the angle. uptime_ms wrapping also looks
-    // like a reboot, which only costs one odometry step.
-    if (motor_state_times_[index] == std::chrono::steady_clock::time_point{} ||
-        state.uptime_ms < motor_states_[index].uptime_ms) {
-      odometry_resync_ = true;
+  bool changed = false;
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    const rammp::MotorState &previous = motor_states_[index];
+    const bool first_report = motor_state_times_[index] == std::chrono::steady_clock::time_point{};
+    changed =
+        first_report || state.state != previous.state || state.fault_code != previous.fault_code;
+    const rammp::AxisId id = rammp::kAxes[index].id;
+    if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
+      // A board counts its shaft angle from boot, so a first report or a reboot
+      // (uptime going backwards) restarts the angle. uptime_ms wrapping also looks
+      // like a reboot, which only costs one odometry step.
+      if (first_report || state.uptime_ms < previous.uptime_ms) {
+        odometry_resync_ = true;
+      }
+      drive_state_updated_ = true;
     }
-    drive_state_updated_ = true;
+    motor_states_[index] = state;
+    motor_state_times_[index] = std::chrono::steady_clock::now();
+    // The 2 Hz drive status prints and resets these: the boards publish at 50 Hz, so a
+    // current spike between two status lines would otherwise never reach the log.
+    motor_peak_iq_[index] = std::max(motor_peak_iq_[index], std::fabs(state.iq));
   }
-  motor_states_[index] = state;
-  motor_state_times_[index] = std::chrono::steady_clock::now();
+  // Every board state or fault change, so a trip is in the log next to the drive status
+  // lines that led up to it.
+  if (changed) {
+    const std::string line = fmt::format(
+        "Motor {} state={} fault={} iq={:.1f} A vel={:.2f} rad/s vbus={:.1f} V drv=0x{:04x} "
+        "fw={}.{}.{}",
+        rammp::kAxes[index].segment, mib::board_state_name(state.state),
+        mib::fault_name(state.fault_code), state.iq, state.velocity, state.vbus, state.drv_status,
+        state.fw_version >> 24, (state.fw_version >> 16) & 0xFF, state.fw_version & 0xFFFF);
+    if (state.fault_code == rammp::FaultCode::NONE) {
+      logger_.info("{}", line);
+    } else {
+      logger_.warn("{}", line);
+    }
+  }
+}
+
+bool MibSystem::update_rest_mode(bool at_rest, float fastest_wheel_radps,
+                                 const std::array<float, 2> &positions) {
+  const RestMode before = rest_mode_;
+  float travel = 0.0f;
+  if (!at_rest) {
+    rest_mode_ = RestMode::DRIVING;
+    rest_ticks_ = 0;
+  } else if (rest_mode_ == RestMode::DRIVING) {
+    // Still slowing under power, but not long enough for the boards' hold to start rocking.
+    if (fastest_wheel_radps < mib::config::drive_coast_enter_radps ||
+        ++rest_ticks_ >= mib::config::drive_coast_enter_ticks) {
+      rest_mode_ = RestMode::COASTING;
+      coast_start_positions_ = positions;
+    }
+  } else if (rest_mode_ == RestMode::COASTING) {
+    travel = std::max(std::fabs(positions[0] - coast_start_positions_[0]),
+                      std::fabs(positions[1] - coast_start_positions_[1]));
+    if (travel > mib::config::drive_roll_guard_travel_rad) {
+      rest_mode_ = RestMode::HOLDING;
+    }
+  }
+  if (rest_mode_ != before) {
+    if (rest_mode_ == RestMode::HOLDING) {
+      logger_.warn("Roll guard: a wheel rolled {:.2f} rad while coasting; holding until the "
+                   "stick moves",
+                   travel);
+    } else {
+      logger_.info("Drive at rest: {} (fastest wheel {:.2f} rad/s)",
+                   rest_mode_ == RestMode::COASTING ? "coasting" : "driving", fastest_wheel_radps);
+    }
+  }
+  return rest_mode_ == RestMode::COASTING;
+}
+
+std::string MibSystem::drive_boards_summary() const {
+  const auto now = std::chrono::steady_clock::now();
+  std::string out;
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const rammp::AxisId id = rammp::kAxes[i].id;
+    if (id != rammp::AxisId::DRIVE_LEFT && id != rammp::AxisId::DRIVE_RIGHT) {
+      continue;
+    }
+    const bool fresh = motor_state_times_[i] != std::chrono::steady_clock::time_point{} &&
+                       now - motor_state_times_[i] < mib::config::motor_state_timeout;
+    out += fmt::format("{}{} {}", out.empty() ? "" : ", ", rammp::kAxes[i].segment,
+                       !fresh ? "silent"
+                              : (motor_states_[i].state == rammp::BoardState::FAULT
+                                     ? mib::fault_name(motor_states_[i].fault_code)
+                                     : "ok"));
+  }
+  return out;
+}
+
+bool MibSystem::drive_boards_ready() const {
+  if (!mib::config::drive_requires_both_boards) {
+    return true;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(motor_state_mutex_);
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    const rammp::AxisId id = rammp::kAxes[i].id;
+    if (id != rammp::AxisId::DRIVE_LEFT && id != rammp::AxisId::DRIVE_RIGHT) {
+      continue;
+    }
+    const bool fresh = motor_state_times_[i] != std::chrono::steady_clock::time_point{} &&
+                       now - motor_state_times_[i] < mib::config::motor_state_timeout;
+    if (!fresh || motor_states_[i].state == rammp::BoardState::FAULT) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void MibSystem::handle_motor_jog(const rammp::MotorJog &jog) {
@@ -899,10 +985,31 @@ void MibSystem::log_drive_status() {
     right_rad_per_second = wheel_speeds.right_rpm * kRpmToRadPerSecond;
   }
 
-  logger_.info(
-      "Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} rad/s",
-      state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
-      right_rad_per_second);
+  // What the drive boards report back: measured wheel speed and the largest |iq| since
+  // the last status line. "none" means no MotorState has arrived from that board.
+  std::string measured;
+  {
+    std::lock_guard<std::mutex> lock(motor_state_mutex_);
+    for (size_t i = 0; i < rammp::kAxisCount; i++) {
+      const rammp::AxisId id = rammp::kAxes[i].id;
+      if (id != rammp::AxisId::DRIVE_LEFT && id != rammp::AxisId::DRIVE_RIGHT) {
+        continue;
+      }
+      if (motor_state_times_[i] == std::chrono::steady_clock::time_point{}) {
+        measured += fmt::format(" {}=none", rammp::kAxes[i].segment);
+      } else {
+        const rammp::MotorState &m = motor_states_[i];
+        measured += fmt::format(" {}={:.2f} rad/s iq_peak={:.1f} A {}", rammp::kAxes[i].segment,
+                                m.velocity, motor_peak_iq_[i], mib::fault_name(m.fault_code));
+      }
+      motor_peak_iq_[i] = 0.0f;
+    }
+  }
+
+  logger_.info("Drive status: state={} joystick x={} y={} twist={} motor left={} rad/s right={} "
+               "rad/s measured{}",
+               state_name, joystick.x, joystick.y, joystick.twist, left_rad_per_second,
+               right_rad_per_second, measured);
 }
 
 void MibSystem::start_imu_task() {
@@ -936,19 +1043,22 @@ void MibSystem::start_imu_task() {
 }
 
 bool MibSystem::update_imu() {
+  // An OTA erases and writes flash for seconds: the bus stalls, the read fails, and the
+  // recovery below is the risky part. The MIB reboots after the update anyway.
+  if (ota_active_.load()) {
+    return true;
+  }
   auto *imu = mib_.imu();
   std::error_code ec;
   // A BNO055 that lost power comes back in CONFIG mode and reads all zeros
   // without a bus error, so after any failed read, run init() again first.
-  // Probe once before init(): init() polls the chip ID 20 times, and each
-  // failed poll logs an I2C error, which floods the console while it is unplugged.
+  // No probe() first: espp's I2c::probe_device() after a failed transfer on this bus
+  // corrupted the I2c mutex and panicked the MIB (Load access fault in
+  // pthread_mutex_unlock, 2026-11-01). init() reads the chip ID itself; an unplugged IMU
+  // costs its I2C error lines once per imu_retry_interval.
   bool ok = imu_reading_ok_.load();
   if (!ok) {
-    if (imu->probe(ec)) {
-      ok = imu->init(ec);
-    } else {
-      ec = std::make_error_code(std::errc::no_such_device);
-    }
+    ok = imu->init(ec);
   }
   if (ok) {
     ok = imu->update(ec);
@@ -1081,6 +1191,40 @@ void MibSystem::publish_motor_commands() {
     wheel_speeds = drive_controller_.wheel_speeds();
   }
   constexpr float kRpmToRadPerSecond = 2.0f * 3.14159265358979323846f / 60.0f;
+  // The board ramps its speed reference at this rate between our 20 Hz commands
+  // instead of stepping to each one; the planner already keeps inside it.
+  const float wheel_accel_limit = mib::config::drive_wheel_accel_limit_margin *
+                                  drive_controller_.max_wheel_acceleration_radps2();
+  // Inside wheel of a tight turn: the slower wheel, under a third of the other's speed.
+  const float left_radps = std::fabs(wheel_speeds.left_rpm * kRpmToRadPerSecond);
+  const float right_radps = std::fabs(wheel_speeds.right_rpm * kRpmToRadPerSecond);
+  const auto inside = [](float self, float other) {
+    return mib::config::drive_inside_wheel_torque_limit_nm > 0.0f &&
+           other >= mib::config::drive_inside_wheel_min_outer_radps &&
+           self < mib::config::drive_inside_wheel_speed_ratio * other;
+  };
+  const bool cap_left = drive && inside(left_radps, right_radps);
+  const bool cap_right = drive && inside(right_radps, left_radps);
+
+  // Coast at rest, with a roll guard (MIBconfig drive_coast_at_rest).
+  bool coast = false;
+  if (drive && mib::config::drive_coast_at_rest) {
+    float fastest_wheel = 0.0f;
+    std::array<float, 2> positions{}; // left, right
+    {
+      std::lock_guard<std::mutex> lock(motor_state_mutex_);
+      for (size_t i = 0; i < rammp::kAxisCount; i++) {
+        const rammp::AxisId id = rammp::kAxes[i].id;
+        if (id == rammp::AxisId::DRIVE_LEFT || id == rammp::AxisId::DRIVE_RIGHT) {
+          fastest_wheel = std::max(fastest_wheel, std::fabs(motor_states_[i].velocity));
+          positions[id == rammp::AxisId::DRIVE_LEFT ? 0 : 1] = motor_states_[i].position;
+        }
+      }
+    }
+    coast = update_rest_mode(drive_controller_.at_rest(), fastest_wheel, positions);
+  } else {
+    update_rest_mode(false, 0.0f, {});
+  }
 
   // Each board's last tuning echo, to stop resending a MotorTuning it has applied.
   std::array<uint8_t, rammp::kAxisCount> tuning_acks{};
@@ -1109,9 +1253,25 @@ void MibSystem::publish_motor_commands() {
       } else if (drive && id == rammp::AxisId::DRIVE_LEFT) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = wheel_speeds.left_rpm * kRpmToRadPerSecond;
+        command.accel_limit = wheel_accel_limit;
+        if (cap_left) {
+          command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
+        }
+        if (coast) {
+          command.mode = rammp::ControlMode::COAST;
+          command.velocity = 0.0f;
+        }
       } else if (drive && id == rammp::AxisId::DRIVE_RIGHT) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = wheel_speeds.right_rpm * kRpmToRadPerSecond;
+        command.accel_limit = wheel_accel_limit;
+        if (cap_right) {
+          command.torque_limit = mib::config::drive_inside_wheel_torque_limit_nm;
+        }
+        if (coast) {
+          command.mode = rammp::ControlMode::COAST;
+          command.velocity = 0.0f;
+        }
       } else if (jogging && jog.axis_id == i) {
         command.requested_state = rammp::RequestedState::ARMED;
         command.velocity = jog.direction > 0 ? mib::config::motor_jog_velocity_radps
@@ -1132,6 +1292,14 @@ void MibSystem::publish_motor_commands() {
     if (tuning_due && !axes_[i].tuning_publisher->publish(tuning)) {
       logger_.warn("Failed to publish {} motor tuning", rammp::kAxes[i].label);
     }
+  }
+  // The inside-wheel cap engaging and releasing, so the logs show how often it bites.
+  if (cap_left != inside_cap_left_ || cap_right != inside_cap_right_) {
+    inside_cap_left_ = cap_left;
+    inside_cap_right_ = cap_right;
+    logger_.info(
+        "Inside-wheel torque cap: drive_left {} drive_right {} (cmd {:.2f} / {:.2f} rad/s)",
+        cap_left ? "CAPPED" : "full", cap_right ? "CAPPED" : "full", left_radps, right_radps);
   }
 }
 
@@ -1160,11 +1328,11 @@ void MibSystem::publish_motor_states() {
         if (fault != rammp::FaultCode::NONE) {
           logger_.error("Motor {} fault {}: hottest {:.1f} C, vbus {:.1f} V, iq {:.2f} A, "
                         "drv_status 0x{:04x}",
-                        rammp::kAxes[i].label, fault_name(fault), hottest_temp(state), state.vbus, state.iq,
-                        state.drv_status);
+                        rammp::kAxes[i].label, mib::fault_name(fault), hottest_temp(state),
+                        state.vbus, state.iq, state.drv_status);
         } else if (online) {
           logger_.info("Motor {} fault {} cleared", rammp::kAxes[i].label,
-                       fault_name(motor_fault_[i]));
+                       mib::fault_name(motor_fault_[i]));
         }
         motor_fault_[i] = fault;
       }
@@ -1175,7 +1343,7 @@ void MibSystem::publish_motor_states() {
           .fault_code = state.fault_code,
           .position = state.position,
           .velocity = state.velocity,
-          .label = rammp::kAxes[i].label,
+          .label = rammp::kAxes[i].segment,
       });
     }
   }
@@ -1336,6 +1504,28 @@ void MibSystem::run_state_step() {
     if (lapsed) {
       drive_controller_.stop();
       logger_.warn("Control panel stick went quiet: stopping");
+    }
+    // One wheel can't drive the chair: it drags the other and runs into its own current
+    // limit (2026-11-01, Drive R at 30 A in reverse while Drive L sat stale). Stop both
+    // when either board is faulted or silent, and log the change once each way.
+    // The healthy board brakes under power first; once the planner is at rest the MIB
+    // leaves DRIVE_ENABLED so the joystick shows the drive dropped out. The fault stays
+    // latched on the board: clear it on purpose (control panel) before driving again.
+    const bool ready = drive_boards_ready();
+    if (!ready) {
+      drive_controller_.stop();
+      if (drive_boards_were_ready_) {
+        drive_boards_were_ready_ = false;
+        logger_.warn("A drive board is faulted or silent ({}): stopping both wheels",
+                     drive_boards_summary());
+      }
+      if (drive_controller_.at_rest()) {
+        state_.store(SystemState::IDLE);
+        drive_boards_were_ready_ = true;
+        logger_.warn("Drive disabled: a drive board is faulted or silent ({}). Clear the fault "
+                     "before enabling the drive again",
+                     drive_boards_summary());
+      }
     }
     break;
   }
