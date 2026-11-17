@@ -1,6 +1,7 @@
 #include "actuator.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <thread>
 
 namespace mib {
@@ -14,6 +15,21 @@ constexpr Actuator::Range kUnlimited{-1'000'000'000, 1'000'000'000};
 /// Homing: the motor is given this long to start moving before a stall counts.
 constexpr auto kHomingGrace = 2s;
 constexpr auto kHomingPoll = 100ms;
+/// poll(): how often the target-reached flag is read while a release is pending, how long
+/// the joint settles at the target before the release, how often a released joint's count
+/// is read, and the least time between two corrections of a joint that keeps drifting.
+constexpr auto kReleasePoll = 100ms;
+constexpr auto kReleaseDelay = 500ms;
+constexpr auto kWatchPoll = 200ms;
+constexpr auto kCorrectionHoldoff = 1s;
+/// A count that has stayed within this band for kStillTime is "still".
+constexpr int32_t kStillCounts = 3;
+constexpr auto kStillTime = 500ms;
+/// A joint not arrived this long after its last setpoint is released where it stalled.
+constexpr auto kStallRelease = 3s;
+/// The trajectory never advances by more than this per step, so a stalled poll (the bus
+/// waited on a silent controller) does not jump the setpoint when it resumes.
+constexpr auto kTrajectoryMaxStep = 100ms;
 } // namespace
 
 Actuator::Actuator(espp::Mcp266 &mcp, std::mutex &mcp_mutex, const Config &config)
@@ -113,6 +129,18 @@ bool Actuator::apply_limits(const Range &range, std::error_code &ec) {
   return mcp_.set_software_position_limits(config_.axis, range.min, range.max, ec);
 }
 
+bool Actuator::apply_motion_defaults(std::error_code &ec) {
+  std::lock_guard<std::mutex> lock(mcp_mutex_);
+  // The controller runs position moves on its stored default speed (a ceiling on the
+  // per-move velocity) and default accel (the ramp), reloaded from EEPROM at power-up and
+  // not persisted by its save command, so they are installed here every boot. The profile
+  // velocity is the ceiling: a move may ask for less, never more.
+  const uint16_t speed =
+      static_cast<uint16_t>(std::min<uint32_t>(config_.profile.velocity, UINT16_MAX));
+  return mcp_.set_default_speed(config_.axis, speed, ec) &&
+         mcp_.set_default_accel(config_.axis, config_.profile.acceleration, ec);
+}
+
 Actuator::Range Actuator::installed_limits() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return calibration_mode_ ? kUnlimited : range_;
@@ -167,6 +195,9 @@ bool Actuator::initialize() {
   if (ok) {
     ok = apply_limits(installed_limits(), ec);
   }
+  if (ok) {
+    ok = apply_motion_defaults(ec);
+  }
   note_result(ok, ec, "initialize");
   if (!ok) {
     return false;
@@ -184,7 +215,10 @@ bool Actuator::initialize() {
                    config_.name);
     }
   }
-  logger_.info("{}: initialised, range [{}, {}] counts{}{}", config_.name, range.min, range.max,
+  logger_.info("{}: initialised, range [{}, {}] counts, speed ceiling {} counts/s, ramp {} "
+               "counts/s^2{}{}",
+               config_.name, range.min, range.max, config_.profile.velocity,
+               config_.profile.acceleration,
                config_.hardware_limits ? ", limit switches on the controller" : "",
                ready() ? "" : ", NOT ready (needs homing)");
   return true;
@@ -367,7 +401,12 @@ bool Actuator::disable_loop(std::error_code &ec) {
   if (state != DriveState::OperationEnabled && state != DriveState::QuickStopActive) {
     return true; // no loop running
   }
-  return command_state(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled, ec);
+  if (!command_state(espp::detail::ds402::CW_DISABLE_VOLTAGE, DriveState::SwitchOnDisabled, ec)) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  pending_release_ = false; // nothing left for poll() to release
+  return true;
 }
 
 // ------------------------------------------------------------------ moves
@@ -440,20 +479,246 @@ bool Actuator::do_move(int32_t counts, const Profile &profile, bool jog) {
       }
     }
   }
+  // The trapezoid starts where the joint is, or where the setpoint of a move still in
+  // progress is (with its velocity), so a retarget mid-move stays smooth.
+  int32_t here = 0;
+  if (!read_position(here)) {
+    return false;
+  }
+  double start = here;
+  double start_velocity = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (trajectory_.active) {
+      start = trajectory_.setpoint;
+      start_velocity = trajectory_.velocity;
+    }
+  }
+  const auto first = static_cast<int32_t>(std::lround(start));
   std::error_code ec;
   bool ok;
   {
     std::lock_guard<std::mutex> lock(mcp_mutex_);
-    ok = mcp_.move_to_position(config_.axis, clamped, profile.velocity, profile.acceleration,
+    // Enables the drive and sets the profile objects; the setpoints that follow from
+    // poll() only need the target write.
+    ok = mcp_.move_to_position(config_.axis, first, profile.velocity, profile.acceleration,
                                profile.deceleration, ec);
+    if (ok) {
+      // Still holding the controller: a poll() that was about to release the previous
+      // move sees the new serial before it can touch the drive.
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      last_target_ = clamped;
+      pending_release_ = true;
+      watching_ = false;
+      ++move_serial_;
+      reached_since_.reset();
+      still_reference_.reset();
+      rest_position_.reset();
+      trajectory_.active = clamped != first;
+      stream_done_at_ =
+          trajectory_.active ? std::nullopt : std::optional{std::chrono::steady_clock::now()};
+      trajectory_.setpoint = start;
+      trajectory_.velocity = start_velocity;
+      trajectory_.target = clamped;
+      trajectory_.profile = profile;
+      trajectory_.last = std::chrono::steady_clock::now();
+    }
   }
   note_result(ok, ec, "move");
   if (ok) {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    last_target_ = clamped;
-    logger_.debug("{}: moving to {} at {} counts/s", config_.name, clamped, profile.velocity);
+    logger_.debug("{}: moving {} -> {} at {} counts/s, ramps {} / {}", config_.name, first, clamped,
+                  profile.velocity, profile.acceleration, profile.deceleration);
   }
   return ok;
+}
+
+bool Actuator::step_trajectory() {
+  int32_t setpoint = 0;
+  bool done = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!trajectory_.active) {
+      return true;
+    }
+    Trajectory &t = trajectory_;
+    const auto now = std::chrono::steady_clock::now();
+    const double dt = std::chrono::duration<double>(
+                          std::min<std::chrono::nanoseconds>(now - t.last, kTrajectoryMaxStep))
+                          .count();
+    t.last = now;
+    const double accel = std::max<double>(t.profile.acceleration, 1.0);
+    const double decel = std::max<double>(t.profile.deceleration, 1.0);
+    const double cruise = std::max<double>(t.profile.velocity, 1.0);
+    const double remaining = t.target - t.setpoint; // signed
+    const double direction = remaining < 0 ? -1.0 : 1.0;
+    const double toward = t.velocity * direction; // speed along the way to the target
+    if (toward < 0) {
+      // Heading away (a retarget behind the joint): brake first.
+      t.velocity += direction * decel * dt;
+    } else if (toward * toward / (2.0 * decel) >= std::fabs(remaining)) {
+      // Within the stopping distance: slow down, never below standstill.
+      t.velocity = direction * std::max(toward - decel * dt, 0.0);
+    } else {
+      t.velocity = direction * std::min(toward + accel * dt, cruise);
+    }
+    t.setpoint += t.velocity * dt;
+    const double left = (t.target - t.setpoint) * direction;
+    if (left <= 0.0 || (std::fabs(t.velocity) < 1.0 && std::fabs(left) < 1.0)) {
+      t.setpoint = t.target;
+      t.velocity = 0;
+      t.active = false;
+      stream_done_at_ = now;
+      done = true;
+    }
+    setpoint = static_cast<int32_t>(std::lround(t.setpoint));
+  }
+  if (!check_online()) {
+    return false;
+  }
+  std::error_code ec;
+  bool ok;
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    auto *drive = mcp_.drive(config_.axis);
+    ok = drive != nullptr && drive->set_target_position(setpoint, ec);
+  }
+  note_result(ok, ec, "setpoint");
+  if (!ok) {
+    // Do not keep streaming into a controller that is not answering; the final target is
+    // not sent either, so the joint stays short of it and the release watch stays off.
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    trajectory_.active = false;
+    pending_release_ = false;
+    logger_.error("{}: move abandoned at setpoint {}: see the log", config_.name, setpoint);
+    return false;
+  }
+  if (done) {
+    logger_.debug("{}: trajectory done, final target {} sent", config_.name, setpoint);
+  }
+  return true;
+}
+
+bool Actuator::poll() {
+  if (!step_trajectory()) {
+    return false;
+  }
+  enum class Step { nothing, release, watch };
+  Step step = Step::nothing;
+  uint32_t serial = 0;
+  int32_t target = 0;
+  int32_t rest = 0;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_poll_ || trajectory_.active) {
+      return true; // nothing due, or setpoints still on their way to the target
+    }
+    if (pending_release_) {
+      step = Step::release;
+      serial = move_serial_;
+      target = last_target_.value_or(0);
+      next_poll_ = now + kReleasePoll;
+    } else if (watching_ && last_target_ && rest_position_ && !calibration_mode_) {
+      step = Step::watch;
+      target = *last_target_;
+      rest = *rest_position_;
+      next_poll_ = now + kWatchPoll;
+    }
+  }
+  if (step == Step::nothing) {
+    return true;
+  }
+  if (step == Step::watch) {
+    int32_t here = 0;
+    if (!read_position(here)) {
+      return false;
+    }
+    if (std::abs(here - rest) <= config_.tolerance) {
+      return true;
+    }
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_correction_ < kCorrectionHoldoff) {
+        return true; // it moved again at once: not more often than this
+      }
+      last_correction_ = now;
+    }
+    logger_.warn("{}: at rest it moved from {} to {} ({} counts): correcting toward {}",
+                 config_.name, rest, here, here - rest, target);
+    return do_move(target, config_.profile);
+  }
+
+  // Arrived when the controller says so, or when the count has settled within tolerance
+  // of the target: a P-only loop can stall short of the controller's own window and
+  // never raise its flag, and a joint that is close and still is done by any measure.
+  int32_t here = 0;
+  if (!read_position(here)) {
+    return false;
+  }
+  bool still = false;
+  bool stalled = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    if (!still_reference_ || std::abs(here - *still_reference_) >= kStillCounts) {
+      still_reference_ = here;
+      still_since_ = now;
+    }
+    still = now - still_since_ >= kStillTime;
+    stalled = stream_done_at_ && now - *stream_done_at_ >= kStallRelease;
+  }
+  bool arrived = still && std::abs(here - target) <= config_.tolerance;
+  if (!arrived && !stalled) {
+    bool reached = false;
+    if (!is_target_reached(reached)) {
+      return false;
+    }
+    arrived = reached;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    if (!arrived && !stalled) {
+      reached_since_.reset();
+      return true;
+    }
+    if (!reached_since_) {
+      reached_since_ = now;
+    }
+    if (arrived && now - *reached_since_ < kReleaseDelay) {
+      return true;
+    }
+  }
+  std::error_code ec;
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    {
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      if (!pending_release_ || move_serial_ != serial) {
+        return true; // a newer move went out meanwhile; leave its loop alone
+      }
+    }
+    if (!disable_loop(ec)) {
+      logger_.error("{}: arrived at {} but the drive would not release: {}", config_.name, here,
+                    ec.message());
+      std::lock_guard<std::mutex> state_lock(state_mutex_);
+      pending_release_ = false; // do not hammer the bus; the next move re-enables anyway
+      return false;
+    }
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    watching_ = true;
+    rest_position_ = here;
+  }
+  if (arrived) {
+    logger_.info("{}: arrived at {}, motor released", config_.name, here);
+  } else {
+    logger_.warn("{}: stalled at {}, {} counts short of {}, {} s after the last setpoint: "
+                 "motor released (the loop cannot close that; tune it)",
+                 config_.name, here, target - here, target,
+                 std::chrono::duration_cast<std::chrono::seconds>(kStallRelease).count());
+  }
+  return true;
 }
 
 bool Actuator::move_absolute(int32_t counts) { return do_move(counts, config_.profile); }
@@ -496,6 +761,14 @@ bool Actuator::stop() {
     ok = drive != nullptr && drive->quick_stop(ec);
   }
   note_result(ok, ec, "stop");
+  if (ok) {
+    // Whoever stopped it wants it still: no more setpoints, no release to finish, no
+    // drift to correct.
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    trajectory_.active = false;
+    pending_release_ = false;
+    watching_ = false;
+  }
   return ok;
 }
 
@@ -514,6 +787,7 @@ bool Actuator::set_calibration_mode(bool enabled) {
       return true;
     }
     calibration_mode_ = enabled;
+    watching_ = false; // a target from before the clamp changed is not one to go back to
     write_now = initialized_;
   }
   if (!write_now) {
@@ -586,6 +860,11 @@ bool Actuator::set_encoder(int32_t counts) {
     } else {
       ok = mcp_.set_encoder(config_.axis, counts, ec);
     }
+  }
+  if (ok) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    watching_ = false; // the old target means nothing against the new count
+    trajectory_.active = false;
   }
   note_result(ok, ec, "set_encoder");
   if (!ok) {
@@ -675,7 +954,10 @@ bool Actuator::home() {
   }
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    homed_ = true; // so do_move accepts the approach; cleared below on failure
+    homed_ = true;            // so do_move accepts the approach; cleared below on failure
+    pending_release_ = false; // the approach is commanded here, not through do_move()
+    watching_ = false;
+    trajectory_.active = false;
   }
 
   // One approach segment from `from`, in the homing direction. Returns false only when

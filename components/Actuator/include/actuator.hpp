@@ -59,12 +59,15 @@ public:
   using DriveState = espp::Ds402Drive::State;
   using Range = ActuatorStore::Range;
 
-  /// Motion profile for a move, in the controller's units, sent with every move as the
-  /// CiA 402 profile objects. On the MCP266 firmware tested (see DESIGN.md): `velocity`
-  /// is honoured as a per-move speed, capped by the channel's stored Speed from Motion
-  /// Studio's Position Settings page; `acceleration` and `deceleration` are stored but
-  /// not applied, the ramp always comes from the stored Accel and Decel. Too low a
-  /// velocity makes the velocity loop cog (seen at 100 counts/s with QPPS 2750).
+  /// Motion profile for a move, in the controller's units. The Actuator runs the
+  /// trapezoid itself: a move streams setpoints from poll() that ramp at `acceleration`,
+  /// cruise at `velocity` and slow at `deceleration`, because on the MCP266 firmware
+  /// tested a profile-position target is taken as a step (the CiA 402 profile objects are
+  /// accepted but no ramp is applied; see DESIGN.md). The controller's stored default
+  /// speed caps how fast it follows and initialize() installs the config profile's
+  /// velocity as that ceiling every boot, so a per-move profile can ask for less, not
+  /// more. Too low a velocity makes the velocity loop cog (seen at 100 counts/s with
+  /// QPPS 2750).
   struct Profile {
     uint32_t velocity;     ///< Cruise speed, counts per second.
     uint32_t acceleration; ///< Counts per second squared.
@@ -95,7 +98,8 @@ public:
     Range range;              ///< Calibrated travel in counts. Targets are clamped to it.
     Profile profile;          ///< Default motion profile.
     int32_t jog_step;         ///< Counts moved by increment() and decrement().
-    int32_t tolerance;        ///< Counts within which a position counts as at target.
+    int32_t tolerance;        ///< Counts within which a position counts as at target, and
+                              ///< the deadband of the rest watch (see poll()).
     bool hardware_limits;     ///< Limit switches are wired to the controller for this axis.
     Homing homing{};          ///< Leave required=false for an absolute encoder.
     ActuatorStore *store{nullptr};    ///< Where ranges and positions persist; may be null.
@@ -151,6 +155,22 @@ public:
   bool increment();                     ///< One jog step, in counts.
   bool decrement();
   bool stop();                          ///< CiA 402 quick stop; the next move re-enables.
+  /// The move engine; call it every few tens of milliseconds, only while the joint may
+  /// move (the owner's IDLE), from a task that may block on CAN. While a move is in
+  /// progress each call advances the trapezoid and sends the next setpoint (a few SDOs).
+  /// Once the setpoints have reached the target, the joint counts as arrived when the
+  /// controller reports target reached, or when its count has sat within `tolerance` of
+  /// the target and still for half a second; a settle time later the drive is released:
+  /// no duty, no loop, the joint rests unpowered. A joint that has not arrived three
+  /// seconds after the stream ended is released where it stalled, with a warning that
+  /// says how far short (a loop that cannot close the last counts is a tuning problem,
+  /// not a reason to keep it humming). The resting joint is then watched at a slow rate:
+  /// if the count moves more than `tolerance` from where it came to rest (load, a shock
+  /// absorber in the linkage, a bump), the joint is moved back to its target and
+  /// released again, at most once a second. A quick stop, calibration mode or a
+  /// rewritten encoder count ends the watch; the next move restarts it. No bus traffic
+  /// while there is nothing to do. False only on a bus failure.
+  bool poll();
   bool is_target_reached(bool &reached);
   bool get_drive_state(DriveState &state);
   bool read_statusword(uint16_t &statusword); ///< Raw CiA 402 statusword; bit 11 = limit active.
@@ -218,6 +238,13 @@ private:
   bool check_online();
   void note_result(bool ok, const std::error_code &ec, const char *what);
   bool apply_limits(const Range &range, std::error_code &ec);
+  /// Install the config profile's velocity and acceleration as the controller's stored
+  /// default speed and accel, which its position moves run on. Caller must not hold
+  /// mcp_mutex_.
+  bool apply_motion_defaults(std::error_code &ec);
+  /// Advance the trapezoid by the time since the last call and send the next setpoint.
+  /// Nothing to do when no move is in progress. Caller must not hold mcp_mutex_.
+  bool step_trajectory();
   /// Read the controller's clamp back and compare with what we installed; false if the
   /// controller has lost it (a reset), in which case initialize() is re-run.
   bool verify_limits();
@@ -245,6 +272,29 @@ private:
   std::optional<int32_t> current_position_;
   std::chrono::steady_clock::time_point position_time_{};
   std::optional<int32_t> last_target_;
+  bool pending_release_{false}; ///< A move is out whose drive poll() has yet to release.
+  bool watching_{false};        ///< Released at a target that poll() keeps the joint on.
+  uint32_t move_serial_{0};     ///< Bumped per move, so poll() never releases a newer one.
+  std::optional<std::chrono::steady_clock::time_point> reached_since_;
+  std::chrono::steady_clock::time_point next_poll_{};
+  std::chrono::steady_clock::time_point last_correction_{};
+  /// For poll()'s stillness test: the count has not left a small band around
+  /// still_reference_ since still_since_.
+  std::optional<int32_t> still_reference_;
+  std::chrono::steady_clock::time_point still_since_{};
+  std::optional<std::chrono::steady_clock::time_point> stream_done_at_; ///< Last setpoint sent.
+  std::optional<int32_t>
+      rest_position_; ///< Where the joint sat when released; the watch's reference.
+  /// The move in progress: the setpoint streamed to the controller and its velocity,
+  /// advanced by step_trajectory() until the setpoint lands on the target.
+  struct Trajectory {
+    bool active{false};
+    double setpoint{0};
+    double velocity{0}; ///< Signed, counts per second.
+    int32_t target{0};
+    Profile profile{};
+    std::chrono::steady_clock::time_point last{};
+  } trajectory_;
   int32_t last_saved_position_{0};
   std::chrono::steady_clock::time_point last_save_time_{};
   bool initialized_{false};

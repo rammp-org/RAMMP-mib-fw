@@ -1,4 +1,15 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  espp/mcp266: '>=1.3.7'   # set_encoder() / read_position_limits()
+  # Until esp-cpp/espp releases the PR "set and read back the stored default speed and
+  # accel" (set_default_speed() / set_default_accel()): the fork's integration branch,
+  # which is that PR plus version fields so a git checkout resolves. The command table
+  # those use lives in motor_controller, so it comes from the same branch.
+  espp/mcp266:
+    path: components/mcp266
+    git: https://github.com/ewang360/espp.git
+    version: rammp/mcp266-defaults
+  espp/motor_controller:
+    path: components/motor_controller
+    git: https://github.com/ewang360/espp.git
+    version: rammp/mcp266-defaults
   espp/nvs: '>=1.3.5'

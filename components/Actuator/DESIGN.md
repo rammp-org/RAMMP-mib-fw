@@ -316,12 +316,35 @@ Recorded here because each one cost time and none is visible in the code.
   the stored Speed (100 counts/s made homing visibly slow and cogging; 500 was
   smooth), so the Actuator's `Profile.velocity` is a per-move cap under the
   stored ceiling, while accel/decel come only from the stored settings. The
-  trapezoid is therefore a controller setting, saved to EEPROM and to the
-  settings file with the gains; no MIB-side trajectory generation is needed.
-  Keep per-move speeds well above the velocity loop's cogging floor.
+  trapezoid is therefore a controller setting; no MIB-side trajectory generation
+  is needed. Keep per-move speeds well above the velocity loop's cogging floor.
+  Later finding: those stored values are the packet-serial "default speed" and
+  "default accel" (commands 70/71 and 68/69), they are NOT what Motion Studio's
+  position page shows (that page holds its own slider parameters), and the
+  controller's save-to-EEPROM command did not persist them on the bench. So
+  `initialize()` installs the config profile's velocity and acceleration as the
+  stored defaults every boot, next to the clamp. The decel field is inert on
+  this firmware: one ramp per axis.
+  Final finding: even with the stored accel at 1000 a CiA 402 move was a jolt,
+  so profile-position targets are taken as steps on this firmware, with only
+  the stored speed as a cap, while the packet-serial buffered position command
+  (which Motion Studio's slider uses) carries a real trapezoid. That command's
+  CANopen mirror (object 0x2041) does move the motor, but it runs outside the
+  CiA 402 state machine: quick stop, disable voltage and a duty of 0 did not
+  stop it, and only a CiA 402 move to the current position took the loop back.
+  So the Actuator generates the trapezoid itself and streams setpoints from
+  `poll()` (see README); the stored speed stays installed as the ceiling.
 - **Quick stop parks the drive.** `stop()` leaves the drive in quick-stop-active,
   which the standard enable sequence cannot leave; the Actuator now releases it
   before every move (re-enable in place, else disable voltage). Rewriting the
   encoder count while a loop is active makes the loop chase its old target
   (set to 0 at 20000: the motor drove back to 20000); `set_encoder()` now
   disables the loop first.
+- **An arrived loop hunts.** Left in operation enabled at its target, the loop
+  dithers across the last counts and the gearmotor whirs until something cuts
+  the duty (Motion Studio's Stop Motors). `poll()` releases the drive a settle
+  time after target reached, then watches the resting count and moves the joint
+  back when it leaves the target by more than `tolerance`; that covers the rear
+  caster, whose shock absorber lets the count sag under load, without keeping
+  any loop running. Polled over SDO: whether the MCP266 can push its statusword
+  and position as TPDOs is untested.
