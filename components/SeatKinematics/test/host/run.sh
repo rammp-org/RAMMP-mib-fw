@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build and run the SeatKinematics checks on the host (macOS or Linux). No ESP-IDF needed:
-# stubs/ stands in for the one ESP-IDF header MIBconfig.hpp includes.
+# stubs/ stands in for the headers MIBconfig.hpp includes from ESP-IDF and the Arbiter component.
 set -euo pipefail
 shopt -s nullglob
 here="$(cd "$(dirname "$0")" && pwd)"
