@@ -80,4 +80,26 @@ struct SeatGeometry {
   Transmission right_carriage_transmission; ///< Input: carriage travel, mm.
 };
 
+/// @brief The swing-arm angle at each end of one leg actuator's calibrated range.
+///
+/// The range itself (encoder counts at the two mechanical ends) is calibrated on the chair and
+/// saved in NVS. These two angles say which arm angle each end is, which ties the counts to
+/// SeatGeometry. The end with the wheel fully down (seat highest) has the lowest arm angle on
+/// a main leg and the highest on the rear caster.
+struct LegEndAngles {
+  float arm_deg_at_min_counts{0.0f};
+  float arm_deg_at_max_counts{0.0f};
+};
+
+/// @brief How the encoder counts of the legs that lift the seat map onto SeatGeometry.
+struct SeatLegCalibration {
+  LegEndAngles main_left;
+  LegEndAngles main_right;
+  LegEndAngles rear_caster;
+  /// True if the main legs' encoders read the linear actuator, so counts are linear in
+  /// actuator stroke; false if they read the swing arm, so counts are linear in arm angle.
+  /// The rear caster's encoder is on its swing arm.
+  bool main_leg_encoder_on_actuator{true};
+};
+
 } // namespace mib

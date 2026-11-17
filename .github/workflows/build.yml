@@ -60,3 +60,6 @@ jobs:
 
     - name: SeatKinematics host checks
       run: components/SeatKinematics/test/host/run.sh
+
+    - name: SeatControl host checks
+      run: components/SeatControl/test/host/run.sh

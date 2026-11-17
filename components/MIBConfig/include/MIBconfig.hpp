@@ -372,6 +372,35 @@ inline constexpr SeatGeometry seat_geometry{
     .right_carriage_transmission = Transmission::linear(1.0f, 1.0f),
 };
 
+/// @brief Swing-arm angle at each end of the seat legs' calibrated ranges (SeatControl).
+///
+/// To calibrate one leg: in the control panel's Calibration tab, lift its clamp, jog it to each
+/// mechanical end and note the counts, then save them as its range. Then set the two angles
+/// here: the arm angle at the lower count and at the higher count.
+// TODO(bench): the ends are assumed to be the URDF arm limits (±45°), with the lower count at
+// the seat-low end. Measure each arm's angle at both ends (an inclinometer on the arm, 0° as
+// in the URDF) and check which end has the lower count.
+inline constexpr SeatLegCalibration seat_leg_calibration{
+    .main_left = {.arm_deg_at_min_counts = 45.0f, .arm_deg_at_max_counts = -45.0f},
+    .main_right = {.arm_deg_at_min_counts = 45.0f, .arm_deg_at_max_counts = -45.0f},
+    .rear_caster = {.arm_deg_at_min_counts = -45.0f, .arm_deg_at_max_counts = 45.0f},
+    // TODO(bench): confirm where the main legs' encoders sit.
+    .main_leg_encoder_on_actuator = true,
+};
+
+/// @brief How often the seat task checks for a new seat target and, while the seat legs move,
+/// reports where the seat is.
+inline constexpr auto seat_task_interval = std::chrono::milliseconds{100};
+inline constexpr auto seat_report_interval = std::chrono::milliseconds{500};
+
+/// @brief A seat move that has not reached its target in this long is stopped.
+inline constexpr auto seat_move_timeout = std::chrono::seconds{30};
+
+/// @brief Floor on a seat leg's speed, as a fraction of its profile velocity, when its speed is
+/// scaled down so the three legs arrive together. Too slow a speed makes the controller's
+/// velocity loop cog.
+inline constexpr float seat_min_speed_fraction = 0.25f;
+
 // A zero gear ratio would make actuator degrees -> joint position divide by zero.
 static_assert(seat_geometry.main_left_transmission.deg_per_unit != 0.0f);
 static_assert(seat_geometry.main_right_transmission.deg_per_unit != 0.0f);

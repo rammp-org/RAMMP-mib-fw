@@ -17,7 +17,7 @@ endif()
 
 set(
   COMPONENTS
-  "main esptool_py bsp MIBConfig MibSystem ServiceLink Arbiter ArbitrationServer DifferentialDrive DriveController SeatKinematics rammp_rtps_messages"
+  "main esptool_py bsp MIBConfig MibSystem ServiceLink Arbiter ArbitrationServer DifferentialDrive DriveController SeatKinematics SeatControl rammp_rtps_messages"
   CACHE STRING
   "List of components to include"
   )
