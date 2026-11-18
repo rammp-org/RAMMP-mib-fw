@@ -352,7 +352,8 @@ inline constexpr ActuatorConfig actuators[leg_count] = {
      .max_speed = 800, // the requirement: 800 counts/s at most
      .acceleration = 1600,
      .lead_ms = 250,
-     .tolerance = 40, // encoder noise is about +-30 counts; decisions use a median of 9
+     .tolerance = 15, // median of 9 reads; raw noise is +-30 counts. At 40 the leg was released
+                     // while still converging and ended up to 31 counts off (2026-11-17)
      .jog_step = 100,
      .tuning = main_leg_tuning,
      .hardware_limits = false,
