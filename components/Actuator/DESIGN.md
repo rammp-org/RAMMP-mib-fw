@@ -1,350 +1,288 @@
-# From a joint position to a moving MCP266
+# The leg actuators: the MCP266 as measured, and how the Actuator drives it
 
-How a command in engineering units becomes motion, what each layer owns, where
-the limits live, and what is still to come (marked *planned*).
+What the controller does, what this component does with it, where the limits live, and
+what is still open. The evidence is the chair session of 2026-11-17,
+[`docs/actuator-revamp/bench-findings.md`](../../docs/actuator-revamp/bench-findings.md)
+(logs under `docs/actuator-revamp/runs/`), and the bench firmware that took it,
+`tools/actuator_sysid/firmware`. This document cites them rather than restating them;
+where an older note (the October bench, the handoff) disagrees, the findings win.
 
-The rule behind the split: the **BSP is the electronics interface** (Ethernet,
-CAN, the MCP266s, their encoders, the calibration of those encoders) and
-nothing in it knows what a joint means. Kinematics, units and any move that
-spans joints live in an **application layer above the BSP**, which is not
-designed here yet; it will hold references to the BSP's actuators, read
-their calibrated ranges, and speak to them in encoder counts.
+## Layers
 
-## The flow
+The **BSP is the electronics interface** (CAN, the MCP266s, their encoders, the
+calibration of those encoders) and nothing in it knows what a joint means. Kinematics,
+units and moves that span joints belong in an application layer above the BSP (not built
+yet), which holds references to the BSP's actuators and speaks to them in encoder counts.
 
 ```
-                 state machine / seat command / calibration script
-                                     │
-                                     │  set_position(joint, value)      metres or degrees
-                                     ▼
-        ┌────────────────────────────────────────────────────────────┐
-        │  Application layer                        (planned)        │
-        │  per joint: units ⇄ encoder counts, using the actuator's   │
-        │  calibrated range; one kinematics class per family: main   │
-        │  legs, casters, carriages; written once measured           │
-        │  pure arithmetic, host-testable                            │
-        │  holds references to the BSP's actuators                   │
-        └────────────────────────────────────────────────────────────┘
-                                     │
-                                     │  move_absolute(counts) / move_relative(delta)
-                                     ▼
-        ┌────────────────────────────────────────────────────────────┐
-        │  mib::Actuator            (this component, owned by BSP)   │
-        │  • clamps to the range (unless calibrating), logs the clip │
-        │  • holds the range, jog step, default profile              │
-        │  • initialize(): writes the range to the controller        │
-        │  • verifies the clamp before each move; re-initialises a   │
-        │    controller that reset                                   │
-        │  • calibration (absolute) and homing (incremental) paths   │
-        │  • offline marking                                         │
-        └────────────────────────────────────────────────────────────┘
-                                     │
-                                     │  move_to_position(axis, counts,
-                                     │                   velocity, accel, decel)
-                                     ▼
-        ┌────────────────────────────────────────────────────────────┐
-        │  espp::Mcp266  +  espp::CanopenClient  +  espp::Twai        │
-        │  CiA 402 enable sequence, profile objects, target,          │
-        │  new-set-point handshake — each one an SDO frame pair      │
-        └────────────────────────────────────────────────────────────┘
-                                     │
-                                     │  CAN bus, 1 Mbit/s
-                                     ▼
-        ┌────────────────────────────────────────────────────────────┐
-        │  MCP266 (one channel)                                       │
-        │  • runs the motion profile and the position PID itself     │
-        │  • reads the joint's absolute encoder                      │
-        │  • position clamp  MinPos/MaxPos      ← written by Actuator │
-        │  • software limits 0x607D             ← written by Actuator │
-        │  • limit switches on S-pins (carriages) ← its own config    │
-        └────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
-                          linear actuator moves the joint
+  application layer (planned)      units <-> counts, coordinated moves
+            |  move_absolute(counts) / move_relative(delta) / stop()
+            v
+  mib::Actuator (owned by the BSP)  settings at boot, trapezoid, streaming, arrival,
+            |                       release, faults; poll() every 10 ms
+            |  SDOs: target + controlword handshake, encoder, statusword
+            v
+  espp::Mcp266 / Ds402Drive / CanopenClient / Twai     (CAN, 1 Mbit/s)
+            v
+  MCP266 channel: position stage -> velocity PI -> PWM -> EHA
 ```
 
-Reads go the other way along the same path: `read_position()` is one SDO for
-the counts, and the application layer turns counts into units.
+## The controller, as measured
 
-## Who owns what
+Two MCP266 2x60A, software 1.4.9: node 3 drives the main legs (M1 right, M2 left), node 2
+the carriages. No node 1: this chair has no powered casters.
 
-| Concern | Where | Notes |
-|---|---|---|
-| Units (m, deg) and kinematics | Application layer, constants from `MIBconfig.hpp` | Planned. Not in the BSP. Reads `range()` from the actuator. |
-| Range in counts | Actuator (source of truth), persisted in MIB NVS | Compiled default in `MIBconfig.hpp`, overridden by the calibrated value from NVS. |
-| Enforcing the range | Both | Actuator clamps before sending; the controller clamps again (see below). |
-| Current position | The encoder, read on demand | `read_position()` asks; `current_position()` is the last reading plus its age, fresh as often as the owner polls. |
-| Motion profile | Actuator config, per-move override | Executed by the controller. |
-| Position loop (PID) | MCP266 | Gains tuned in Motion Studio or on the debugger's CAN page. |
-| Limit switches | MCP266 | Its S-pin functions; the Actuator only knows they exist. |
-| Fault reset, NMT start | Actuator / BSP | Once per boot, and again when a move finds the controller's clamp gone (it reset). |
-| Last known position (incremental) | Actuator via `ActuatorStore` | Saved from the periodic poll, throttled; restored at boot instead of homing. |
+**A cascade, not a position PID on PWM.** The position stage turns error into a speed
+command, the velocity stage turns speed error into PWM, and there is no feedforward
+(findings: "Decisive tests" and "Velocity loop structure"):
 
-## Absolute and relative
-
-```cpp
-bool move_absolute(int32_t counts);     // clamped to the range
-bool move_relative(int32_t delta);      // read the encoder, add, command absolute
-bool increment(); bool decrement();     // move_relative by the jog step
-std::optional<int32_t> last_target();   // last count commanded, for queued moves
+```
+speed command = position P x (target - count)          capped at the profile velocity 0x6081
+PWM           = (velocity P / QPPS) x (speed command - speed) + velocity integral
 ```
 
-**Absolute** moves are the natural fit: the application layer turns units
-into counts using the actuator's calibrated range and its own kinematics, and
-the Actuator does the rest.
+Only the ratios matter. What the numbers mean:
 
-**Relative** moves need the current position, and it comes from the encoder,
-not from stored state. `move_relative` reads the position from the controller
-(one SDO), adds the delta, clamps, and commands the absolute result. For a
-linear joint a delta in units is a fixed delta in counts and can be passed
-straight down; for a non-linear joint the caller goes through the absolute
-path (read the position, convert to units, add, convert back,
-`move_absolute`).
+| Setting | Units | Meaning | Stock (right leg) | Set by the MIB |
+|---|---|---|---|---|
+| position P | x1024 | counts/s of speed command per count of error; a target moving at v is followed v / P behind | 103 (0.10) | 4096 (4.0): 250 ms lag at constant speed |
+| position I, D, MaxI, deadband | | | 0, 868, 0, 10 | all 0 |
+| velocity P | 16.16 | with QPPS: PWM fraction per counts/s of speed error | 55400 | 65536 (1.0) |
+| velocity QPPS | counts/s | the speed the loop takes as 100 % | 176 | 7143 |
+| velocity I | 16.16 | carries the load (~5 % PWM going up) | 1701 | 1701 |
+| position window 0x6067 | counts | no speed command at all inside it | **100** | 10 |
+| profile velocity 0x6081 | counts/s | caps the speed command | | 20000 (never caps) |
 
-`current_position()` is not a second source of truth: it is the last reading,
-with `position_age()`, and the owner's periodic poll (which also publishes the
-positions) keeps it fresh. Decisions such as a relative move use
-`read_position()`; status uses the cache.
+Stock settings jolt and stall: velocity P / QPPS is 34x too hot, so a small speed command
+is a large PWM burst, the leg overshoots its commanded speed and the velocity loop brakes
+it, and the 100-count window then stops it ~90 short ("stalls short", the 200-count
+tolerance and the stall release on the old branch). Window and gains were both needed: the
+window alone left stock gains 145 counts short.
 
-"Relative" means relative to where the joint *is* at the moment of the call.
-A second relative command issued mid-move starts from the mid-move position,
-not from the previous target. That is the safer meaning when a move was
-clipped or stopped; a layer that wants "relative to the last target" can use
-`last_target()`.
+**No ramp.** The controller runs no trajectory: 0x6083/0x6084 have no visible effect, and
+even with the right gains and 0x6081 = 800 a single 1,000-count target ran at ~2,060
+counts/s (findings: "Evening session"). So the MIB generates the trapezoid and streams it.
 
-**`increment` and `decrement`** are `move_relative` by the configured jog
-step, for calibration and manual jogging.
+**How a target is taken.** A position target takes effect when the drive reaches
+OPERATION ENABLED, from whatever 0x607A holds, so 0x607A is written before enabling. After
+that a bare 0x607A write is ignored: every update needs the CiA 402 new-set-point handshake.
+espp's handshake polls the statusword (~50 ms per update); the lean one used here writes
+target + controlword 0x003F on one 10 ms tick and 0x002F on the next, with no polling (each
+SDO < 2 ms). Each bit level must be held a whole tick: back-to-back 0x3F/0x2F worked for
+hundreds of updates and then for none of one move.
 
-## Where the limits actually live
+**Lead.** With position P 4.0 the leg follows a moving target 1/P = 250 ms behind (150 to
+200 counts at 800 counts/s). Writing the target ahead of the profile by speed x 250 ms held
+it within ~10 counts of the profile; end error unchanged.
 
-**Position clamp vs 0x607D.** Two objects on the controller with the same
-intent. The *position clamp* is Basicmicro's own: the MinPos/MaxPos fields of
-the position PID record (command 61/62). It ships as `[0, 0]` and the
-controller forces any target outside it to the clamp. *0x607D* is the standard
-CiA 402 software position limit that any CANopen drive exposes; the profile
-generator limits targets to it. Whether the MCP266 implements them as one
-mechanism or two is undocumented; espp writes both, so we do. Writing one and
-reading the other on the bench will show if they are aliases.
+**What it achieves (right leg).** 1,000-count moves at 800 counts/s, 1,600 counts/s²,
+across 10,530..17,420: end within ~20 counts (up moves end 10 to 20 past, down moves 2 to
+17 short), up to ~18 % PWM / 14 A going up, chassis rate under 3.5 deg/s, no ringing
+(findings: "Full-range check"). Tilt changes about -2.0 deg per 1,000 counts.
 
-**Three limits act on a target, in order:**
+**Holding.** Enabled at rest against the load the loop holds ~4 to 5 % PWM and ~4.5 A for
+nothing: the EHAs cannot be back-driven. Disable voltage takes PWM to 0 within 100 ms and
+the leg stays put. So a move ends with a release.
 
-1. `Actuator::clamp()` clips the requested count to `[min, max]` before
-   anything goes on the bus, and logs the clip. Visible, deterministic, and
-   independent of what the controller does with an over-range target (clamp,
-   abort or ignore: not documented). Also the only limit that exists before
-   the controller's are written or after they are lost.
-2. The controller's position clamp.
-3. The controller's 0x607D limits.
+**Encoders.** Noise at rest ~50 to 70 counts peak to peak (±30); every decision uses a
+median of 9 reads. 0x606C (speed) is unusable; speed comes from encoder differences. The
+left leg's encoder (M2) jumps 1,500 to 2,000 counts and decays over ~100 ms about every 10 s
+with the chair still: a hardware fault, and the reason the left leg is not commissioned.
 
-Limits 2 and 3 catch anything that bypasses the Actuator, such as a raw SDO
-from the debugger. The carriages' **limit switches** are a fourth, physical
-limit the controller handles alone; the count it reports when stopped on a
-switch is what calibration records as that end.
+**Settings live in RAM.** Everything the MIB writes returns to the controller's flash
+values at its next power cycle; nothing here writes the flash. The position PID record must
+be read from subindex 1 (subindices 6/7, the clamp, read 0 on their own; espp PR #911), and
+written whole in the setter's D, P, I order. The velocity record is set at 0x201C/0x201D
+(subindices D, P, I, QPPS) and read at 0x2037/0x2038 (P, I, D, QPPS). The stored default
+speed/accel objects 0x2044..0x2047 error on read on 1.4.9 and are not what limits speed;
+they are not used.
 
-**The controller reset hazard.** The MCP266 reverts to its EEPROM at
-power-up. If one controller browns out or resets while the MIB is running, it
-comes back with the factory `[0, 0]` clamp and the MIB still believes it is
-initialized; the next move would be forced to count 0 and the joint would run
-to one end. So before every move the Actuator reads the clamp back (two SDOs,
-a few milliseconds) and compares it with what it installed; a mismatch means
-the controller reset, and `initialize()` is re-run first. For an incremental
-encoder that also means the count is arbitrary again, so the saved position is
-restored with a warning, or the joint waits for `home()`.
+## CAN and the watchdog
 
-**The MCP266's EEPROM.** Not written today: WRITENVM over CAN is unverified on
-this controller, the MIB as single source of truth means a swapped controller
-is configured at boot with nothing to remember, and Motion Studio writes the
-same EEPROM. *Planned:* once the bench confirms the save works over CAN, the
-calibration script also saves to EEPROM, so the controller keeps its limits
-through its own resets; the MIB still re-writes every boot. If the CAN save
-aborts, Motion Studio's "save settings" after the MIB has written the values
-does the same job.
+**`tx_retry_count = -1`.** On the ESP32-P4's SJA1000-style controller ESP-IDF sets single
+shot for every `tx_retry_count` but -1 (espressif/esp-idf#19195), so 0..15 all mean one
+attempt, and a frame that loses arbitration is reported unsent: ~1.6 a second on the chair's
+bus, each one a failed SDO. With -1: 2 unsent frames in a 120 s run. The residual rate of
+failed SDOs (about one a minute) is why a move tolerates single failures.
 
-## Calibration and homing are different things
+**The heartbeat.** The BSP sends a CANopen heartbeat as node 127 every 100 ms from
+`init_actuators()` on, and each commissioned controller's heartbeat consumer is set to
+0x007F01F4 (node 127, 500 ms) by `initialize()`. If the heartbeat stops (MIB crash or reset,
+cable cut), an enabled drive faults after ~450 ms and stops where it is. Writing 0 to the
+consumer does not stop it watching, so the heartbeat never stops on purpose.
+
+**What a watchdog trip looks like** (findings: "Evening session"): the statusword shows
+FAULT REACTION ACTIVE for ~11.5 s, the drive holding ~2 to 6 % PWM / 1.5 to 3 A, ignoring
+disable voltage; then FAULT, PWM 0. A move in progress ends FAILED ("drive faulted"). To
+recover: wait for FAULT (the example's `status` shows it, PWM 0), `clear_faults()`
+(console: `clear`), then move normally. A drive already in FAULT REACTION ACTIVE may refuse
+the clear until it reaches FAULT.
+
+## The component
+
+### initialize()
+
+For a commissioned leg: NMT start of its node, then the settings from its config, all
+written to RAM and all read back: the position window, the whole position PID record with
+the travel as clamp, the whole velocity PID record, 0x607D, 0x6081 and the heartbeat
+consumer. Any field that reads back differently is logged and leaves the leg not ready.
+Faults are reported, not cleared. A leg that is **not commissioned** gets no frame at all.
+
+### A move
+
+```
+move_absolute(target)        validate: commissioned, ready, not faulted, settings intact
+     |                        (a controller that reset is re-initialised), clamp the target
+     v
+ACQUIRE   9 ticks            encoder every tick; start = median (refused if spread > 200)
+     v
+enable                       mode 1, 0x607A = start, enable sequence (refuses a fault),
+     |                        0x6081
+     v
+STREAM    every tick         encoder; statusword every 5th tick; alternately
+     |                        SET (0x607A = clamp(setpoint), CW 0x3F) / CLEAR (CW 0x2F)
+     |                        setpoint = profile + speed x lead, never past the target
+     v
+settle                       profile ended, final target latched, median within
+     |                        tolerance (40) for settle_time (200 ms)
+     v
+release                      disable voltage (retried); 100 ms later PWM and current are
+                             read into the result: ARRIVED
+```
+
+A move asked for while one is in progress replans from the profile's position and speed
+(`MotionProfile`, host-tested): no jump in position or speed. A **failed** move is stopped
+and released and its result says how far short and why: not arrived by the profile time
+plus `arrival_margin` (2 s), the drive faulted, the encoder unsettled at the start, the
+enable refused, or the feedback lost (5 failed reads in a row, or none for 150 ms). Single
+failed SDOs are counted and tolerated.
+
+`move_result()` carries the outcome, start, target, final median count, peak speed (from
+the median over 200 ms), profile and elapsed time, the time from profile end to release,
+the PWM and current read after the release, and the SDO failures tolerated.
+
+### Ticks: who calls poll()
+
+The owner calls `poll()` (the BSP's `poll_actuators()`) every `Actuator::kTickPeriod`,
+10 ms, from one task, on a fixed-period schedule. That is how the repo schedules work:
+components are passive (DriveController computes, it owns no task) and MibSystem owns the
+periodic tasks, the IMU task with exactly this deadline schedule; and it is how the old
+`poll()` was meant to be called. The tick drives the handshake, so its period is the bit
+hold time; `poll()` will not toggle the bit faster than 8 ms whatever the caller does, and
+the profile runs on the clock, so a late tick delays an update but not the profile. A tick
+is one to four SDOs (< 2 ms each) while moving and nothing when idle. MibSystem does not
+call `init_actuators()` yet; the example's poll task is the reference (priority above the
+console, `xTaskDelayUntil`).
+
+### Faults and stop
+
+Nothing clears a fault as a side effect: not `initialize()`, not a move (espp's
+`move_to_position()`, which fault-resets in its enable, is not used), not homing.
+`clear_faults()` resets this channel only (espp's `Mcp266::reset_faults()` would reset
+both) and no longer sends the device-wide E-stop reset. `stop()` is disable voltage,
+immediately, retried up to 8 times; `read_status()` then shows PWM and current. (A quick
+stop parked the drive in QUICK STOP ACTIVE, which the enable sequence cannot leave; a
+hold-then-disable let the leg run on and reversed it.)
+
+### Concurrency
+
+Two actuators on one controller share its `CanopenClient` and a mutex: a tick, a move
+start, the settings are sequences that must not interleave. Lock order is the controller
+mutex, then the actuator's state mutex. `stop()` marks the move ended under the state mutex
+before it waits for the controller mutex, and a tick re-checks that before every write, so
+nothing is sent for a stopped move.
+
+### Deleted, and why
+
+| Old behaviour | Why it went |
+|---|---|
+| 200-count tolerance | Hid the window stall; the tuned loop ends within ~20. Tolerance is 40, per leg. |
+| Stall release: accept a leg 3 s after the stream wherever it stopped, with a warning | A move that does not arrive is now FAILED, released, and reported with how far short. |
+| Rest watch: re-move a released leg that drifted past tolerance | EHAs are not back-drivable, and the left encoder's 1,800-count glitches would have driven the leg. No drift monitor replaces it. |
+| Stored default speed/accel install (0x2044..0x2047) | Error on read on 1.4.9; not what limits speed. |
+| Target-reached flag as arrival | Set while 200 counts away with stock settings; arrival is the median count. |
+| Fault reset in initialize(), every move, homing; E-stop reset in clear_faults() | Faults were cleared unread, and homing took a fault for its switch. |
+| Quick stop | See above; disable voltage. |
+| espp's handshake per setpoint (~50 ms) | The lean handshake, 50 Hz. |
+
+### Commissioned legs, and node 2
+
+`commissioned = false` (MIBconfig.hpp) means the MIB never writes to that channel: no
+settings, no heartbeat consumer, no NMT start, no enable, no move, no stop, no fault reset,
+no calibration, no homing. Moves are refused with a message. The left main leg and both
+carriages are not commissioned. Frames that can still reach node 2 after this change:
+
+- explicit reads by name: `read_position`, `read_position_median`, `read_status`,
+  `read_statusword`, `get_drive_state`, `limit_active`, `read_controller_settings`,
+  `read_controller_limits` on a carriage's actuator (the example: `leg LCarr` then
+  `status`, `settings`, `limits`, `flags`, `sdor 2 ...`);
+- the example's `scan` (an SDO read of 0x1000 on every node id);
+- the MIB heartbeat, a broadcast (COB-ID 0x77F) every node receives; node 2's consumer
+  is never set, so it does not act on it.
+
+Nothing writes to node 2: `init_actuators()` creates its client without sending, and the
+example's `sdow` refuses nodes with no commissioned leg. To commission a carriage: tune it,
+set `commissioned = true` and its tuning in MIBconfig.hpp, reflash.
+
+## Where the limits live
+
+1. `Actuator::clamp()` clips every target, and every streamed setpoint, to the range before
+   it goes on the bus, and logs a clipped target.
+2. The controller's position clamp (MinPos/MaxPos of the position PID record) forces any
+   target into it. Factory value [0, 0]; a controller that reset comes back on its flash
+   clamp. Before every fresh move the Actuator reads the record back and re-initialises a
+   controller whose settings are gone.
+3. CiA 402 0x607D, written equal to the clamp. Statusword bit 11 ("internal limit active")
+   was seen set when the left encoder's glitch crossed the clamp.
+
+The clamp limits targets, not measurements: an encoder glitch inside an enabled loop is an
+error step the loop would act on. The left leg stays uncommissioned until that is fixed.
+
+## Calibration and homing
 
 | | Calibration | Homing |
 |---|---|---|
-| Encoder | absolute (FC, RC, ML, MR) | incremental AB (LCarr, RCarr) |
-| When | once per installation | every boot, unless the saved position is restored |
+| Encoder | absolute (main legs) | incremental AB (carriages) |
+| When | once per installation | every boot, unless the saved position is restored; never automatic |
 | Finds | the counts at the two mechanical ends | a known count at the limit switch |
 | API | `set_calibration_mode`, `set_range` | `home`, `restore_position`, `save_position` |
-| Persists | the range, in NVS | the last position, in NVS, written while running |
-| Script | calibration script, separate | part of boot / the actuator task |
+| Persists | the range, in NVS | the last position, in NVS |
 
-**Homing sequence** (`home()`): lift the clamp; move toward the switch at the
-homing profile; poll the count every 100 ms until it stops changing for
-`stall_time` (the controller stopped the motor on the switch); quick stop;
-write `home_count` into the controller's encoder (set-encoder command 22/23,
-mirrored, unverified) and read it back; restore the clamp; save the position.
-Fails loudly and refuses moves if any step does not take.
+**Calibration**: `cal on` lifts the clamp (jogs only), jog to each end and read the count,
+`range <min> <max>` installs and saves it, `cal off`. A range in NVS overrides the compiled
+default at boot. Export the calibration as text and copy it into MIBconfig.hpp so a
+replaced board boots right (planned: `export`/`import` console commands).
 
-**Position memory**: the owner calls `save_position()` from its periodic poll.
-It writes to NVS only when the joint moved more than a threshold and at least
-an interval has passed (defaults 20 counts, 5 s), so a machine running for
-hours does not wear the flash. At boot `initialize()` restores the saved count
-into the controller, which makes the joint ready without moving, on the
-assumption that it did not move while off. `home()` when in doubt.
+**Homing** (`home()`): lift the clamp, stream toward the switch at the homing profile in
+segments, wait until the median count stops changing, stop. A drive that faulted is not the
+switch: homing fails and leaves the fault for `clear_faults()`. Otherwise install
+`home_count` with `set_encoder()` (drive disabled first; a live loop chases its old target),
+restore the clamp, save the position. Never run against a real switch yet.
 
-## Calibration, end to end
+## Bench checklist (MCP266)
 
-```
-  cal on ──▶ Actuator writes a ±2e9 clamp to the controller   (limits lifted)
-     │
-     ├── inc / dec ──▶ small position moves; carriages stop on their switch
-     │                 read pos at each mechanical end
-     │
-  range <min> <max> ──▶ ActuatorRangeStore.save() → NVS
-                        Actuator.set_range()      → clamp + 0x607D on the controller
-                        (planned) save to the controller's EEPROM
-     │
-  cal off ──▶ Actuator restores the range clamp on the controller
+From the October bench, still current:
 
-  next boot: BSP loads NVS range → Actuator::initialize() writes it again
-```
+- Back up a controller's settings before letting Motion Studio touch its firmware: the
+  public build may "update" it down to its bundled firmware and wipe them.
+- After a firmware reset check: CAN mode CANopen, 1 Mbit/s, node id; encoder pin enabled
+  and its type; main battery min/max (min ~21 V, max >= 30 V on 24 V; on the chair the bus
+  is ~50 V, set accordingly); per-motor current limit; limit-pin functions.
+- Battery limits too tight make a move fault at once (the sag at motor start).
+- A bench supply cannot sink regeneration: 4,700 to 10,000 uF across the controller.
+- Never use object 0x2041 (the buffered position command mirror): on the October bench it
+  moved a motor outside the CiA 402 state machine, and disable voltage did not stop it.
+- A drive left in SWITCH ON DISABLED by firmware blocks Motion Studio's PWM slider until a
+  controller power cycle.
 
-No zeroing step: with absolute encoders the counts at the two ends are the
-calibration. What calibration does not give you is the meaning of those ends
-in units; that comes from the mechanical design and belongs in
-`MIBconfig.hpp` next to the leg geometry.
+## Open
 
-## Keeping the calibration outside the ESP32
-
-NVS is a key-value store in the ESP32's flash. It survives a reflash, but it
-is not readable and a dead board takes it with it. *Planned:* a text export.
-
-```json
-{
-  "FC": {"node_id": 10, "channel": "M1", "min_counts": 412, "max_counts": 3710,
-         "min_units": 0.0, "max_units": 0.120, "units": "m"},
-  "RC": {...}
-}
-```
-
-- The console (example and, later, the firmware) gets `export`, which prints
-  this block, and `import`, which accepts a paste and writes NVS.
-- The exported block is committed under `config/` and its numbers copied into
-  the compiled defaults in `MIBconfig.hpp`. A replacement ESP32 then boots
-  with the right values even with empty NVS; NVS only carries a re-calibration
-  not yet promoted to the repo.
-
-## The converter, sketched
-
-For a linear joint:
-
-```
-f     = (value - value_at_min) / (value_at_max - value_at_min)
-value = value_at_min + f * (value_at_max - value_at_min)
-```
-
-`value_at_min` and `value_at_max` are per-joint constants in `MIBconfig.hpp`
-(what the joint measures at each calibrated end). For a joint where actuator
-stroke and joint angle are not proportional, the same interface holds and the
-body becomes the inverse kinematics from the leg geometry, still ending in a
-fraction of stroke. The Actuator underneath is unchanged either way.
-
-Where it sits: between the state machine and the BSP, one instance per joint,
-owning nothing but the mapping. The BSP hands out actuators; the state
-machine talks units.
-
-## Planned changes, collected
-
-1. The application layer above the BSP: one kinematics class per family
-   (main legs, casters, carriages) once the base is measured, with host unit
-   tests; the periodic poll that publishes positions and saves the carriages'
-   counts; homing at boot.
-2. The actuator task in MibSystem that drives that layer.
-3. The calibration script for the absolute encoders, separate from boot.
-4. Calibration: save to the controller's EEPROM as well, once WRITENVM over
-   CAN is confirmed on the bench.
-5. Calibration export/import as text; committed copy under `config/`;
-   promote into `MIBconfig.hpp` defaults.
-6. Bench checks: the set-encoder mirror (homing depends on it); whether
-   MinPos/MaxPos and 0x607D are one mechanism or two.
-
-## Bench findings (October 2026, one MCP266, Dumore motor with AB encoder)
-
-Recorded here because each one cost time and none is visible in the code.
-
-- **Motion Studio and firmware.** The public Motion Studio build may "update" a
-  controller *down* to the firmware it bundles, wiping the settings. Back the
-  settings up first (the debugger's CAN page, or a settings file from Motion
-  Studio) and keep the installer that matches the firmware in use. Updating
-  through Motion Studio itself to its latest firmware worked.
-- **After a firmware reset, check these before anything else:** CAN mode
-  CANopen, 1 Mbit/s, node id (a reset left it at 1); encoder pin *enabled* and
-  set to quadrature or absolute (disabled looks like a dead encoder and makes
-  autotune report "encoder timeout"); main battery minimum and maximum; the
-  per-motor current limit; limit-pin functions and polarity.
-- **Battery limits are the usual cause of a move that faults at once.** With
-  the minimum at 29 V and a 30 V supply, the sag at motor start tripped "main
-  battery low", the drive dropped into CiA 402 FAULT, the error cleared itself
-  when the rail recovered, and `flags` read normal afterwards. For a 24 V
-  system: minimum about 21 V, maximum 30 V or above (regeneration lifts the
-  rail), and Motion Studio silently sets a tight maximum when the minimum is
-  changed.
-- **Bench supplies and regeneration.** A brushed motor returns energy to the
-  rail when it brakes; a bench supply cannot sink it and crackles or trips. A
-  4700 to 10000 µF capacitor across the controller's main terminals, or the
-  real battery, fixes it.
-- **The MCP266 does not report limit switches over CAN**: not in the CiA 402
-  statusword (bit 11 never set, pressed or not, idle), nor in the command-90
-  status flags (always 0). Limit switches are therefore detected only by their
-  effect, the count ceasing to change while a move is commanded, which is what
-  `home()` already does. A pin configured as a *home* input latches an "M1
-  home error"; configured as a *limit* input it blocks that direction without
-  latching. MIB-owned homing wants the limit function.
-- **Tuning.** Velocity autotune first (QPPS 2750 on the bench motor), then
-  position; the gains survive `initialize()` unchanged, so espp's PID
-  field-order remap is correct on this firmware. Autotune on the bench needs
-  the limit pins disabled and the current limit raised; a motor on the table
-  has nothing to protect.
-- **Unverified, because the bench ended before it:** a complete position move
-  over CAN to its target on a tuned motor; `home()` against a real switch;
-  position memory across a power cycle; the controller-reset detection. The
-  robot's limit switches make the first two safe to try there.
-- **No motion ramp over CANopen on this controller.** The CiA 402 profile
-  objects (0x6081 velocity, 0x6083/0x6084 accel/decel) are accepted and read
-  back unchanged but not used; the motion profile type (0x6086) is already 0;
-  the native position command mirror (command 65 at 0x2041, five subindices,
-  buffer flag last) accepts every write and moves nothing, like the speed and
-  duty mirrors espp found; the default-accel mirror (0x2044) is read-only.
-  Supported modes (0x6502) read 0x700: cyclic-synchronous velocity and torque
-  only. **The ramp that works is the controller's own:** Motion Studio's
-  Position Settings page has stored Speed, Accel and Decel per channel, and
-  CANopen position moves use them (confirmed on the bench). Correction after
-  more testing: the profile *velocity* (0x6081) IS honoured when it is below
-  the stored Speed (100 counts/s made homing visibly slow and cogging; 500 was
-  smooth), so the Actuator's `Profile.velocity` is a per-move cap under the
-  stored ceiling, while accel/decel come only from the stored settings. The
-  trapezoid is therefore a controller setting; no MIB-side trajectory generation
-  is needed. Keep per-move speeds well above the velocity loop's cogging floor.
-  Later finding: those stored values are the packet-serial "default speed" and
-  "default accel" (commands 70/71 and 68/69), they are NOT what Motion Studio's
-  position page shows (that page holds its own slider parameters), and the
-  controller's save-to-EEPROM command did not persist them on the bench. So
-  `initialize()` installs the config profile's velocity and acceleration as the
-  stored defaults every boot, next to the clamp. The decel field is inert on
-  this firmware: one ramp per axis.
-  Final finding: even with the stored accel at 1000 a CiA 402 move was a jolt,
-  so profile-position targets are taken as steps on this firmware, with only
-  the stored speed as a cap, while the packet-serial buffered position command
-  (which Motion Studio's slider uses) carries a real trapezoid. That command's
-  CANopen mirror (object 0x2041) does move the motor, but it runs outside the
-  CiA 402 state machine: quick stop, disable voltage and a duty of 0 did not
-  stop it, and only a CiA 402 move to the current position took the loop back.
-  So the Actuator generates the trapezoid itself and streams setpoints from
-  `poll()` (see README); the stored speed stays installed as the ceiling.
-- **Quick stop parks the drive.** `stop()` leaves the drive in quick-stop-active,
-  which the standard enable sequence cannot leave; the Actuator now releases it
-  before every move (re-enable in place, else disable voltage). Rewriting the
-  encoder count while a loop is active makes the loop chase its old target
-  (set to 0 at 20000: the motor drove back to 20000); `set_encoder()` now
-  disables the loop first.
-- **An arrived loop hunts.** Left in operation enabled at its target, the loop
-  dithers across the last counts and the gearmotor whirs until something cuts
-  the duty (Motion Studio's Stop Motors). `poll()` releases the drive a settle
-  time after target reached, then watches the resting count and moves the joint
-  back when it leaves the target by more than `tolerance`; that covers the rear
-  caster, whose shock absorber lets the count sag under load, without keeping
-  any loop running. Polled over SDO: whether the MCP266 can push its statusword
-  and position as TPDOs is untested.
+- The left main leg: fix its encoder, tune it (the right leg's settings are a guess), check
+  its sign (+counts lowers the left side, the opposite of the right), then commission it.
+- The carriages: confirm which channel is which, tune, test homing against a real switch,
+  then commission.
+- MibSystem: an actuator task calling `poll_actuators()`; coordinated moves of both main
+  legs with the IMU as a supervisor (tilt changes ~2 deg per 1,000 counts of right leg).
+- TPDOs for encoder and statusword (mapping entries all read 0; untested), to replace the
+  per-tick SDO read.
+- Return the espp dependency to a released version once esp-cpp/espp#911 is released.

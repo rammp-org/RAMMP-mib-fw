@@ -1,119 +1,107 @@
 # Actuator component
 
-`mib::Actuator` is one positioned axis of a Basicmicro MCP266. It is built on
-`espp::Mcp266` (CANopen, CiA 402 profile position) and stays deliberately
-small: the controller closes the position loop, runs the motion profile,
-enforces its clamp and stops on limit switches; this class knows the axis's
-calibrated travel, its default motion profile and a jog step, and turns "go
-there" into the controller exchange. Engineering units and the kinematics
-behind them are an application layer's job, above the BSP; the actuator only
-ever speaks encoder counts, so it survives a redesign of the base unchanged.
-The layer above can read the calibrated range with `range()` to build its
-own mapping.
+`mib::Actuator` drives one leg's linear actuator (an EHA) on one channel of a Basicmicro
+MCP266 over CANopen. It speaks encoder counts only; units and kinematics belong above the
+BSP, which owns one Actuator per leg in `MIBconfig.hpp`.
 
-## Positions
+It drives the controller the way the chair measurements of 2026-11-17 showed works
+([`docs/actuator-revamp/bench-findings.md`](../../docs/actuator-revamp/bench-findings.md));
+[DESIGN.md](DESIGN.md) explains the controller as measured and the component's design:
 
-The current position is not held as state. `read_position()` asks the encoder
-(one SDO), and `current_position()` returns whatever the last read produced
-together with `position_age()`; it is as fresh as the owner's periodic poll.
-Relative moves always read the encoder first, so "relative" means relative to
-where the joint is now, not to the last target (`last_target()` exists for a
-layer that wants the other meaning).
+- `initialize()` writes the leg's controller settings to controller RAM (position window
+  0x6067, position and velocity PID records, clamp, 0x607D, profile velocity, heartbeat
+  consumer) and reads every one back. A mismatch leaves the leg not ready.
+- A move is a trapezoid generated on the MIB (`MotionProfile`) and streamed from `poll()`
+  every 10 ms: the target, led ahead of the profile by 1 / position P and never past the
+  final target, with the new-set-point handshake held a tick at each level. A new target
+  mid-move continues from the profile's position and speed.
+- Arrival is the median encoder count settled within `tolerance` of the target after the
+  profile has ended; then the drive is released (disable voltage). A leg that has not
+  arrived by the profile time plus `arrival_margin` is stopped, released and reported
+  FAILED with how far short.
+- Faults are never cleared as a side effect; `clear_faults()` is explicit. `stop()` is
+  disable voltage, retried.
+- A leg with `commissioned = false` is never written to and refuses every move.
 
 ## API
 
 | Method | Purpose |
 |---|---|
-| `initialize()` | Once per boot: clear faults, install the range as the controller's clamp and software limits, restore a saved position for an incremental encoder |
-| `ready()` | Initialised and, where required, homed. Moves are refused otherwise |
-| `read_position(counts)` | Ask the encoder |
-| `current_position()`, `position_age()` | The last reading, without a bus exchange |
-| `move_absolute(counts)` | Profile move, clamped to the range; a per-move `Profile` overload exists |
-| `move_relative(delta)` | Read the encoder, add, move |
-| `increment()`, `decrement()` | One jog step in counts |
-| `stop()` | CiA 402 quick stop; also ends the rest watch |
-| `poll()` | The move engine: streams the trapezoid's setpoints, releases the drive once the joint has arrived, then keeps the resting joint within `tolerance` of its target |
-| `is_target_reached(reached)`, `get_drive_state(state)` | The controller's arrival flag and decoded CiA 402 state |
+| `initialize()` | Write and read back the controller settings. Nothing for a leg not commissioned |
+| `ready()`, `commissioned()`, `online()` | Commissioned, settings verified, homed if needed |
+| `move_absolute(counts[, profile])` | Start a move (clamped to the range); returns once accepted |
+| `move_relative(delta[, profile])` | From the median count now, or from the target mid-move |
+| `increment()`, `decrement()` | One jog step |
+| `stop()` | Disable voltage now, retried |
+| `poll()` | The move engine: call every `Actuator::kTickPeriod` (10 ms) from one task |
+| `moving()`, `move_result()` | Whether a move is in progress; how the last one ended |
+| `read_status(status)` | Count, PWM, current, statusword, drive state, fault |
+| `clear_faults()` | CiA 402 fault reset of this channel |
+| `read_controller_settings(readback)` | Every setting `initialize()` writes, read from the controller |
+| `read_position(counts)`, `read_position_median(median, spread)` | One read; a median of 9 |
+| `set_calibration_mode`, `set_range`, `home`, `restore_position`, `save_position`, `set_encoder` | Calibration (absolute encoders) and homing (incremental) |
 
-Every method returns true on success and logs the reason on failure, as the
-rest of the firmware does; espp's error codes stay inside. Every method that
-talks to the controller blocks for one or more SDO round trips, a few
-milliseconds each, and must be called from a task that may wait.
+Methods return true on success and log the reason on failure. Every method that talks to
+the controller blocks for one or more SDOs (under 2 ms each, up to the 20 ms SDO timeout)
+and must be called from a task that may wait, never from an RTPS callback.
 
-On the MCP266 firmware tested a profile-position target is taken as a step:
-the profile acceleration and deceleration objects are accepted but no ramp is
-applied, and only the controller's stored default speed caps the motion. So the
-Actuator generates the trapezoid itself. A move sends the current position as
-the first target to enable the drive, and from then on every `poll()` call
-advances the setpoint at the profile's acceleration, cruise velocity and
-deceleration and writes it to the controller, until the setpoint lands on the
-target. A retarget mid-move continues from the setpoint and velocity in flight.
-The owner therefore calls `poll()` every few tens of milliseconds; each call
-during a move costs one setpoint write (a few SDOs).
+The owner runs the ticks: `mib::bsp::MIB::poll_actuators()` every 10 ms on a fixed-period
+schedule (deadline += period), as MibSystem runs its IMU task. Nothing is sent when no
+move is in progress.
 
-A move leaves the controller's position loop holding the target, which on a
-geared motor is audible hunting and holding current for nothing. So, once the
-setpoints have reached the target, the joint counts as arrived when the
-controller reports target reached, or when its count has sat within
-`tolerance` of the target without changing between two polls (a P-only loop
-can stall short of the controller's own window and never raise its flag), and
-half a second later the drive is released (CiA 402 "switch on disabled": zero
-duty, no loop). The released joint is then watched
-at a slow rate: if its count leaves the target by more than `tolerance`, under
-load, through a shock absorber in the linkage or from a bump, it is moved back
-and released again, at most once a second. A quick stop, calibration mode or a
-rewritten encoder count ends the watch; the next move restarts it.
+## Example: the bench console
 
-Two actuators share one controller (its M1 and M2) through a mutex passed to
-both. A controller that stops answering is marked offline and skipped until a
-retry interval passes. A controller that answers but has lost its limits (it
-reset while the MIB ran and came back with the factory `[0, 0]` clamp) is
-caught by a two-SDO check before every move and re-initialised.
+[`example/`](example) brings the legs up through the BSP exactly as the firmware does (CAN
+with `tx_retry_count = -1`, the MIB heartbeat, every commissioned leg's settings written and
+read back) and opens a console on the selected leg, the right main leg (MR) by default.
+Boot prints the configured and read-back settings. Commands: `legs`, `leg <name>`,
+`settings`, `status`, `result`, `abs <counts> [speed]`, `rel <delta> [speed]`, `inc`, `dec`,
+`stop`, `clear`, `wait`, `init`, `scan`, `sdor`, `sdow`, `flags`, and the calibration and
+homing commands. Moves return at once, so `stop` works mid-move; the Actuator logs how each
+move ended and the PWM after the release.
 
-## Two procedures that must not be confused
+Build and run it from that directory (ESP-IDF v6.0.1):
 
-**Calibration** is for absolute encoders and happens once per installation.
-`set_calibration_mode(true)` lifts the controller's clamp, the joint is jogged
-to its mechanical ends and the counts read, `set_range({min, max})` installs
-the range on the controller and saves it through the `ActuatorStore`, and
-`set_calibration_mode(false)` restores the clamp. The saved range overrides the
-compiled default at every later boot.
+```
+idf.py set-target esp32p4
+idf.py build flash
+idf.py -b 921600 monitor        # the CH343 UART on the USB-C; opening it resets the board
+```
 
-**Homing** is for incremental (AB) encoders, whose count is arbitrary at
-power-up, and happens every boot. `home()` drives toward the limit switch at
-the homing profile until the controller stops the motor on it (detected as the
-count no longer changing), installs `homing.home_count` as the encoder value,
-restores the clamp and saves the position. To avoid homing at every boot the
-owner calls `save_position()` from its periodic poll; it writes the count to
-NVS, throttled by an interval and a minimum movement so flash is not worn, and
-`initialize()` then restores it with `restore_position()`. That restore assumes
-the joint did not move while powered off; `home()` when in doubt.
+### Acceptance test on the chair (right main leg)
 
-`ActuatorStore` keeps both kinds of record in NVS under separate keys.
+```
+settings                 # every line "configured / read back" equal, "all match"
+status                   # PWM 0.0 %, no FAULT, "ready"
+rel 1000                 # up 1,000 counts at 800 counts/s; the log reports
+                         #   "arrived at ... (target ..., +N counts) ... peak ~800 counts/s,
+                         #    released 0.x s after the profile ended"
+                         #   then "released: PWM 0.0 %, ... mA"
+result                   # the same, as a summary
+rel -1000                # and back down
+rel 3000                 # then, while it moves:
+stop                     # halts it at once; prints PWM 0.0 % after 150 ms
+result                   # "stopped", where it stopped
+abs 13560                # back to where it started
+leg ML
+abs 30000                # REFUSED: ML is not commissioned
+leg LCarr
+rel 100                  # REFUSED: LCarr is not commissioned
+leg MR
+status                   # after several minutes idle: still no FAULT (the heartbeat)
+```
 
-## Example
+Before `rel 3000`, check `status` that the count is at least 3,000 below 18,000 (the clamp
+would cut the move short otherwise).
 
-[`example/`](example) is a standalone project that brings up one actuator on
-one MCP266 channel, with its pins, node id, range and profile written in the
-example, and offers a serial console to exercise the API:
-`status`, `pos`, `abs`, `rel`, `inc`, `dec`, `wait`, `stop`, the
-calibration commands `cal`, `range`, `forget`, the homing commands `home`,
-`restore`, `save`, `setenc`, and `selftest`. It doubles as the bench test for
-one actuator: `status` proves the controller answers, `pos` the encoder, `inc`
-the direction, `selftest` the position loop. Build it from that directory with
-`idf.py set-target esp32p4` then `idf.py build flash monitor`.
+## Tests
 
-## Behaviour of the controller worth knowing
+`test/host/run.sh` builds and runs the motion-profile checks on the host (no ESP-IDF
+needed): the trapezoid, the lead, never past the target, and continuing a move in flight.
+CI runs it after the firmware build.
 
-- The MCP266 reverts to its EEPROM at power-up, and its factory position clamp
-  is `[0, 0]`, which forces every target to zero. `initialize()` widens it every
-  boot.
-- Only profile position mode moves the motor over CANopen on the firmware
-  espp tested; velocity and duty commands are accepted but inert. Jogging is
-  therefore a small closed-loop position move, not an open-loop nudge.
-- Homing writes the encoder count through `Mcp266::set_encoder` (espp 1.3.7,
-  Basicmicro command 22/23 mirrored at 0x2016/0x2017). `home()` reads the count
-  back and fails loudly if it did not take.
-- Position loop gains are tuned on the controller (Motion Studio, or the
-  debugger's MCP266 / CAN page on the `feature/21-mib-debugger` branch), not
-  here.
+## Dependency
+
+`espp/mcp266` and `espp/motor_controller` come from the branch of esp-cpp/espp#911 (the
+clamp read from subindex 1), on top of #910; return them to a released version once #911
+is released. See the comment in `idf_component.yml`.
