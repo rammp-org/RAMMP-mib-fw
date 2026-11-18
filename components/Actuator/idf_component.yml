@@ -1,7 +1,10 @@
 ## IDF Component Manager Manifest File
 dependencies:
   # Until esp-cpp/espp releases PR #911 ("read the position clamp from subindex 1"):
-  # the PR's branch. It is based on espp main, so it also carries #910. On the chair's
+  # rammp/mcp266-clamp-fix = the PR's branch plus one integration-only commit (version
+  # fields, and mcp266 taking motor_controller from the same branch, without which the
+  # resolver takes motor_controller from the registry). Based on espp main, so it also
+  # carries #910. On the chair's
   # MCP266 (firmware 1.4.9) the clamp reads 0 unless the record is read from subindex 1,
   # which released espp does not do. The command table mcp266 uses lives in
   # motor_controller, so that comes from the same branch.
@@ -11,10 +14,10 @@ dependencies:
   espp/mcp266:
     path: components/mcp266
     git: https://github.com/alexchunlin/espp.git
-    version: fix/mcp266-position-limits-read
+    version: rammp/mcp266-clamp-fix
   espp/motor_controller:
     path: components/motor_controller
     git: https://github.com/alexchunlin/espp.git
-    version: fix/mcp266-position-limits-read
+    version: rammp/mcp266-clamp-fix
   espp/canopen: '>=1.4.3'
   espp/nvs: '>=1.3.5'
