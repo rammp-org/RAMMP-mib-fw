@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 
 #include "arbiter.hpp"
@@ -220,5 +221,220 @@ inline constexpr PushAssistGains push_assist_gains{
     .reverse_max = 0.3f,
 };
 //--------------------------------
+
+/// @brief CAN bus to the MCP266 motor controllers (TWAI peripheral).
+inline constexpr int can_tx_gpio = 17;
+inline constexpr int can_rx_gpio = 16;
+inline constexpr std::uint32_t can_bitrate = 1000000;
+
+/// @brief How long an SDO waits for the controller's reply. Replies take under 2 ms; a
+/// short timeout keeps one lost reply (about one a minute on the chair) to two ticks of a
+/// move instead of ten.
+inline constexpr auto can_sdo_timeout = std::chrono::milliseconds{20};
+
+/// @brief The MIB's CANopen heartbeat (COB-ID 0x700 + node id, state operational), sent
+/// from boot for as long as the firmware runs. Each commissioned controller's heartbeat
+/// consumer watches it: if it stops for can_heartbeat_timeout, an enabled drive faults
+/// (measured: ~450 ms). It cannot be switched off again (writing 0 to the consumer does not
+/// stop the controller watching), so the heartbeat never stops on purpose.
+inline constexpr std::uint8_t can_heartbeat_node_id = 127;
+inline constexpr auto can_heartbeat_period = std::chrono::milliseconds{100};
+inline constexpr auto can_heartbeat_timeout = std::chrono::milliseconds{500};
+
+/// @brief The legs whose joint is positioned by a linear actuator (an EHA) on one channel of
+/// a Basicmicro MCP266. This chair has no powered casters (no node 1 on its bus).
+enum class Leg : std::uint8_t {
+  MAIN_RIGHT = 0,
+  MAIN_LEFT,
+  LEFT_CARRIAGE,
+  RIGHT_CARRIAGE,
+};
+inline constexpr std::size_t leg_count = 4;
+
+/// @brief What the MIB writes to a leg's controller channel at boot (controller RAM only; its
+/// flash keeps Motion Studio's values, which return at the next power cycle). Raw controller
+/// units. What the gains mean is in components/Actuator/DESIGN.md.
+struct ActuatorTuning {
+  std::uint32_t position_window; ///< CiA 402 0x6067, counts. Stored: 100.
+  std::uint32_t position_p;      ///< x1024: counts/s of speed command per count of error.
+  std::uint32_t position_i;      ///< x1024.
+  std::uint32_t position_d;      ///< x1024.
+  std::uint32_t position_max_i;
+  std::uint32_t position_deadband; ///< Counts.
+  std::uint32_t velocity_p;        ///< 16.16.
+  std::uint32_t velocity_i;        ///< 16.16.
+  std::uint32_t velocity_d;        ///< 16.16.
+  std::uint32_t velocity_qpps;     ///< Counts/s the velocity loop takes as full output.
+  std::uint32_t profile_velocity;  ///< CiA 402 0x6081: caps the speed command; set high.
+};
+
+/// @brief One leg actuator: where it is on the bus, whether the MIB may drive it, and how.
+///
+/// Positions are the joint encoder's counts. The range is the travel, written to the
+/// controller as its clamp; a range saved to NVS by the calibration routine overrides it at
+/// boot. Kinematics (counts to wheel height) do not belong here.
+struct ActuatorConfig {
+  Leg leg;
+  const char *name;     ///< Short name, also the NVS key prefix (11 characters max).
+  std::uint8_t node_id; ///< CANopen node id of the MCP266.
+  std::uint8_t channel; ///< 0 = M1, 1 = M2.
+  /// False: the MIB never writes to this channel (no settings, no heartbeat consumer, no
+  /// enable, no move, no stop) and refuses every move. Only explicit reads reach it.
+  bool commissioned;
+  std::int32_t min_counts; ///< Travel, inclusive: the controller's clamp.
+  std::int32_t max_counts;
+  /// Which way the EHA's stroke goes for increasing counts: +1 extends, -1 retracts, 0 not
+  /// established. The two main legs are mounted mirrored and have OPPOSITE signs.
+  std::int8_t stroke_sign;
+  std::uint32_t max_speed;    ///< Streamed cruise speed, counts/s.
+  std::uint32_t acceleration; ///< Counts/s^2, up and down.
+  std::uint32_t lead_ms;      ///< Target lead: 1 / position P (P 4.0 -> 250 ms).
+  std::int32_t tolerance;     ///< Counts within which the median count must settle.
+  std::int32_t jog_step;      ///< Counts per increment() / decrement().
+  ActuatorTuning tuning;
+  bool hardware_limits;       ///< Limit switches wired to the controller.
+  bool incremental_encoder;   ///< AB encoder: arbitrary count at power-up, must be homed.
+  std::int8_t home_direction; ///< +1 or -1: which way the home switch lies (incremental only).
+  std::int32_t home_count;    ///< Count installed at the home switch (incremental only).
+};
+
+/// @brief The right main leg's controller settings, proven on the chair on 2026-11-17
+/// (docs/actuator-revamp/bench-findings.md: "1,000-count moves at 800 counts/s" and the
+/// full-range check): window 10, position P 4.0 with no I/D/deadband, velocity P 1.0,
+/// I 1701, QPPS 7143.
+inline constexpr ActuatorTuning main_leg_tuning{
+    .position_window = 10,
+    .position_p = 4096,
+    .position_i = 0,
+    .position_d = 0,
+    .position_max_i = 0,
+    .position_deadband = 0,
+    .velocity_p = 65536,
+    .velocity_i = 1701,
+    .velocity_d = 0,
+    .velocity_qpps = 7143,
+    .profile_velocity = 20000,
+};
+
+/// @brief Placeholder for legs never tuned: all gains 0, so a leg commissioned by mistake
+/// produces no output. Tune a leg (Motion Studio or the Actuator example) before
+/// commissioning it.
+inline constexpr ActuatorTuning untuned{
+    .position_window = 10,
+    .position_p = 0,
+    .position_i = 0,
+    .position_d = 0,
+    .position_max_i = 0,
+    .position_deadband = 0,
+    .velocity_p = 0,
+    .velocity_i = 0,
+    .velocity_d = 0,
+    .velocity_qpps = 7143,
+    .profile_velocity = 20000,
+};
+
+// Wiring read on the chair (bench-findings.md, "Wiring and identity"): node 3 M1 = right
+// main leg, node 3 M2 = left main leg, node 2 = the carriages (which channel is which is
+// not yet confirmed). The main legs carry absolute encoders; the carriages incremental
+// (AB) encoders on the rail and limit switches.
+inline constexpr ActuatorConfig actuators[leg_count] = {
+    // Right main leg: commissioned. +counts = stroke retracts = that side of the chair rises;
+    // -counts = stroke extends = wheel up = the right side lowers. Clamp as stored on the
+    // controller, 10,000..18,000; moved on the chair between 10,530 and 17,420.
+    {.leg = Leg::MAIN_RIGHT,
+     .name = "MR",
+     .node_id = 3,
+     .channel = 0,
+     .commissioned = true,
+     .min_counts = 10000,
+     .max_counts = 18000,
+     .stroke_sign = -1,
+     .max_speed = 800, // the requirement: 800 counts/s at most
+     .acceleration = 1600,
+     .lead_ms = 250,
+     .tolerance = 15, // median of 9 reads; raw noise is +-30 counts. At 40 the leg was released
+                     // while still converging and ended up to 31 counts off (2026-11-17)
+     .jog_step = 100,
+     .tuning = main_leg_tuning,
+     .hardware_limits = false,
+     .incremental_encoder = false,
+     .home_direction = 0,
+     .home_count = 0},
+    // Left main leg: NOT commissioned. +counts = stroke extends = wheel up = the left side
+    // lowers: the opposite sign to the right leg. Never tuned, and its encoder glitches by
+    // ~1,800 counts about every 10 s with the chair still (a hardware fault to fix first).
+    // The right leg's tuning is a starting guess, nothing more. Clamp as stored.
+    {.leg = Leg::MAIN_LEFT,
+     .name = "ML",
+     .node_id = 3,
+     .channel = 1,
+     .commissioned = false,
+     .min_counts = 25000,
+     .max_counts = 32000,
+     .stroke_sign = +1,
+     .max_speed = 800,
+     .acceleration = 1600,
+     .lead_ms = 250,
+     .tolerance = 40,
+     .jog_step = 100,
+     .tuning = main_leg_tuning,
+     .hardware_limits = false,
+     .incremental_encoder = false,
+     .home_direction = 0,
+     .home_count = 0},
+    // Carriages: NOT commissioned, and must never move by accident. Nothing at boot writes
+    // to node 2, and homing is never automatic. Ranges and homing are placeholders.
+    {.leg = Leg::LEFT_CARRIAGE,
+     .name = "LCarr",
+     .node_id = 2,
+     .channel = 0,
+     .commissioned = false,
+     .min_counts = 0,
+     .max_counts = 20000,
+     .stroke_sign = 0,
+     .max_speed = 500,
+     .acceleration = 1000,
+     .lead_ms = 250,
+     .tolerance = 40,
+     .jog_step = 100,
+     .tuning = untuned,
+     .hardware_limits = true,
+     .incremental_encoder = true,
+     .home_direction = -1,
+     .home_count = 0},
+    {.leg = Leg::RIGHT_CARRIAGE,
+     .name = "RCarr",
+     .node_id = 2,
+     .channel = 1,
+     .commissioned = false,
+     .min_counts = 0,
+     .max_counts = 20000,
+     .stroke_sign = 0,
+     .max_speed = 500,
+     .acceleration = 1000,
+     .lead_ms = 250,
+     .tolerance = 40,
+     .jog_step = 100,
+     .tuning = untuned,
+     .hardware_limits = true,
+     .incremental_encoder = true,
+     .home_direction = -1,
+     .home_count = 0},
+};
+
+static_assert(
+    [] {
+      for (std::size_t i = 0; i < leg_count; ++i) {
+        if (static_cast<std::size_t>(actuators[i].leg) != i) {
+          return false;
+        }
+      }
+      return true;
+    }(),
+    "actuators[] must be in Leg order: actuator_config() indexes it by Leg");
+
+inline constexpr const ActuatorConfig &actuator_config(Leg leg) {
+  return actuators[static_cast<std::size_t>(leg)];
+}
 
 } // namespace mib::config

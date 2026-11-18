@@ -1,0 +1,23 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # Until esp-cpp/espp releases PR #911 ("read the position clamp from subindex 1"):
+  # rammp/mcp266-clamp-fix = the PR's branch plus one integration-only commit (version
+  # fields, and mcp266 taking motor_controller from the same branch, without which the
+  # resolver takes motor_controller from the registry). Based on espp main, so it also
+  # carries #910. On the chair's
+  # MCP266 (firmware 1.4.9) the clamp reads 0 unless the record is read from subindex 1,
+  # which released espp does not do. The command table mcp266 uses lives in
+  # motor_controller, so that comes from the same branch.
+  # Return both to a released version ('>=x.y.z') once #911 is released.
+  # After a force-push to the branch, clear the component manager's git cache
+  # (~/Library/Caches/Espressif/ComponentManager/b_git_*) or it keeps the old commit.
+  espp/mcp266:
+    path: components/mcp266
+    git: https://github.com/alexchunlin/espp.git
+    version: rammp/mcp266-clamp-fix
+  espp/motor_controller:
+    path: components/motor_controller
+    git: https://github.com/alexchunlin/espp.git
+    version: rammp/mcp266-clamp-fix
+  espp/canopen: '>=1.4.3'
+  espp/nvs: '>=1.3.5'

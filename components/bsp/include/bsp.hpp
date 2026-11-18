@@ -1,16 +1,27 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "MIBconfig.hpp"
+#include "actuator.hpp"
+#include "actuator_store.hpp"
 #include "base_component.hpp"
 #include "bno055.hpp"
+#include "canopen_client.hpp"
 #include "esp32-p4-eth.hpp"
+#include "mcp266.hpp"
 #include "rtps_participant.hpp"
 #include "timer.hpp"
+#include "twai.hpp"
 
 namespace mib::bsp {
 
@@ -19,6 +30,12 @@ namespace mib::bsp {
 /// Provides the MIB firmware with a singleton interface to the ESP32-P4-ETH
 /// board and initializes Ethernet using the settings from MIBconfig.hpp.
 /// Ethernet runs as a DHCP server by default at 192.168.4.1.
+///
+/// It also owns the CAN bus to the leg actuators: one TWAI node, the MIB's
+/// CANopen heartbeat, one CANopen client and MCP266 object per controller, and
+/// one Actuator per leg. The actuator calls are synchronous (each is a few CAN
+/// round trips) and must be made from a task that may block, not from an RTPS
+/// callback. The owner runs poll_actuators() every Actuator::kTickPeriod.
 class MIB : public espp::BaseComponent {
 public:
   /// @brief Access the singleton MIB board-support instance.
@@ -89,7 +106,93 @@ public:
   /// @return True once the first sync has landed; until then the clock counts from 1970.
   bool time_synced() const { return time_synced_.load(); }
 
+  /// @name Leg actuators
+  /// @{
+
+  /// @brief Bring up the CAN bus and the leg actuators.
+  ///
+  /// Starts TWAI (retransmitting until acknowledged: tx_retry_count = -1), starts
+  /// the MIB's heartbeat, creates a CANopen client and MCP266 object per
+  /// controller in MIBconfig.hpp, loads any calibrated ranges from NVS over the
+  /// compiled defaults, and initializes every actuator: a commissioned leg gets
+  /// its controller settings and heartbeat consumer written and read back; a leg
+  /// that is not commissioned gets nothing (no frame is addressed to it). Never
+  /// moves or homes anything. A controller that does not answer is left offline
+  /// and logged; it retries on its next use.
+  /// @return True if the bus is up. Per-actuator readiness is Actuator::ready().
+  bool init_actuators();
+
+  /// @brief Run every actuator's move engine once. Call every
+  /// Actuator::kTickPeriod (10 ms) from one task, on a fixed-period schedule.
+  /// Cheap when nothing moves: no bus traffic.
+  /// @return False if a tick saw a bus failure.
+  bool poll_actuators();
+
+  /// @brief Home one incremental-encoder leg against its limit switch. Blocks
+  /// for the approach, while poll_actuators() keeps running in its own task. A
+  /// no-op for an absolute-encoder leg; refused for a leg not commissioned.
+  bool home_actuator(config::Leg leg);
+
+  /// @brief Home every commissioned leg that needs it and is not yet homed. Not
+  /// called by anything at boot: homing is always an explicit request.
+  /// @return True if every commissioned leg is ready afterwards.
+  bool home_actuators();
+
+  /// @brief Persist the incremental-encoder legs' positions (throttled inside
+  /// the actuator). Call from the periodic actuator poll.
+  void save_actuator_positions();
+
+  /// @brief Whether init_actuators() brought the bus up.
+  bool actuators_ready() const { return twai_ != nullptr; }
+
+  /// @brief The actuator of one leg. Only valid after init_actuators().
+  Actuator &actuator(config::Leg leg) { return *actuators_[static_cast<size_t>(leg)]; }
+
+  /// @brief Stop (disable voltage) every commissioned actuator. Continues past
+  /// failures. Sends nothing to a leg that is not commissioned.
+  /// @return True if every actuator accepted the stop.
+  bool stop_all_actuators();
+
+  /// @brief Read every commissioned leg's joint position, in encoder counts.
+  /// @return One entry per leg in config::Leg order; empty where the read failed
+  ///         or the leg is not commissioned (it is not read).
+  std::array<std::optional<int32_t>, config::leg_count> read_all_positions();
+
+  /// @brief Install and persist a calibrated range for a leg (absolute encoders,
+  /// once per installation).
+  bool set_actuator_range(config::Leg leg, const Actuator::Range &range);
+
+  /// @brief Diagnostics: the CANopen client of a controller and the mutex its
+  /// actuators share, for raw SDO access from a bench console. Hold the mutex
+  /// around any sequence. Empty if no leg in MIBconfig.hpp is on that node.
+  struct ControllerAccess {
+    espp::CanopenClient *client;
+    std::mutex *mutex;
+  };
+  std::optional<ControllerAccess> controller_access(uint8_t node_id);
+
+  /// @brief Diagnostics: ask every node id 1..127 for its device type (0x1000,
+  /// SDO upload only) and return the ones that answer. About 127 x timeout.
+  std::vector<std::pair<uint8_t, uint32_t>> scan_bus(std::chrono::milliseconds timeout);
+
+  /// @}
+
 private:
+  /// One MCP266 on the bus and everything needed to talk to it.
+  struct Controller {
+    uint8_t node_id{0};
+    std::unique_ptr<espp::CanopenClient> client;
+    std::unique_ptr<espp::Mcp266> mcp;
+    std::mutex mutex; ///< The controller has one SDO channel; both axes share it.
+  };
+
+  Controller &controller_for(uint8_t node_id);
+  /// The registered controller for node_id, or controllers_.end().
+  std::vector<std::unique_ptr<Controller>>::iterator find_controller(uint8_t node_id);
+  bool init_twai();
+  /// Start the MIB's CANopen heartbeat (MIBconfig.hpp can_heartbeat_*).
+  void start_heartbeat();
+
   bool init_ethernet() {
     espp::Esp32P4Eth::EthernetConfig config{};
     config.mode = mib::config::ethernet_dhcp_server
@@ -122,6 +225,13 @@ private:
   std::unique_ptr<espp::Timer> time_sync_retry_timer_{nullptr};
   std::atomic<bool> time_synced_{false};
   std::string ethernet_ip_address_;
+
+  std::unique_ptr<espp::Twai> twai_;
+  std::unique_ptr<espp::Timer> heartbeat_timer_;
+  std::vector<std::unique_ptr<Controller>> controllers_;
+  std::atomic<espp::CanopenClient *> probe_client_{nullptr}; ///< scan_bus()'s, while it runs.
+  std::array<std::unique_ptr<Actuator>, config::leg_count> actuators_;
+  ActuatorStore store_;
 };
 
 } // namespace mib::bsp
