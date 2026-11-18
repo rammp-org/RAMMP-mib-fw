@@ -3,7 +3,7 @@
 What the controller does, what this component does with it, where the limits live, and
 what is still open. The evidence is the chair session of 2026-11-17,
 [`docs/actuator-revamp/bench-findings.md`](../../docs/actuator-revamp/bench-findings.md)
-(logs under `docs/actuator-revamp/runs/`), and the bench firmware that took it,
+(figures and the plotted numbers under `docs/actuator-revamp/figures/` and `data/`; the raw logs are not in the repo), and the bench firmware that took it,
 `tools/actuator_sysid/firmware`. This document cites them rather than restating them;
 where an older note (the October bench, the handoff) disagrees, the findings win.
 

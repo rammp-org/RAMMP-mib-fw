@@ -1,0 +1,9 @@
+move,peak_chassis_rate_deg_per_s
+"Stock gains, 400-count step",6.4
+"P 0.2, D 0, 300-count step",14.3
+"Tuned gains, one 1,000-count target",9.0
+"Tuned gains, streamed 1,000 counts at 800/s",3.2
+tuned streamed move 1,3.8
+tuned streamed move 2,3.4
+tuned streamed move 3,3.1
+tuned streamed move 4,2.4
