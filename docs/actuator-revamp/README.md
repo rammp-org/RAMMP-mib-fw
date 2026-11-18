@@ -16,3 +16,4 @@ The measurements behind `components/Actuator` (right main leg on the MCP266, 202
 | 05 | Chassis tilt against right-leg position |
 | 06 | The heartbeat watchdog stopping a move |
 | 07 | Leading the target removes the tracking lag |
+| 09 | The main firmware driving MR: moves, a held jog, an e-stop mid-move |
