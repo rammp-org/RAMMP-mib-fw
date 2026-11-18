@@ -170,9 +170,9 @@ periodic tasks, the IMU task with exactly this deadline schedule; and it is how 
 `poll()` was meant to be called. The tick drives the handshake, so its period is the bit
 hold time; `poll()` will not toggle the bit faster than 8 ms whatever the caller does, and
 the profile runs on the clock, so a late tick delays an update but not the profile. A tick
-is one to four SDOs (< 2 ms each) while moving and nothing when idle. MibSystem does not
-call `init_actuators()` yet; the example's poll task is the reference (priority above the
-console, `xTaskDelayUntil`).
+is one to four SDOs (< 2 ms each) while moving and nothing when idle. MibSystem calls
+`init_actuators()` in INIT and runs the ticks on its "MIB legs" task (priority 5, above the
+motor command task); the example's poll task does the same at the bench console.
 
 ### Faults and stop
 
@@ -281,8 +281,8 @@ From the October bench, still current:
   its sign (+counts lowers the left side, the opposite of the right), then commission it.
 - The carriages: confirm which channel is which, tune, test homing against a real switch,
   then commission.
-- MibSystem: an actuator task calling `poll_actuators()`; coordinated moves of both main
-  legs with the IMU as a supervisor (tilt changes ~2 deg per 1,000 counts of right leg).
+- MibSystem: coordinated moves of both main legs with the IMU as a supervisor (tilt
+  changes ~2 deg per 1,000 counts of right leg).
 - TPDOs for encoder and statusword (mapping entries all read 0; untested), to replace the
   per-tick SDO read.
 - Return the espp dependency to a released version once esp-cpp/espp#911 is released.

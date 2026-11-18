@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'tools/mib_panel/**'
+      - 'config/poses.json'
       - '.github/workflows/control_panel_pages.yml'
   workflow_dispatch:
 
@@ -32,6 +33,9 @@ jobs:
 
     - name: Configure Pages
       uses: actions/configure-pages@v5
+
+    - name: Add the chair's poses to the page
+      run: mkdir -p tools/mib_panel/config && cp config/poses.json tools/mib_panel/config/
 
     - name: Upload the panel
       uses: actions/upload-pages-artifact@v3

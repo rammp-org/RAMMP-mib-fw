@@ -241,6 +241,11 @@ inline constexpr std::uint8_t can_heartbeat_node_id = 127;
 inline constexpr auto can_heartbeat_period = std::chrono::milliseconds{100};
 inline constexpr auto can_heartbeat_timeout = std::chrono::milliseconds{500};
 
+/// @brief How often MibSystem's leg task reads one idle leg's encoder for the control
+/// panel's status (round robin, so each of the leg_count legs every leg_count x this).
+/// A moving leg's count comes from its move ticks instead.
+inline constexpr auto leg_position_refresh = std::chrono::milliseconds{250};
+
 /// @brief The legs whose joint is positioned by a linear actuator (an EHA) on one channel of
 /// a Basicmicro MCP266. This chair has no powered casters (no node 1 on its bus).
 enum class Leg : std::uint8_t {

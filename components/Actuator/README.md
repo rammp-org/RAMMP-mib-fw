@@ -32,6 +32,7 @@ It drives the controller the way the chair measurements of 2026-11-17 showed wor
 | `move_absolute(counts[, profile])` | Start a move (clamped to the range); returns once accepted |
 | `move_relative(delta[, profile])` | From the median count now, or from the target mid-move |
 | `increment()`, `decrement()` | One jog step |
+| `jog(delta)` | A jog from where the profile is now; repeated while a button is held, the target stays one `delta` ahead; `jog(0)` brings the leg to rest |
 | `stop()` | Disable voltage now, retried |
 | `poll()` | The move engine: call every `Actuator::kTickPeriod` (10 ms) from one task |
 | `moving()`, `move_result()` | Whether a move is in progress; how the last one ended |
@@ -46,8 +47,10 @@ the controller blocks for one or more SDOs (under 2 ms each, up to the 20 ms SDO
 and must be called from a task that may wait, never from an RTPS callback.
 
 The owner runs the ticks: `mib::bsp::MIB::poll_actuators()` every 10 ms on a fixed-period
-schedule (deadline += period), as MibSystem runs its IMU task. Nothing is sent when no
-move is in progress.
+schedule (deadline += period). In the main firmware that is MibSystem's leg task
+(`run_leg_step()`), which also stops any moving leg outside IDLE or with the e-stop latched;
+the control panel commands legs through it (`LEG_*` in `mib_panel_protocol.hpp`). Nothing
+is sent when no move is in progress.
 
 ## Example: the bench console
 

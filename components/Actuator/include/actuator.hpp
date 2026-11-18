@@ -236,6 +236,13 @@ public:
   bool move_relative(int32_t delta, const Profile &profile);
   bool increment(); ///< One jog step, in counts.
   bool decrement();
+  /// A jog of `delta` counts from where the leg is meant to be now: mid-move, the profile's
+  /// position, so jogs repeated while a button is held keep the target at most |delta| ahead
+  /// of the profile (the leg stops within that if they stop coming); otherwise the median
+  /// read. 0 ends a jog: the move is retargeted to where the profile can come to rest at its
+  /// acceleration, and nothing is sent if no move is in progress. Like increment(), a jog
+  /// is accepted in calibration mode.
+  bool jog(int32_t delta);
 
   /// Disable voltage, now: ends any move, power stage off (the leg stays put; the EHAs
   /// cannot be back-driven). Retried, since a stop sent once and lost is not a stop. Then
