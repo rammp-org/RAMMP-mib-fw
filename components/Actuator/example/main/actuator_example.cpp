@@ -35,11 +35,13 @@
 /// (arrived or FAILED, final count, peak speed, then the PWM and current after the release).
 /// So `stop` can be typed at any time during a move; no keystroke is needed to end one.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -244,12 +246,8 @@ int parse_index(const std::string &text) {
 }
 
 bool node_has_commissioned_leg(int node) {
-  for (const auto &r : mib::config::actuators) {
-    if (r.node_id == node && r.commissioned) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(std::begin(mib::config::actuators), std::end(mib::config::actuators),
+                     [node](const auto &r) { return r.node_id == node && r.commissioned; });
 }
 
 std::unique_ptr<cli::Menu> build_menu() {
@@ -260,16 +258,18 @@ std::unique_ptr<cli::Menu> build_menu() {
       "The legs: node, channel, commissioned, travel, stroke sign");
   menu->Insert(
       "leg",
-      [](std::ostream &out, std::string name) {
-        for (const auto &r : mib::config::actuators) {
-          if (name == r.name) {
-            selected = r.leg;
-            out << fmt::format("selected {} (node {} M{}, {})\n", r.name, r.node_id, r.channel + 1,
-                               r.commissioned ? "commissioned" : "NOT commissioned: moves refused");
-            return;
-          }
+      [](std::ostream &out, const std::string &name) {
+        const auto it =
+            std::find_if(std::begin(mib::config::actuators), std::end(mib::config::actuators),
+                         [&name](const auto &r) { return name == r.name; });
+        if (it == std::end(mib::config::actuators)) {
+          out << "no such leg; `legs` lists them\n";
+          return;
         }
-        out << "no such leg; `legs` lists them\n";
+        selected = it->leg;
+        out << fmt::format("selected {} (node {} M{}, {})\n", it->name, it->node_id,
+                           it->channel + 1,
+                           it->commissioned ? "commissioned" : "NOT commissioned: moves refused");
       },
       "Select a leg: leg <MR|ML|LCarr|RCarr>");
   menu->Insert(
@@ -372,7 +372,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "Find which node ids answer an SDO (reads only)");
   menu->Insert(
       "sdor",
-      [](std::ostream &out, int node, std::string index_text, int sub, int bytes) {
+      [](std::ostream &out, int node, const std::string &index_text, int sub, int bytes) {
         const auto access = board().controller_access(static_cast<uint8_t>(node));
         if (!access) {
           out << "no leg in MIBconfig.hpp is on that node\n";
@@ -408,7 +408,8 @@ std::unique_ptr<cli::Menu> build_menu() {
       "Raw SDO read: sdor <node> <index> <sub> <bytes>");
   menu->Insert(
       "sdow",
-      [](std::ostream &out, int node, std::string index_text, int sub, int bytes, int value) {
+      [](std::ostream &out, int node, const std::string &index_text, int sub, int bytes,
+         int value) {
         if (!node_has_commissioned_leg(node)) {
           out << fmt::format("REFUSED: node {} has no commissioned leg; the MIB does not write "
                              "to it\n",
@@ -521,7 +522,7 @@ std::unique_ptr<cli::Menu> build_menu() {
       "Read the MinPos/MaxPos clamp the controller currently holds");
   menu->Insert(
       "cal",
-      [](std::ostream &out, std::string mode) {
+      [](std::ostream &out, const std::string &mode) {
         const bool on = mode == "on" || mode == "1";
         report(out, actuator().set_calibration_mode(on),
                on ? "calibration mode ON (clamp lifted, jogs only, mind the mechanical ends)"

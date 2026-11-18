@@ -180,13 +180,15 @@ public:
 private:
   /// One MCP266 on the bus and everything needed to talk to it.
   struct Controller {
-    uint8_t node_id;
+    uint8_t node_id{0};
     std::unique_ptr<espp::CanopenClient> client;
     std::unique_ptr<espp::Mcp266> mcp;
     std::mutex mutex; ///< The controller has one SDO channel; both axes share it.
   };
 
   Controller &controller_for(uint8_t node_id);
+  /// The registered controller for node_id, or controllers_.end().
+  std::vector<std::unique_ptr<Controller>>::iterator find_controller(uint8_t node_id);
   bool init_twai();
   /// Start the MIB's CANopen heartbeat (MIBconfig.hpp can_heartbeat_*).
   void start_heartbeat();

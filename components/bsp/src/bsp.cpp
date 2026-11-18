@@ -1,5 +1,6 @@
 #include "bsp.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 #include <thread>
@@ -123,7 +124,7 @@ bool MIB::init_twai() {
                 .dlc = message.dlc,
                 .data = message.data,
             };
-            for (auto &controller : controllers_) {
+            for (const auto &controller : controllers_) {
               controller->client->process_frame(frame);
             }
             if (auto *probe = probe_client_.load()) {
@@ -175,11 +176,15 @@ void MIB::start_heartbeat() {
                mib::config::can_heartbeat_timeout.count());
 }
 
+std::vector<std::unique_ptr<MIB::Controller>>::iterator MIB::find_controller(uint8_t node_id) {
+  return std::find_if(controllers_.begin(), controllers_.end(),
+                      [node_id](const auto &controller) { return controller->node_id == node_id; });
+}
+
 MIB::Controller &MIB::controller_for(uint8_t node_id) {
-  for (auto &controller : controllers_) {
-    if (controller->node_id == node_id) {
-      return *controller;
-    }
+  const auto existing = find_controller(node_id);
+  if (existing != controllers_.end()) {
+    return **existing;
   }
   auto controller = std::make_unique<Controller>();
   controller->node_id = node_id;
@@ -348,12 +353,12 @@ bool MIB::set_actuator_range(config::Leg leg, const Actuator::Range &range) {
 }
 
 std::optional<MIB::ControllerAccess> MIB::controller_access(uint8_t node_id) {
-  for (auto &controller : controllers_) {
-    if (controller->node_id == node_id) {
-      return ControllerAccess{.client = controller->client.get(), .mutex = &controller->mutex};
-    }
+  const auto it = find_controller(node_id);
+  if (it == controllers_.end()) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  Controller &controller = **it;
+  return ControllerAccess{.client = controller.client.get(), .mutex = &controller.mutex};
 }
 
 std::vector<std::pair<uint8_t, uint32_t>> MIB::scan_bus(std::chrono::milliseconds timeout) {

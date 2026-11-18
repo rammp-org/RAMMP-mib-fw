@@ -116,18 +116,18 @@ public:
   };
 
   struct Config {
-    const char *name; ///< Short name for logs and NVS keys (11 characters max).
-    Axis axis;        ///< Which channel of the shared controller.
+    const char *name{}; ///< Short name for logs and NVS keys (11 characters max).
+    Axis axis{};        ///< Which channel of the shared controller.
     /// False: this firmware never writes to the channel (see the class comment).
-    bool commissioned;
-    Range range;                    ///< Travel in counts: the controller's clamp; targets clamped.
-    Profile profile;                ///< Default speed and acceleration of a move.
-    std::chrono::milliseconds lead; ///< Target lead, 1 / position P (250 ms for P 4.0).
-    ControllerSettings controller;  ///< Written at initialize().
-    int32_t jog_step;               ///< Counts moved by increment() and decrement().
+    bool commissioned{};
+    Range range{};     ///< Travel in counts: the controller's clamp; targets clamped.
+    Profile profile{}; ///< Default speed and acceleration of a move.
+    std::chrono::milliseconds lead{}; ///< Target lead, 1 / position P (250 ms for P 4.0).
+    ControllerSettings controller{};  ///< Written at initialize().
+    int32_t jog_step{};               ///< Counts moved by increment() and decrement().
     /// Counts from the target within which the median count must stay for settle_time
     /// for the leg to have arrived. Encoder noise is about +-30 counts.
-    int32_t tolerance;
+    int32_t tolerance{};
     std::chrono::milliseconds settle_time{200};
     /// A move not arrived this long after its profile finished is stopped and FAILED.
     std::chrono::milliseconds arrival_margin{2000};
@@ -171,12 +171,12 @@ public:
 
   /// One read of the drive's output and state (read_status()).
   struct Status {
-    int32_t count;      ///< One encoder read (not a median).
-    int16_t pwm;        ///< +-32767 = +-100 %.
-    int32_t current_ma; ///< Motor current.
-    uint16_t statusword;
-    DriveState state;
-    bool fault; ///< Statusword bit 3.
+    int32_t count{};      ///< One encoder read (not a median).
+    int16_t pwm{};        ///< +-32767 = +-100 %.
+    int32_t current_ma{}; ///< Motor current.
+    uint16_t statusword{};
+    DriveState state{};
+    bool fault{}; ///< Statusword bit 3.
   };
 
   /// Reads per median, and so the window of encoder history: 9 x 10 ms.
@@ -391,8 +391,8 @@ private:
 
   // Encoder history (every tick of a move): for the median and the speed estimate.
   struct Count {
-    int32_t value;
-    std::chrono::steady_clock::time_point at;
+    int32_t value{};
+    std::chrono::steady_clock::time_point at{};
   };
   std::array<Count, kMedianSamples> history_{};
   size_t history_len_{0};
