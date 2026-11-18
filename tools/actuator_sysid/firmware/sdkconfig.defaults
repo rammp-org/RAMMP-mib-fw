@@ -1,0 +1,35 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The RAMMP MIB boards are pre-v3 silicon; same clock and tick as the main firmware.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+CONFIG_FREERTOS_HZ=1000
+
+# Data channel: UART0 (GPIO37/38) through the USB-C's WCH CH343 bridge (VID 0x1A86,
+# PID 0x55D3, /dev/cu.usbmodem5C372451831 on the bench Mac), the MIB's only serial
+# device, at 921600 baud. Budget: a worst-case row (3 nodes) is 567 bytes, so 100
+# rows/s is at most 57 kB/s against 92 kB/s (8N1): 62 %, typical rows ~40 %.
+# This baud also applies to the second-stage bootloader; the ROM's first lines
+# still come at 115200 and read as noise, which the host ignores (not D, or #).
+# The CH343 goes far higher: CONFIG_ESP_CONSOLE_UART_BAUDRATE accepts up to
+# 4000000 (e.g. 2000000), with the host opened at the same rate.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=37
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=38
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+# No copy of the console on the P4's USB-Serial-JTAG port.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Same flash layout as the main firmware (partitions.csv at the repo root), so
+# going back to it is an ordinary `idf.py flash` from the repo root.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="../../../partitions.csv"
+
+# app_main brings the board up and then hands over to tasks; the poll and sample
+# tasks have their own stacks.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

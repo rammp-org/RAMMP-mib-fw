@@ -1,0 +1,12 @@
+# Layered on sdkconfig.defaults for the motion build (README, "Build"):
+#   idf.py -B build_motion -DSDKCONFIG=build_motion/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.motion" build
+CONFIG_SYSID_ENABLE_MOTION=y
+
+# Bench 2026-11-17: a 100-count step produced no output at all (controller reported
+# target reached ~85 counts from target, duty 0), so steps need to be larger.
+# Travel is ~8000 counts per main leg: 500 counts is ~6%, the 1200 window ~15%.
+CONFIG_SYSID_PSTEP_MAX_DELTA_COUNTS=2000
+CONFIG_SYSID_MAX_CLAMP_SPAN_COUNTS=3000
+CONFIG_SYSID_MOVE_WINDOW_MS=8000
+CONFIG_SYSID_MAX_CURRENT_MA=20000
