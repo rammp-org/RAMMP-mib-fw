@@ -23,6 +23,9 @@ class SimMib {
     ];
     this.streaming = false; this.baud = 115200; this.state = 0; this.profile = 1; this.estop = { latched: true, clearing: false, cause: 'boot', releases: 0 };
     this.seat = [0, 0, 0, 0]; this.stick = { x: 0, y: 0, until: 0 }; this.hmi = { x: 0, y: 0 };
+    // Six leg actuators as the MIB reports them (MIBconfig.hpp order); the carriages are not homed.
+    // The legs as the MIB reports them (MIBconfig.hpp order); only MR is commissioned.
+    this.legs = [['MR', 14816, 10000, 18000], ['ML', 28500, 25000, 32000], ['LCarr', 0, 0, 20000], ['RCarr', 0, 0, 20000]].map(([name, pos, min, max], i) => ({ name, pos, target: null, min, max, commissioned: i === 0, ready: i === 0, online: true, cal: false }));
     this.plan = { lin: 0, ang: 0 }; this.tuningReq = 0; this.cmdSeq = 0;
     this.axes = AXES.map(a => ({
       ...a, online: a.id >= 2, override: null, overrideUntil: 0, clearReq: 0, tuning: null, tuningUntil: 0, lastCmd: { state: 0, mode: 2, vel: 0, torque: 0 },
@@ -97,6 +100,46 @@ class SimMib {
       case MIBP.SEAT:
         if (this.state !== 1) return this.err(f.type, 'refused: seat moves only in IDLE');
         this.seat[p[0]] = F(1); this.log(`I RAMMP_MIB: Seat control command applied: axis=${p[0]} target=${F(1)} - placeholder`); return this.ok(f.type);
+      case MIBP.LEG_MOVE: {
+        const l = this.legs[p[0]];
+        if (!l) return this.err(f.type, 'no such leg');
+        if (this.state !== 1) return this.err(f.type, 'legs move only in IDLE');
+        if (this.estop.latched) return this.err(f.type, 'e-stop is latched');
+        if (!l.commissioned) return this.err(f.type, `${l.name} is not commissioned: the MIB never writes to it`);
+        if (!l.ready || l.cal) return this.err(f.type, `${l.name} refused the move: see the log`);
+        const counts = dv.getInt32(2, true), target = p[1] ? l.pos + counts : counts;
+        l.target = Math.max(l.min, Math.min(l.max, target)); this.log(`I ${l.name}: moving ${p[1] ? `by ${counts}` : ''} to ${l.target}`); return this.ok(f.type, p[0]);
+      }
+      case MIBP.LEG_RANGE: {
+        const l = this.legs[p[0]];
+        if (!l) return this.err(f.type, 'no such leg');
+        const min = dv.getInt32(1, true), max = dv.getInt32(5, true);
+        if (min >= max) return this.err(f.type, 'min must be below max');
+        if (!l.commissioned) return this.err(f.type, `${l.name} is not commissioned: the MIB never writes to it`);
+        if (this.state !== 1) return this.err(f.type, 'leg ranges change only in IDLE');
+        l.min = min; l.max = max; this.log(`I ${l.name}: range set to [${min}, ${max}] from the control panel and saved`); return this.ok(f.type, p[0]);
+      }
+      case MIBP.LEG_JOG: {
+        const l = this.legs[p[0]];
+        if (!l) return this.err(f.type, 'no such leg');
+        if (this.state !== 1) return this.err(f.type, 'legs jog only in IDLE');
+        if (this.estop.latched) return this.err(f.type, 'e-stop is latched');
+        if (!l.commissioned) return this.err(f.type, `${l.name} is not commissioned: the MIB never writes to it`);
+        if (!l.ready && !l.cal) return this.err(f.type, `${l.name} refused the jog: see the log`);
+        const delta = dv.getInt32(1, true);
+        // As the firmware (Actuator::jog): from where the leg is now, so the target runs at most one step ahead; 0 stops it.
+        const target = l.pos + delta;
+        l.target = l.cal ? target : Math.max(l.min, Math.min(l.max, target));
+        if (l.target === l.pos) l.target = null;
+        return this.ok(f.type, p[0]);
+      }
+      case MIBP.LEG_CALIBRATE: {
+        const l = this.legs[p[0]];
+        if (!l) return this.err(f.type, 'no such leg');
+        if (!l.commissioned) return this.err(f.type, `${l.name} is not commissioned: the MIB never writes to it`);
+        if (this.state !== 1) return this.err(f.type, 'calibration mode changes only in IDLE');
+        l.cal = p[1] !== 0; this.log(`I ${l.name}: calibration mode ${l.cal ? 'on, range clamp lifted' : 'off, range clamp restored'} from the control panel`); return this.ok(f.type, p[0]);
+      }
       case MIBP.ESTOP:
         if (p[0] === 1) { this.estop.latched = true; this.estop.cause = 'panel'; this.log('W RAMMP_MIB: E-stop engaged from the control panel'); }
         else { this.estop.clearing = true; this.log('W RAMMP_MIB: E-stop clear attempt from the control panel'); setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
@@ -138,6 +181,7 @@ class SimMib {
       state: MIB_STATE[st], profile: this.profile, ethernet: true, ip: '192.168.4.1', rtps: this.state !== 0,
       estop: { latched: this.estop.latched, clearing: this.estop.clearing, cause: this.estop.cause, releases: this.estop.releases },
       panel_stick: now < this.stick.until, seat: this.seat,
+      legs: this.legs.map(l => ({ name: l.name, pos: l.pos, pos_age_ms: 100, target: l.target, min: l.min, max: l.max, commissioned: l.commissioned, ready: l.ready, online: l.online, cal: l.cal, moving: l.target !== null, last_move: { outcome: 'NONE', target: 0, final: 0, reason: '' } })),
       axes: this.axes.map(a => {
         const s = a.reported, online = a.online && s && now - a.reportedT < 0.5;
         return { axis: a.id, segment: a.segment, label: a.label, online: !!online, age_ms: s ? Math.round((now - a.reportedT) * 1000) : -1,
@@ -192,6 +236,8 @@ class SimMib {
     // does. The boot latch has no hold and, with no HMI here, waits for the panel's clear.
     if ((this.state === 1 || this.state === 3 || this.state === 4 || this.state === 5) && this.estop.latched) { this.state = 6; this.estopHoldUntil = now + 3; }
     if (this.state === 6 && !this.estop.latched) this.state = 1;
+    // The legs move at 800 counts/s toward the target, outside IDLE they stop where they are (the MIB disables the drive).
+    for (const l of this.legs) { if (l.target === null) continue; if (this.state !== 1 || this.estop.latched) { l.target = null; continue; } const d = l.target - l.pos, s = Math.sign(d) * Math.min(Math.abs(d), 800 * dtAll); l.pos = Math.round(l.pos + s); if (l.pos === l.target) l.target = null; }
     if (this.state === 6 && this.estop.cause !== 'boot' && now >= this.estopHoldUntil && !this.estop.clearing) { this.estop.clearing = true; setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
     while (dtAll > 1e-6) {
       const dt = Math.min(h, dtAll); dtAll -= dt;

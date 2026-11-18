@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "MIBconfig.hpp"
+#include "format.hpp"
 #include "sdkconfig.h"
 
 using namespace std::chrono_literals;
@@ -905,6 +906,155 @@ void MibSystem::log_drive_status() {
       right_rad_per_second);
 }
 
+void MibSystem::start_leg_task() {
+  if (!mib_.init_actuators()) {
+    logger_.warn("Leg actuators unavailable: the CAN bus did not come up");
+    return;
+  }
+  leg_task_ = std::make_unique<espp::Task>(espp::Task::Config{
+      .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        run_leg_step();
+        // Fixed-period schedule (Actuator's class comment): deadline += period. espp::Task
+        // copies the callback every iteration, so the deadline lives in a member.
+        const auto now = std::chrono::steady_clock::now();
+        leg_next_wake_ += mib::Actuator::kTickPeriod;
+        if (leg_next_wake_ < now) {
+          leg_next_wake_ = now; // overran: restart the schedule instead of bursting
+        }
+        std::unique_lock<std::mutex> lock(mutex);
+        condition_variable.wait_until(lock, leg_next_wake_);
+        return false;
+      },
+      // Above the motor command task: the set-point handshake holds each level one tick.
+      .task_config = {.name = "MIB legs", .stack_size_bytes = 6 * 1024, .priority = 5},
+  });
+  leg_next_wake_ = std::chrono::steady_clock::now();
+  leg_task_->start();
+}
+
+void MibSystem::run_leg_step() {
+  // Legs move only in IDLE with the e-stop clear, and not during a firmware update. The latch is
+  // read here, not through the state (the state task sees it up to one state_task_interval later),
+  // so an e-stop stops a leg within one tick. Stopping is disabling voltage: the EHAs cannot be
+  // back-driven, and the streamed target ends with the move, so nothing resumes when the drive is
+  // enabled.
+  const bool may_move =
+      state_.load() == SystemState::IDLE && !latch_.is_active() && !ota_active_.load();
+  if (!may_move) {
+    for (size_t i = 0; i < mib::config::leg_count; i++) {
+      auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+      if (actuator.moving()) {
+        const bool stopped = actuator.stop();
+        logger_.warn("{}: stopped, legs move only in IDLE with the e-stop clear{}", actuator.name(),
+                     stopped ? "" : " (the stop was not acknowledged)");
+      }
+    }
+  }
+  mib_.poll_actuators();
+  mib_.save_actuator_positions();
+
+  // One idle leg's encoder at a time, for the status JSON (a moving leg's ticks read it).
+  const auto now = std::chrono::steady_clock::now();
+  if (now - leg_last_refresh_ >= mib::config::leg_position_refresh) {
+    leg_last_refresh_ = now;
+    auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(leg_refresh_index_));
+    leg_refresh_index_ = (leg_refresh_index_ + 1) % mib::config::leg_count;
+    if (!actuator.moving()) {
+      int32_t counts = 0;
+      actuator.read_position(counts); // an SDO upload; skipped while the node is offline
+    }
+  }
+}
+
+mib::Actuator *MibSystem::leg_for_command(uint8_t leg, bool needs_motion, const char *what,
+                                          std::string &why) {
+  if (!mib_.actuators_ready()) {
+    why = "leg actuators are not up (CAN)";
+    return nullptr;
+  }
+  if (leg >= mib::config::leg_count) {
+    why = "no such leg";
+    return nullptr;
+  }
+  auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(leg));
+  if (!actuator.commissioned()) {
+    why = fmt::format("{} is not commissioned: the MIB never writes to it", actuator.name());
+    return nullptr;
+  }
+  if (state_.load() != SystemState::IDLE) {
+    why = fmt::format("{} only in IDLE", what);
+    return nullptr;
+  }
+  if (needs_motion && latch_.is_active()) {
+    why = "e-stop is latched";
+    return nullptr;
+  }
+  if (ota_active_.load()) {
+    why = "a firmware update is being written";
+    return nullptr;
+  }
+  return &actuator;
+}
+
+bool MibSystem::move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why) {
+  auto *actuator = leg_for_command(leg, true, "legs move", why);
+  if (!actuator) {
+    return false;
+  }
+  if (!(relative ? actuator->move_relative(counts) : actuator->move_absolute(counts))) {
+    why = fmt::format("{} refused the move: see the log", actuator->name());
+    return false;
+  }
+  logger_.info("{}: {} {} from the control panel", actuator->name(),
+               relative ? "move by" : "move to", counts);
+  return true;
+}
+
+bool MibSystem::jog_leg(uint8_t leg, int32_t delta, std::string &why) {
+  auto *actuator = leg_for_command(leg, true, "legs jog", why);
+  if (!actuator) {
+    return false;
+  }
+  if (!actuator->jog(delta)) {
+    why = fmt::format("{} refused the jog: see the log", actuator->name());
+    return false;
+  }
+  return true;
+}
+
+bool MibSystem::set_leg_calibration(uint8_t leg, bool on, std::string &why) {
+  auto *actuator = leg_for_command(leg, false, "calibration mode changes", why);
+  if (!actuator) {
+    return false;
+  }
+  if (!actuator->set_calibration_mode(on)) {
+    why = fmt::format("{} did not take the clamp change: see the log", actuator->name());
+    return false;
+  }
+  logger_.info("{}: calibration mode {} from the control panel", actuator->name(),
+               on ? "on, range clamp lifted" : "off, range clamp restored");
+  return true;
+}
+
+bool MibSystem::set_leg_range(uint8_t leg, int32_t min_counts, int32_t max_counts,
+                              std::string &why) {
+  if (min_counts >= max_counts) {
+    why = "min must be below max";
+    return false;
+  }
+  auto *actuator = leg_for_command(leg, false, "leg ranges change", why);
+  if (!actuator) {
+    return false;
+  }
+  if (!mib_.set_actuator_range(static_cast<mib::config::Leg>(leg), {min_counts, max_counts})) {
+    why = fmt::format("{} did not take the range: see the log", actuator->name());
+    return false;
+  }
+  logger_.info("{}: range set to [{}, {}] from the control panel and saved", actuator->name(),
+               min_counts, max_counts);
+  return true;
+}
+
 void MibSystem::start_imu_task() {
   if (!mib_.init_imu()) {
     logger_.warn("IMU unavailable; continuing without it");
@@ -1267,6 +1417,9 @@ void MibSystem::run_state_step() {
     }
 
     start_imu_task();
+    // The legs need only the CAN bus. Settings are written to commissioned legs; nothing
+    // moves, and nothing is sent to a leg that is not commissioned.
+    start_leg_task();
 
     // The TCP/IP stack is up: open the panel's Ethernet port (it listens without a link).
     if (service_) {

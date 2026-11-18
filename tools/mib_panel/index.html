@@ -139,6 +139,7 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
     <button data-tab="auto">Auto-tune</button>
     <button data-tab="drive">Drive</button>
     <button data-tab="seat">Seat actuators</button>
+    <button data-tab="cal">Calibration</button>
     <button data-tab="sensors">Sensors &amp; data</button>
     <button data-tab="firmware">Firmware</button>
     <button data-tab="log">Log</button>
@@ -255,9 +256,37 @@ td .ax-btn { padding: 5px 8px; font-size: 10px; }
 
   <!-- ============================================================ SEAT -->
   <section class="tab" id="tab-seat">
-    <div class="warnbox" style="margin:0 0 8px"><b>Placeholder on the MIB:</b> seat commands are accepted and reported back, but the MIB has no actuator driver yet (DriveController::set_seat_target). The MCP266 path lives on feature/2-actuator-control and feature/21-mib-debugger.</div>
+    <div class="ax-panel" style="margin:0 0 8px">
+      <h2>Leg actuators and poses</h2>
+      <div class="ax-cap">The MCP266 leg actuators the MIB drives over CAN, in encoder counts. A pose is one count per leg from the MIB poses in <code>config/poses.json</code>; <b>Go to Home</b> sends each leg of the Home pose its count. The MIB moves one leg to a count at a time, and accepts that only when IDLE with the e-stop clear. Each leg's <b>range</b> is its calibrated travel in counts, set on the <b>Calibration</b> tab.</div>
+      <div class="row" style="margin:8px 0" id="poseButtons"></div>
+      <span class="ax-muted" id="poseMsg"></span>
+      <table id="legTable"><thead><tr><th>Leg</th><th>Position</th><th id="poseHead">Home</th><th>Range</th><th>State</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="ax-cap" id="legNote">Waiting for the MIB's status.</div>
+      <div class="row" style="margin-top:10px">
+        <span class="ax-label">Pose</span><select class="ax-input" id="poseSelect"></select>
+        <button class="ax-btn" id="poseExport" title="Download poses.json to replace config/poses.json in the repo and commit">Export poses.json</button>
+        <button class="ax-btn" id="poseEdit" title="Hold to allow editing; the same button then locks the poses again. A pose is meant to stay fixed; edit it only after a hardware or calibration change.">Hold to edit poses</button>
+      </div>
+      <div class="warnbox" id="poseEditBox" hidden><b>Editing poses.</b> A pose is the chair's reference position and is not meant to change; edit it after a hardware or calibration change, then <b>Export poses.json</b>, replace <code>config/poses.json</code> in the repo and commit it. Edits live only on this page until then: a reload goes back to the file.
+        <div class="row" style="margin-top:6px"><button class="ax-btn" id="poseFromCurrent" disabled title="Copy every leg's current position into this pose">Set from current (all legs)</button><button class="ax-btn" id="poseReset" title="Drop this browser's edits and go back to the numbers in panel.js">Reset to panel.js</button></div>
+      </div>
+    </div>
+    <div class="warnbox" style="margin:0 0 8px"><b>Seat axes below are a placeholder on the MIB:</b> seat commands are accepted and reported back, but nothing maps them onto the leg actuators yet (DriveController::set_seat_target).</div>
     <div class="ax-grid seatgrid" id="seatGrid"></div>
     <div class="ax-panel chart-wrap"><h2>Seat targets</h2><div class="ax-cap">Seat position the MIB reports for each axis.</div><div class="chart" id="cSeat"></div></div>
+  </section>
+
+  <!-- ============================================================ CALIBRATION -->
+  <section class="tab" id="tab-cal">
+    <div class="ax-panel" style="margin:0 0 8px">
+      <h2>Leg range calibration</h2>
+      <div class="ax-cap">Find each leg's mechanical ends and record them as its <b>range</b>, in encoder counts. <b>Lift clamp</b> puts the leg's actuator in calibration mode on the MIB, so jogs may pass the current range; <b>hold</b> a jog button to drive the leg and release to stop it. At each end take the position with ← into min or max, then <b>Set range</b> installs the pair on the MIB: the leg clamps to it, the controller gets it, and the MIB keeps it in its own flash across reboots and reflashes, over the compiled default in <code>MIBconfig.hpp</code>. <b>Restore clamp</b> when done (every boot restores it anyway). The MIB jogs a leg only while IDLE with the e-stop clear.</div>
+      <div class="warnbox" style="margin:8px 0"><b>With the clamp lifted nothing stops a leg but you.</b> Only the controller's current limit and any limit switches remain. Use a small step near an end and keep a hand on the e-stop.</div>
+      <div class="row" style="margin:8px 0"><span class="ax-label">Jog step</span><input class="ax-input ax-mono" id="calStep" type="number" min="1" step="1" value="200" style="width:90px" title="Counts sent every 200 ms while a jog button is held. The jogs add up: the target runs ahead of the leg by up to ten steps, so a leg that needs a few thousand counts of error before it moves still gets going. A smaller step stops it sooner after the release."><span class="unit">counts per 200 ms while held</span></div>
+      <table id="calTable"><thead><tr><th>Leg</th><th>Position</th><th>Clamp</th><th>Jog</th><th>Min</th><th>Max</th><th></th><th>State</th></tr></thead><tbody></tbody></table>
+      <div class="ax-cap" id="calNote">Waiting for the MIB's status.</div>
+    </div>
   </section>
 
   <!-- ============================================================ SENSORS -->

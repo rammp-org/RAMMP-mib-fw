@@ -743,7 +743,7 @@ bool Actuator::do_move(int32_t counts, const Profile &profile, bool jog) {
     return false;
   }
   if (calibrating && !jog) {
-    logger_.error("{}: move to {} refused, only increment/decrement are allowed in calibration "
+    logger_.error("{}: move to {} refused, only jogs are allowed in calibration "
                   "mode (install a range and leave it for longer moves)",
                   config_.name, counts);
     return false;
@@ -894,6 +894,46 @@ bool Actuator::decrement() {
   int32_t spread = 0;
   return require_commissioned("jog") && read_position_median(here, spread) &&
          do_move(here - config_.jog_step, config_.profile, true);
+}
+
+bool Actuator::jog(int32_t delta) {
+  if (!require_commissioned("jog")) {
+    return false;
+  }
+  std::optional<double> from;
+  double speed = 0.0;
+  double acceleration = static_cast<double>(config_.profile.acceleration);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (result_.outcome == Outcome::MOVING) {
+      if (phase_ == Phase::STREAM) {
+        const auto here = profile_.at(seconds(Clock::now() - profile_t0_));
+        from = here.position;
+        speed = here.speed;
+        acceleration = static_cast<double>(move_profile_.acceleration);
+      } else {
+        // Not yet planned (the move's first reads): the leg has not left its start count.
+        from = static_cast<double>(current_position_.value_or(target_));
+      }
+    }
+  }
+  if (!from) {
+    if (delta == 0) {
+      return true; // no move in progress: nothing to end
+    }
+    int32_t median = 0;
+    int32_t spread = 0;
+    if (!read_position_median(median, spread)) {
+      return false;
+    }
+    from = static_cast<double>(median);
+  }
+  // delta 0: the profile's stopping point, braking at its acceleration from its speed now.
+  const double goal = delta == 0 ? *from + speed * std::abs(speed) / (2.0 * acceleration)
+                                 : *from + static_cast<double>(delta);
+  const double bounded =
+      std::clamp(std::round(goal), static_cast<double>(INT32_MIN), static_cast<double>(INT32_MAX));
+  return do_move(static_cast<int32_t>(bounded), config_.profile, true);
 }
 
 bool Actuator::stop() {

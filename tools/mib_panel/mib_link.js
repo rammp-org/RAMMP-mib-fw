@@ -196,7 +196,7 @@ const SYS = { RESET: 0x01, INFO: 0x02, SET_BAUD: 0x03, OK: 0x81, INFO_REPLY: 0x8
 const SERIAL_FAST_BAUD = 921600;
 const MIBP = {
   OVERRIDE: 0x01, RELEASE: 0x02, TUNING: 0x03, CLEAR_FAULT: 0x04, DRIVE: 0x05, STICK: 0x06,
-  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, OK: 0x81, STATUS_REPLY: 0x89, ERROR: 0x8F, ALL: 0xFF,
+  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, LEG_MOVE: 0x0A, LEG_RANGE: 0x0B, LEG_JOG: 0x0C, LEG_CALIBRATE: 0x0D, OK: 0x81, STATUS_REPLY: 0x89, ERROR: 0x8F, ALL: 0xFF,
 };
 const REQ_STATE = { DISARMED: 0, ARMED: 1, SAFE_STOP: 2, ESTOP: 3 };
 const MODE = { COAST: 0, TORQUE: 1, VELOCITY: 2, POSITION: 3, HOLD: 4 };
@@ -385,6 +385,14 @@ class MibLink {
   clearFault(axis) { return this.mib(MIBP.CLEAR_FAULT, u8(axis)); }
   drive(enable, profile) { return this.mib(MIBP.DRIVE, u8(enable ? 1 : 0, profile)); }
   seat(axis, target) { return this.mib(MIBP.SEAT, cat(u8(axis), f32s(target))); }
+  // Move one leg actuator (MIBconfig.hpp Leg order) to an absolute encoder count, or by `counts` from where it is.
+  legMove(leg, counts, relative = false) { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, counts, true); return this.mib(MIBP.LEG_MOVE, cat(u8(leg, relative ? 1 : 0), b)); }
+  // Install one leg's calibrated range in encoder counts: the leg clamps to it, the controller gets it, the MIB saves it.
+  legRange(leg, min, max) { const b = new Uint8Array(8), v = new DataView(b.buffer); v.setInt32(0, min, true); v.setInt32(4, max, true); return this.mib(MIBP.LEG_RANGE, cat(u8(leg), b)); }
+  // Jog one leg by `counts` from where it is: the one move accepted with its clamp lifted. 0 retargets it to where it is, ending a jog.
+  legJog(leg, counts) { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, counts, true); return this.mib(MIBP.LEG_JOG, cat(u8(leg), b)); }
+  // Lift (on) or restore (off) one leg's range clamp on the controller, for calibration.
+  legCalibrate(leg, on) { return this.mib(MIBP.LEG_CALIBRATE, u8(leg, on ? 1 : 0)); }
   estop(engage) { return this.mib(MIBP.ESTOP, u8(engage ? 1 : 2)); }
 }
 

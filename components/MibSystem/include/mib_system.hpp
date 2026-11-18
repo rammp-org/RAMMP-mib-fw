@@ -222,6 +222,45 @@ private:
   /// \return False if the command was refused.
   bool handle_drive_command(const rammp::DriveCommand &command);
 
+  /// @name Leg actuators (the panel's LEG_* commands; mib_panel_protocol.hpp)
+  /// Each blocks for its CAN exchanges (a few ms): a service-link worker, never an RTPS
+  /// receive thread. Each refuses an unknown leg, a leg that is not commissioned (the MIB
+  /// never writes to it), and a bus that did not come up, with the reason in `why`.
+  /// @{
+
+  /// Move one leg to an absolute count, or with `relative` by `counts` from where it is.
+  /// Clamped to the leg's range by the actuator. IDLE with the e-stop clear only.
+  bool move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why);
+
+  /// Jog one leg (Actuator::jog()): by `delta` from where it is meant to be now, or with 0,
+  /// end a jog. The one move accepted with the clamp lifted. IDLE with the e-stop clear only.
+  bool jog_leg(uint8_t leg, int32_t delta, std::string &why);
+
+  /// Lift (on) or restore (off) one leg's range clamp for calibration. IDLE only.
+  bool set_leg_calibration(uint8_t leg, bool on, std::string &why);
+
+  /// Install one leg's calibrated range: the actuator clamps to it, writes it to the
+  /// controller (commissioned legs) and saves it in NVS. IDLE only; min below max.
+  bool set_leg_range(uint8_t leg, int32_t min_counts, int32_t max_counts, std::string &why);
+
+  /// The checks every LEG_* command shares.
+  /// \return The actuator, or nullptr with `why`.
+  mib::Actuator *leg_for_command(uint8_t leg, bool needs_motion, const char *what,
+                                 std::string &why);
+  /// @}
+
+  /// Bring the CAN bus and the leg actuators up, then start the leg task. A bus that does
+  /// not come up is logged, not fatal: the MIB runs without legs.
+  /// \note Runs on the state task during INIT.
+  void start_leg_task();
+
+  /// One leg-task tick: outside IDLE, with the e-stop latch active or during a firmware
+  /// update, stop any leg that is moving; then run the move engines
+  /// (MIB::poll_actuators()), and read one idle leg's position for the status JSON every
+  /// leg_position_refresh.
+  /// \note Runs on the leg task, every Actuator::kTickPeriod.
+  void run_leg_step();
+
   /// Handle a push-assist handle force command.
   void handle_push_assist_force(const rammp::HandleForce &force);
 
@@ -351,4 +390,8 @@ private:
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
   std::unique_ptr<espp::Task> odometry_task_; ///< Publishes odometry at 20 Hz.
+  std::unique_ptr<espp::Task> leg_task_;      ///< Runs the leg actuators' move engines.
+  std::chrono::steady_clock::time_point leg_next_wake_{};    ///< Leg task only.
+  std::chrono::steady_clock::time_point leg_last_refresh_{}; ///< Leg task only.
+  size_t leg_refresh_index_{0};                              ///< Leg task only.
 };
