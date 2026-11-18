@@ -143,7 +143,7 @@ private:
   void worker_task();
   void run_move(const Request &request);
   void run_stop(const Request &request);
-  bool profile_move(McpNode &node, int ch, int32_t target, bool nmt_start, std::string &error);
+  bool profile_move(McpNode &node, int ch, int32_t goal, bool nmt_start, std::string &error);
 
   /// The two windows the controller limits a position target to, and the count.
   struct Windows {

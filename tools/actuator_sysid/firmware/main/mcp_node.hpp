@@ -157,7 +157,7 @@ public:
 
   /// Poll this node or not (`nodes <list>`). A node that is not polled has no
   /// columns, sends nothing, and its values are cleared.
-  void set_enabled(bool enabled) { enabled_ = enabled; }
+  void set_enabled(bool on) { enabled_ = on; }
   bool enabled() const { return enabled_.load(); }
 
   SdoAccounting sdo_accounting() const {

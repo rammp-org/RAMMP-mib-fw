@@ -77,27 +77,24 @@ Axis axis_of(int ch) { return ch == 0 ? Axis::M1 : Axis::M2; }
 } // namespace
 
 Motion::Motion(std::vector<std::unique_ptr<McpNode>> &nodes, const std::atomic<size_t> &node_count,
-               const std::atomic<int> &period_ms,
-               const NodeSet &motion_nodes, const NodeSet &read_only_nodes,
-               std::function<void(bool)> set_heartbeat)
+               const std::atomic<int> &period_ms, const NodeSet &motion_nodes,
+               const NodeSet &read_only_nodes, std::function<void(bool)> set_heartbeat)
     : nodes_(nodes)
     , node_count_(node_count)
     , period_ms_(period_ms)
     , motion_nodes_(motion_nodes)
     , read_only_(read_only_nodes)
-    , set_heartbeat_(std::move(set_heartbeat)) {
-  queue_ = xQueueCreate(4, sizeof(Request));
+    , set_heartbeat_(std::move(set_heartbeat))
+    , queue_(xQueueCreate(4, sizeof(Request))) {
   xTaskCreate([](void *self) { static_cast<Motion *>(self)->worker_task(); }, "motion", 6 * 1024,
               this, 8, nullptr);
 }
 
 size_t Motion::index_of(int node_id) const {
-  for (size_t i = 0; i < node_count_.load(); ++i) {
-    if (nodes_[i]->id() == node_id) {
-      return i;
-    }
-  }
-  return node_count_.load();
+  const auto end = nodes_.begin() + static_cast<std::ptrdiff_t>(node_count_.load());
+  const auto it =
+      std::find_if(nodes_.begin(), end, [node_id](const auto &n) { return n->id() == node_id; });
+  return static_cast<size_t>(it - nodes_.begin()); // node_count_ when not found
 }
 
 void Motion::refuse(const char *what, const std::string &why) {
@@ -114,8 +111,9 @@ void Motion::refuse(const char *what, const std::string &why) {
 /// Mcp266::enable(), writes controlword 0x0000 then 0x0080 to a faulted drive.
 /// Here Ds402Drive::enable_operation() refuses a faulted drive instead, and
 /// `clearfaults` is the only way to reset one.
-bool Motion::profile_move(McpNode &node, int ch, int32_t target, bool nmt_start,
-                          std::string &error) {
+// Not const: it writes to the controller or emits events, though no member changes.
+// cppcheck-suppress functionConst
+bool Motion::profile_move(McpNode &node, int ch, int32_t goal, bool nmt_start, std::string &error) {
   std::error_code ec;
   // NMT start, addressed to this node only: the state the teammate's moves ran
   // in (Mcp266::start()). Whether profile moves also work pre-operational is
@@ -141,7 +139,7 @@ bool Motion::profile_move(McpNode &node, int ch, int32_t target, bool nmt_start,
   // window's lower edge. With the real target already in the object, an early
   // loop closure can only go where this move is going anyway.
   const uint16_t target_object = ch == 0 ? 0x607A : 0x687A;
-  if (!node.client().write_i32(target_object, 0, target, ec)) {
+  if (!node.client().write_i32(target_object, 0, goal, ec)) {
     error = "target pre-write: " + ec.message();
     return false;
   }
@@ -169,7 +167,7 @@ bool Motion::profile_move(McpNode &node, int ch, int32_t target, bool nmt_start,
     return false;
   }
   // Target, then the new-set-point handshake (absolute, change immediately).
-  if (!drive->set_target_position(target, ec, true, false)) {
+  if (!drive->set_target_position(goal, ec, true, false)) {
     error = "target: " + ec.message();
     return false;
   }
@@ -340,14 +338,14 @@ void Motion::run_move(const Request &request) {
     // the profile by v x lead (lead = 1 / P) cancels that lag. Never past the end.
     walked += static_cast<int64_t>(speed_now * lead_ms / 1000.0);
     walked = std::min(walked, span);
-    const int32_t target = static_cast<int32_t>(start + direction * walked);
+    const int32_t goal = static_cast<int32_t>(start + direction * walked);
     std::error_code ec;
     const int64_t before = now_us();
     bool sent = false;
     if (handshake == 1) {
       // espp's handshake: target, new-set-point bit, wait for the acknowledge bit
       // (25 ms sleeps between statusword polls), clear, wait again. ~50 ms.
-      sent = drive != nullptr && drive->set_target_position(target, ec, true, false);
+      sent = drive != nullptr && drive->set_target_position(goal, ec, true, false);
     } else if (handshake == 2) {
       // Lean handshake, no statusword polling. The new-set-point bit is held at
       // each level for a whole tick: even ticks write the target and set the bit
@@ -357,14 +355,14 @@ void Motion::run_move(const Request &request) {
       // hundreds of updates and then not at all for one whole move on the bench:
       // the controller can miss a pulse that short.
       if (lean_phase == 0) {
-        sent = node.client().write_i32(target_object, 0, target, ec) &&
+        sent = node.client().write_i32(target_object, 0, goal, ec) &&
                node.client().write_u16(controlword_object, 0, 0x003F, ec);
       } else {
         sent = node.client().write_u16(controlword_object, 0, 0x002F, ec);
       }
       lean_phase ^= 1;
     } else {
-      sent = node.client().write_i32(target_object, 0, target, ec);
+      sent = node.client().write_i32(target_object, 0, goal, ec);
     }
     worst_write_us = std::max(worst_write_us, now_us() - before);
     writes++;
@@ -372,7 +370,7 @@ void Motion::run_move(const Request &request) {
       failures++;
     } else {
       std::lock_guard<std::mutex> lock(mutex_);
-      target_ = target; // the _tgt column follows what was actually written
+      target_ = goal; // the _tgt column follows what was actually written
     }
     xTaskDelayUntil(&last_wake, pdMS_TO_TICKS(period_ms));
   }
@@ -536,6 +534,8 @@ void Motion::trip(const std::string &guard, const std::string &detail) {
   disarm_locked("guard tripped");
 }
 
+// Not const: it writes to the controller or emits events, though no member changes.
+// cppcheck-suppress functionConst
 void Motion::set_heartbeat_consumer(McpNode &node, bool enable) {
   // The comm-timeout feature CANopen offers: a heartbeat consumer on the
   // controller that raises a communication error when the MIB's heartbeat (sent
@@ -693,7 +693,7 @@ void Motion::pstep(int node_id, int ch_number, int delta, int velocity, int acce
                                 describe(w), target64, span_cap, margin));
     return;
   }
-  const int32_t target = static_cast<int32_t>(target64);
+  const int32_t goal = static_cast<int32_t>(target64);
 
   std::lock_guard<std::mutex> lock(mutex_);
   const int64_t t = now_us();
@@ -776,13 +776,13 @@ void Motion::pstep(int node_id, int ch_number, int delta, int velocity, int acce
   ch_ = ch;
   // Streaming starts at the present count and walks to the target; a step goes
   // straight there. The travel guard always uses the final target.
-  final_target_ = target;
+  final_target_ = goal;
   stream_rate_ = stream_rate;
   stream_period_ms_ = stream_period_ms;
   stream_handshake_ = stream_handshake;
   stream_accel_ = stream_accel;
   stream_lead_ms_ = stream_lead_ms;
-  target_ = stream_rate > 0 ? present : target;
+  target_ = stream_rate > 0 ? present : goal;
   move_velocity_ = velocity;
   move_acceleration_ = acceleration;
   start_enc_ = present;
@@ -794,12 +794,12 @@ void Motion::pstep(int node_id, int ch_number, int delta, int velocity, int acce
   end_us_ = t + static_cast<int64_t>(CONFIG_SYSID_MOVE_WINDOW_MS) * 1000;
   emit_event(fmt::format("pstep n{}c{} from {} to {} (delta {}); profile velocity {} accel {}; {}; "
                          "window {} ms",
-                         node_id, ch_number, present, target, delta, velocity, acceleration,
+                         node_id, ch_number, present, goal, delta, velocity, acceleration,
                          describe(w), CONFIG_SYSID_MOVE_WINDOW_MS));
   Request request{.kind = Request::Kind::MOVE,
                   .node_index = static_cast<uint8_t>(index),
                   .ch = static_cast<uint8_t>(ch),
-                  .target = stream_rate > 0 ? present : target,
+                  .target = stream_rate > 0 ? present : goal,
                   .reason = {}};
   if (stream_rate > 0) {
     emit_event(fmt::format("pstream n{}c{}: target walks at {} counts/s, one {} every {} ms",

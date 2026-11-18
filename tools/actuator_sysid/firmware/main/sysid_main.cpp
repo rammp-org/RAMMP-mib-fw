@@ -261,8 +261,9 @@ void emit_header() {
   const esp_app_desc_t *app = esp_app_get_description();
   const int period = g_period_ms.load();
   std::string ids;
-  for_each_polled(
-      [&](size_t, McpNode &node) { ids += (ids.empty() ? "" : ",") + std::to_string(node.id()); });
+  for_each_polled([&](size_t, const McpNode &node) {
+    ids += (ids.empty() ? "" : ",") + std::to_string(node.id());
+  });
   emit_meta("app", "actuator_sysid");
   emit_meta("fw", app->version); // `git describe` of the repo at build time
   emit_meta("idf", esp_get_idf_version());
@@ -381,7 +382,7 @@ bool tilt_rate_dps(const espp::Bno055::Data &d, float &rate) {
   }
   const float along = (w.x * g.x + w.y * g.y + w.z * g.z) / g_norm; // rate about gravity (yaw)
   const float total_sq = w.x * w.x + w.y * w.y + w.z * w.z;
-  rate = std::sqrt(std::max(0.0f, total_sq - along * along)) * 180.0f / static_cast<float>(M_PI);
+  rate = std::sqrt(std::max(0.0f, total_sq - along * along)) * (180.0f / 3.14159265f);
   return true;
 }
 #endif
@@ -409,7 +410,7 @@ void sample_task(void *) {
     }
     // The polled set is captured once per row, so the row matches one header.
     std::vector<size_t> polled;
-    for_each_polled([&](size_t i, McpNode &node) {
+    for_each_polled([&](size_t i, const McpNode &node) {
       snapshots[i] = node.snapshot();
       polled.push_back(i);
     });
@@ -524,7 +525,7 @@ void stop_everything() {
 void report_nodes() {
   const size_t n = g_node_count.load();
   for (size_t i = 0; i < n; ++i) {
-    McpNode *node = g_nodes[i].get();
+    const McpNode *node = g_nodes[i].get();
     const NodeData d = node->snapshot();
     const char *link = !node->enabled()          ? "not polled"
                        : d.link == Link::ONLINE  ? "online"
@@ -538,13 +539,10 @@ void report_nodes() {
 }
 
 McpNode *find_node(int id) {
-  const size_t n = g_node_count.load();
-  for (size_t i = 0; i < n; ++i) {
-    if (g_nodes[i]->id() == id) {
-      return g_nodes[i].get();
-    }
-  }
-  return nullptr;
+  const auto end = g_nodes.begin() + static_cast<std::ptrdiff_t>(g_node_count.load());
+  const auto it =
+      std::find_if(g_nodes.begin(), end, [id](const auto &node) { return node->id() == id; });
+  return it == end ? nullptr : it->get();
 }
 
 /// `nodes <list>`: poll exactly these ids. Known nodes are enabled or disabled;
@@ -631,11 +629,7 @@ void scan_bus() {
     ++found;
     emit_line(fmt::format("#cfg,{},device_type,0x1000,0,0x{:08X}={}", id, device_type,
                           static_cast<int32_t>(device_type)));
-    for (char &c : name) {
-      if (c == ',') {
-        c = ';';
-      }
-    }
+    std::replace(name.begin(), name.end(), ',', ';');
     emit_line(fmt::format("#cfg,{},device_name,0x1008,0,{}", id,
                           name_ec ? "error:" + name_ec.message() : name));
   }
@@ -668,6 +662,8 @@ void handle_command(const std::string &line) {
     // The link budget: refuse a rate whose worst-case rows would take more than
     // 70 % of the console's bytes per second.
     const int link_max = max_rate_for_link(polled_count());
+    // Always false on a USB-Serial-JTAG console build (no link limit); true is possible on a UART.
+    // cppcheck-suppress knownConditionTrueFalse
     if (hz > link_max) {
       emit_event(fmt::format("error: rate {} Hz refused: worst-case rows of {} bytes need {} B/s, "
                              "over 70 % of the console link; at most {} Hz here",

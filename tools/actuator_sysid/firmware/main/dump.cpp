@@ -1,5 +1,6 @@
 #include "dump.hpp"
 
+#include <algorithm>
 #include <array>
 #include <string>
 
@@ -57,11 +58,8 @@ void text(McpNode &node, const std::string &name, uint16_t index) {
                 ? fmt::format("abort:0x{:08X}", abort_code)
                 : "error:" + ec.message();
   } else {
-    for (char &c : value) {
-      if (c == ',' || c == '\n' || c == '\r') {
-        c = ';';
-      }
-    }
+    std::replace_if(
+        value.begin(), value.end(), [](char c) { return c == ',' || c == '\n' || c == '\r'; }, ';');
   }
   emit_cfg(node.id(), name, index, 0, value);
 }

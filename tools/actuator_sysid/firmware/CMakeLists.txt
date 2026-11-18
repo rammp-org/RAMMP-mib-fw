@@ -12,6 +12,7 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # rammp-rtps submodule.
 set(REPO_COMPONENTS "${CMAKE_CURRENT_LIST_DIR}/../../../components")
 set(EXTRA_COMPONENT_DIRS
+  "${REPO_COMPONENTS}/Actuator"
   "${REPO_COMPONENTS}/bsp"
   "${REPO_COMPONENTS}/MIBConfig"
   "${REPO_COMPONENTS}/Arbiter"

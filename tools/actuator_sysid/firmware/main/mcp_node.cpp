@@ -158,9 +158,9 @@ void McpNode::task() {
       last_wake = xTaskGetTickCount();
       continue;
     }
-    const int64_t start = now_us();
+    const int64_t pass_start = now_us();
     const bool completed = run_pass(slow_index);
-    const int64_t duration = now_us() - start;
+    const int64_t duration = now_us() - pass_start;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (completed) {
@@ -204,10 +204,10 @@ void McpNode::task() {
 }
 
 bool McpNode::run_pass(size_t &slow_index) {
-  for (Item item : kFastItems) {
-    if (read_item(item) == Result::NO_ANSWER) {
-      return false;
-    }
+  // Stops at the first fast item that gets no answer.
+  if (std::any_of(std::begin(kFastItems), std::end(kFastItems),
+                  [this](Item item) { return read_item(item) == Result::NO_ANSWER; })) {
+    return false;
   }
   // One slow field per pass, skipping any the controller does not have.
   for (size_t tries = 0; tries < std::size(kSlowItems); ++tries) {
@@ -385,11 +385,9 @@ void McpNode::invalidate(Item item) {
 }
 
 void McpNode::set_link(Link link) {
-  Link previous;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    previous = data_.link;
-    if (previous == link) {
+    if (data_.link == link) {
       return;
     }
     data_.link = link;
@@ -437,6 +435,8 @@ void McpNode::on_heartbeat(uint8_t node_id, espp::CanopenClient::NmtState state)
   }
 }
 
+// Not const: it writes to the controller or emits events, though no member changes.
+// cppcheck-suppress functionConst
 void McpNode::report_changes(Item item, int32_t old_value, bool old_valid, int32_t new_value) {
   if (item == Item::FLAGS) {
     if (old_valid && old_value == new_value) {
