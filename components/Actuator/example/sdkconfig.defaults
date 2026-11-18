@@ -4,6 +4,26 @@ CONFIG_ESP32P4_REV_MIN_100=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
 CONFIG_FREERTOS_HZ=1000
 
+# Console: UART0 (GPIO37/38) through the USB-C's CH343 bridge, the MIB's serial port
+# (/dev/cu.usbmodem5C372451831 on the bench Mac; opening it resets the board). 921600 baud
+# carried the bench firmware's 100 Hz rows without drops. Open the monitor at the same rate:
+# idf.py -b 921600 monitor (or any terminal at 921600 8N1).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=37
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=38
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Same flash layout as the main firmware (partitions.csv at the repo root): the NVS
+# partition, where calibrated ranges live, is the same one, and going back to the firmware
+# is an ordinary `idf.py flash` from the repo root.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="../../../partitions.csv"
+
 # The console runs the actuator commands on the main task; every command is a
 # few CAN round trips with logging, so give it room.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384

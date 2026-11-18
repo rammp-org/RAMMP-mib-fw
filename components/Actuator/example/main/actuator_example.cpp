@@ -1,106 +1,74 @@
-/// Actuator example and bench console.
+/// Actuator example: the bench console for the leg actuators.
 ///
-/// Brings up one mib::Actuator on one channel of one MCP266 and hands you a
-/// console over the serial monitor to exercise its API:
+/// Brings the legs up exactly as the firmware does, through the BSP: TWAI retransmitting until
+/// acknowledged, the MIB's CANopen heartbeat, and one mib::Actuator per leg in MIBconfig.hpp,
+/// each commissioned leg's controller settings written and read back. A leg that is not
+/// commissioned (the left main leg, the carriages) gets nothing written and refuses moves.
+/// Nothing moves or homes until a command asks. The selected leg is the right main leg (MR)
+/// until `leg` changes it; every command acts on the selected leg.
 ///
-///   scan                  find which node ids answer an SDO on the bus (1..127)
-///   init                  re-run initialize() (faults, clamp, saved position)
-///   status                position, state, range
-///   pos                   read the position from the encoder
-///   profile [v a d]       show or set the motion profile used by moves (counts/s, /s^2)
-///   abs <counts>          move to an absolute count
-///   rel <delta>           move by a signed number of counts
-///   inc / dec             move one jog step
-///   wait                  block until the drive reports target reached (any key cancels)
-///   stop                  quick stop
-///   clear                 clear a latched fault / limit / E-stop on the controller
-///   flags                 the controller's own status flags (Basicmicro command 90)
-///   sdor <index> <sub> <bytes>          raw SDO read (index in decimal or 0x hex)
-///   sdow <index> <sub> <bytes> <value>  raw SDO write (signed value)
+///   legs                     the legs: node, channel, commissioned, travel, stroke sign
+///   leg <name>               select a leg (MR, ML, LCarr, RCarr)
+///   settings                 configured vs read-back controller settings
+///   status                   count, PWM, current, statusword, drive state, fault, last move
+///   result                   the last move's result
+///   abs <counts> [speed]     move to a count (speed in counts/s; default the leg's)
+///   rel <delta> [speed]      move by a signed count
+///   inc / dec                one jog step
+///   stop                     disable voltage now, then PWM and current
+///   clear                    CiA 402 fault reset of the selected channel
+///   wait                     print the count until the move ends (any key ends the wait,
+///                            not the move: type `stop` for that)
+///   init                     rerun initialize() (settings written and read back)
+///
+///   scan                     node ids that answer an SDO (reads only)
+///   sdor <node> <index> <sub> <bytes>          raw SDO read (index decimal or 0x hex)
+///   sdow <node> <index> <sub> <bytes> <value>  raw SDO write; refused on a node with no
+///                                              commissioned leg (node 2)
+///   flags                    the controller's status flags (Basicmicro command 90)
 ///
 ///   Calibration (absolute encoder, once per installation):
-///   limits                read the clamp the controller currently holds
-///   cal on|off            lift or restore the range clamp
-///   range <min> <max>     install a calibrated range and save it to NVS
-///   forget                erase the saved range; the compiled default applies
+///   limits / cal on|off / range <min> <max> / forget
+///   Homing (incremental encoder; never automatic): home / restore / save / setenc <counts>
 ///
-///   Homing (incremental encoder, every boot; only with kHomingRequired):
-///   home                  drive into the limit switch and install the home count (any key
-///                         cancels with a quick stop)
-///   restore               install the position saved on a previous run
-///   save                  save the current position now
-///   setenc <counts>       write the controller's encoder count directly
-///
-///   selftest              inc, wait, dec, wait; passes if it returns to start
-///
-/// The settings below would come from a configuration file in the real
-/// firmware; they are written out here so the example stands on its own.
+/// Moves return at once: the poll task streams them, and the Actuator logs how each ended
+/// (arrived or FAILED, final count, peak speed, then the PWM and current after the release).
+/// So `stop` can be typed at any time during a move; no keystroke is needed to end one.
 
 #include <atomic>
 #include <chrono>
-#include <fcntl.h>
-#include <unistd.h>
 #include <cstdlib>
-#include <memory>
-#include <mutex>
+#include <fcntl.h>
+#include <iostream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "MIBconfig.hpp"
 #include "actuator.hpp"
-#include "actuator_store.hpp"
-#include "canopen_client.hpp"
+#include "bsp.hpp"
 #include "cli.hpp"
 #include "format.hpp"
 #include "logger.hpp"
-#include "mcp266.hpp"
-#include "twai.hpp"
 
 using namespace std::chrono_literals;
+using mib::Actuator;
+using mib::config::Leg;
 
 namespace {
 
-// ---- settings ---------------------------------------------------------------
-// CAN transceiver on the TWAI peripheral.
-constexpr int kTxGpio = 17;
-constexpr int kRxGpio = 16;
-constexpr uint32_t kBitrate = 1'000'000;
-// Which controller and channel the actuator is on.
-constexpr uint8_t kNodeId = 3;
-constexpr auto kAxis = mib::Actuator::Axis::M1;
-// Set true for an incremental (AB) encoder, which must be homed every boot.
-constexpr bool kHomingRequired = false;
-// "Forward" (positive count, `inc`) is toward the FRONT of the rack. The carriage homes at
-// the front switch, which becomes count kTravel; the back switch is the 0 end. On the
-// controller: front switch = M1FLimit, back switch = M1RLimit, encoder counting up
-// toward the front.
-constexpr int kHomeDirection = +1;
-constexpr int32_t kTravel = 12600;
-// How the actuator behaves. Positions are the joint encoder's counts.
-const mib::Actuator::Config kActuatorConfig{
-    .name = "example",              // also the NVS key prefix
-    .axis = kAxis,
-    .range = {10000, 18000},         // calibrated travel; a range saved to NVS overrides it
-    .profile = {1000, 1000, 3000},  // counts/s, counts/s^2, counts/s^2
-    .jog_step = 500,               // counts per inc / dec
-    .tolerance = 200,               // counts within which a position counts as at target
-    .hardware_limits = false,       // bench motors have no limit switches
-    .homing = {.required = kHomingRequired,
-               .direction = kHomeDirection,
-               .home_count = kTravel,
-               // Same speed as normal moves. A crawl (the old 100 counts/s default) makes
-               // the velocity loop cog; the switch ends the approach, not the speed.
-               .profile = {500, 500, 500}},
-    .store = nullptr,               // filled in at bring-up
-};
-// -----------------------------------------------------------------------------
-
 espp::Logger logger({.tag = "Actuator Example", .level = espp::Logger::Verbosity::INFO});
 
-/// True if any byte is waiting on the console, consuming it. Used to cancel blocking
-/// commands (wait, home) from the keyboard.
+std::atomic<Leg> selected{Leg::MAIN_RIGHT};
+
+mib::bsp::MIB &board() { return mib::bsp::MIB::instance(); }
+const mib::config::ActuatorConfig &row() { return mib::config::actuator_config(selected.load()); }
+Actuator &actuator() { return board().actuator(selected.load()); }
+
+/// True if any byte is waiting on the console, consuming it. Ends `wait`.
 bool key_pressed() {
   const int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
   fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
@@ -110,338 +78,421 @@ bool key_pressed() {
   return pressed;
 }
 
-// The transport and controller objects the actuator is layered on. The client
-// filters frames by node id and the controller has one SDO channel, so an
-// actuator on M2 of the same controller would share `mcp` and `mcp_mutex`.
-std::unique_ptr<espp::Twai> twai;
-std::unique_ptr<espp::CanopenClient> client;
-// Received frames go to this client; `scan` points it at a temporary one per node id.
-std::atomic<espp::CanopenClient *> rx_client{nullptr};
-std::unique_ptr<espp::Mcp266> mcp;
-std::mutex mcp_mutex;
-mib::ActuatorStore store;
-std::unique_ptr<mib::Actuator> actuator;
-// The profile moves use; `profile` changes it at the prompt to try ramps without reflashing.
-mib::Actuator::Profile profile = kActuatorConfig.profile;
+float percent(int16_t pwm) { return pwm * 100.0f / 32767.0f; }
 
-bool bring_up() {
-  //! [actuator example bring-up]
-  client = std::make_unique<espp::CanopenClient>(espp::CanopenClient::Config{
-      .node_id = kNodeId,
-      .send =
-          [](const espp::CanopenClient::CanFrame &frame) {
-            espp::Twai::Message message{.id = frame.id,
-                                        .extended = frame.extended,
-                                        .rtr = frame.rtr,
-                                        .dlc = frame.dlc,
-                                        .data = frame.data};
-            std::error_code ec;
-            return twai && twai->transmit(message, ec);
-          },
-      .sdo_timeout = 100ms,
-      .log_level = espp::Logger::Verbosity::WARN,
-  });
-  twai = std::make_unique<espp::Twai>(espp::Twai::Config{
-      .tx_gpio = kTxGpio,
-      .rx_gpio = kRxGpio,
-      .baudrate = kBitrate,
-      .mode = espp::Twai::Mode::NORMAL,
-      .tx_queue_depth = 8,
-      .tx_retry_count = 3,
-      .on_receive =
-          [](const espp::Twai::Message &message) {
-            auto *target = rx_client.load();
-            if (!target) {
-              return;
-            }
-            target->process_frame({.id = message.id,
-                                   .extended = message.extended,
-                                   .rtr = message.rtr,
-                                   .dlc = message.dlc,
-                                   .data = message.data});
-          },
-      .log_level = espp::Logger::Verbosity::WARN,
-  });
-  rx_client.store(client.get());
-  std::error_code ec;
-  if (!twai->initialize(ec)) {
-    logger.error("TWAI init failed on tx={} rx={}: {}", kTxGpio, kRxGpio, ec.message());
+const char *sign_text(int8_t sign) {
+  return sign > 0 ? "+counts = stroke extends"
+                  : (sign < 0 ? "+counts = stroke retracts" : "stroke sign not established");
+}
+
+void print_legs(std::ostream &out) {
+  for (const auto &r : mib::config::actuators) {
+    out << fmt::format("  {:<6} node {} M{}  {:<17} travel [{}, {}]  {}{}\n", r.name, r.node_id,
+                       r.channel + 1, r.commissioned ? "commissioned" : "NOT commissioned",
+                       r.min_counts, r.max_counts, sign_text(r.stroke_sign),
+                       r.leg == selected.load() ? "   <- selected" : "");
+  }
+}
+
+/// A move command on a leg that is not commissioned: say so before the Actuator refuses it.
+bool refuse_uncommissioned(std::ostream &out) {
+  if (row().commissioned) {
     return false;
   }
-  logger.info("CAN up on tx={} rx={} at {} bit/s", kTxGpio, kRxGpio, kBitrate);
-
-  mcp = std::make_unique<espp::Mcp266>(*client,
-                                       espp::Mcp266::Config{.log_level = espp::Logger::Verbosity::INFO});
-  if (!mcp->start(ec)) {
-    logger.error("MCP266 node {} did not answer: {}", kNodeId, ec.message());
-    // Carry on: the actuator marks itself offline and retries on its next use.
-  }
-
-  // The store keeps the calibrated range (and, for an incremental encoder, the
-  // last position) across boots. A saved range wins over the compiled default.
-  store.init();
-  auto config = kActuatorConfig;
-  config.store = &store;
-  config.homing.cancel = key_pressed; // any key on the console aborts a homing approach
-  if (mib::Actuator::Range saved{}; store.load_range(config.name, saved)) {
-    logger.info("using calibrated range [{}, {}] from NVS", saved.min, saved.max);
-    config.range = saved;
-  }
-
-  actuator = std::make_unique<mib::Actuator>(*mcp, mcp_mutex, config);
-  actuator->initialize();
-  logger.info("actuator {}", actuator->ready() ? "ready" : "NOT ready (see log)");
-  //! [actuator example bring-up]
+  out << fmt::format("REFUSED: {} (node {} M{}) is not commissioned (MIBconfig.hpp "
+                     "commissioned = false). The MIB writes nothing to it and will not move it.\n",
+                     row().name, row().node_id, row().channel + 1);
   return true;
 }
 
-const char *state_name(mib::Actuator::DriveState state) {
-  using S = mib::Actuator::DriveState;
-  switch (state) {
-  case S::NotReadyToSwitchOn: return "not ready to switch on";
-  case S::SwitchOnDisabled: return "switch on disabled";
-  case S::ReadyToSwitchOn: return "ready to switch on";
-  case S::SwitchedOn: return "switched on";
-  case S::OperationEnabled: return "operation enabled";
-  case S::QuickStopActive: return "quick stop active";
-  case S::FaultReactionActive: return "fault reaction active";
-  case S::Fault: return "FAULT";
-  default: return "unknown";
-  }
-}
-
-void print_position(std::ostream &out) {
-  int32_t counts = 0;
-  if (!actuator->read_position(counts)) {
-    out << "read failed (see log)\n";
+void print_settings(std::ostream &out) {
+  Actuator &a = actuator();
+  Actuator::SettingsReadback rb{};
+  if (!a.read_controller_settings(rb)) {
+    out << "settings read failed (see log)\n";
     return;
   }
-  const auto r = actuator->range();
-  out << fmt::format("{} counts  (range [{}, {}])\n", counts, r.min, r.max);
+  const auto &c = a.controller_settings();
+  const auto &r = rb.settings;
+  const auto range = a.range();
+  int mismatches = 0;
+  out << fmt::format("{} (node {} M{}, {}): configured / read back\n", row().name, row().node_id,
+                     row().channel + 1, row().commissioned ? "commissioned" : "NOT commissioned");
+  const auto line = [&](const char *what, int64_t configured, int64_t read) {
+    const bool same = configured == read;
+    mismatches += same ? 0 : 1;
+    out << fmt::format("  {:<28} {:>10} / {:<10}{}\n", what, configured, read,
+                       same ? "" : "  <-- DIFFERS");
+  };
+  line("position window 0x6067", c.position_window, r.position_window);
+  line("position P (x1024)", c.position_p, r.position_p);
+  line("position I (x1024)", c.position_i, r.position_i);
+  line("position D (x1024)", c.position_d, r.position_d);
+  line("position MaxI", c.position_max_i, r.position_max_i);
+  line("position deadband", c.position_deadband, r.position_deadband);
+  line("velocity P (16.16)", c.velocity_p, r.velocity_p);
+  line("velocity I (16.16)", c.velocity_i, r.velocity_i);
+  line("velocity D (16.16)", c.velocity_d, r.velocity_d);
+  line("velocity QPPS", c.velocity_qpps, r.velocity_qpps);
+  line("clamp min", range.min, rb.clamp.min);
+  line("clamp max", range.max, rb.clamp.max);
+  line("software limit 0x607D min", range.min, rb.software_limit.min);
+  line("software limit 0x607D max", range.max, rb.software_limit.max);
+  line("profile velocity 0x6081", c.profile_velocity, r.profile_velocity);
+  line("heartbeat consumer 0x1016:1", c.heartbeat_consumer, r.heartbeat_consumer);
+  const auto &cfg = a.config();
+  out << fmt::format(
+      "  moves: {} counts/s, {} counts/s^2, lead {} ms, tolerance {}, settle {} ms\n",
+      cfg.profile.velocity, cfg.profile.acceleration, cfg.lead.count(), cfg.tolerance,
+      cfg.settle_time.count());
+  if (!row().commissioned) {
+    out << "  (not commissioned: these were never written by the MIB; the read-back is the "
+           "controller's own)\n";
+  } else if (a.calibration_mode()) {
+    out << "  (calibration mode: the clamp is lifted on purpose)\n";
+  }
+  out << (mismatches == 0 ? "  all match\n"
+                          : fmt::format("  {} field(s) differ\n", mismatches).c_str());
 }
 
-/// Poll until the drive reports target reached. Prints progress once a second.
-bool wait_for_target(std::ostream &out, std::chrono::seconds timeout = 30s) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  auto next_print = std::chrono::steady_clock::now();
-  while (std::chrono::steady_clock::now() < deadline) {
-    if (key_pressed()) {
-      out << "wait cancelled (the move continues; `stop` to halt it)\n";
-      return false;
-    }
-    bool reached = false;
-    if (!actuator->is_target_reached(reached)) {
-      out << "status read failed (see log)\n";
-      return false;
-    }
-    int32_t counts = 0;
-    actuator->read_position(counts);
-    if (reached) {
-      out << fmt::format("target reached at {} counts\n", counts);
-      return true;
-    }
-    if (std::chrono::steady_clock::now() >= next_print) {
-      out << fmt::format("moving, at {} counts\n", counts);
-      next_print += 1s;
-    }
-    std::this_thread::sleep_for(100ms);
+void print_result(std::ostream &out) {
+  const auto r = actuator().move_result();
+  if (r.outcome == Actuator::Outcome::NONE) {
+    out << "no move yet\n";
+    return;
   }
-  out << "timed out waiting for target\n";
-  return false;
+  out << fmt::format("move #{}: {}  {} -> {} (target), ", r.serial, mib::to_string(r.outcome),
+                     r.start, r.target);
+  if (r.outcome == Actuator::Outcome::MOVING) {
+    out << fmt::format("{:.2f} s profile, peak so far {:.0f} counts/s\n", r.profile_s,
+                       r.peak_speed);
+    return;
+  }
+  out << fmt::format("ended at {} ({:+} counts from target), {:.2f} s, profile {:.2f} s, peak "
+                     "{:.0f} counts/s, {} SDO failure(s) tolerated\n",
+                     r.final_count, r.final_count - r.target, r.elapsed_s, r.profile_s,
+                     r.peak_speed, r.sdo_failures);
+  if (r.outcome == Actuator::Outcome::ARRIVED) {
+    out << fmt::format("  released {:.2f} s after the profile ended", r.release_s);
+  } else {
+    out << fmt::format("  reason: {}", r.reason);
+  }
+  out << (r.release_readback ? fmt::format("; after release: PWM {:.1f} %, {} mA\n",
+                                           percent(r.release_pwm), r.release_current_ma)
+                             : std::string("; PWM/current not read back yet\n"));
+}
+
+void print_status(std::ostream &out) {
+  Actuator &a = actuator();
+  Actuator::Status s{};
+  if (!a.read_status(s)) {
+    out << "status read failed (see log)\n";
+    return;
+  }
+  out << fmt::format("{}: count {}, PWM {:.1f} %, {} mA, statusword 0x{:04X} ({}){}{}\n", a.name(),
+                     s.count, percent(s.pwm), s.current_ma, s.statusword, mib::to_string(s.state),
+                     s.fault ? " FAULT (`clear` to reset)" : "",
+                     (s.statusword & (1u << 11)) ? " [internal limit active]" : "");
+  out << fmt::format(
+      "  {}, {}, travel [{}, {}]{}\n", a.online() ? "online" : "OFFLINE",
+      a.ready() ? "ready" : (a.commissioned() ? "NOT ready (see log)" : "not commissioned"),
+      a.range().min, a.range().max, a.calibration_mode() ? ", CALIBRATING (clamp lifted)" : "");
+  print_result(out);
 }
 
 void report(std::ostream &out, bool ok, const char *what) {
   out << fmt::format("{} {}\n", what, ok ? "accepted" : "FAILED (see log)");
 }
 
+Actuator::Profile profile_at(int speed) {
+  const auto &cfg = actuator().config();
+  return {static_cast<uint32_t>(speed), cfg.profile.acceleration};
+}
+
+bool valid_speed(std::ostream &out, int speed) {
+  if (speed <= 0 || static_cast<uint32_t>(speed) > row().max_speed) {
+    out << fmt::format("speed must be 1..{} counts/s (the leg's max_speed)\n", row().max_speed);
+    return false;
+  }
+  return true;
+}
+
+/// Print the count every half second until the move ends; any key ends the wait.
+void wait_for_move(std::ostream &out) {
+  Actuator &a = actuator();
+  auto next = std::chrono::steady_clock::now();
+  while (a.moving()) {
+    if (key_pressed()) {
+      out << "wait ended (the move continues; `stop` to halt it)\n";
+      return;
+    }
+    if (std::chrono::steady_clock::now() >= next) {
+      if (const auto here = a.current_position()) {
+        out << fmt::format("  at {}\n", *here);
+      }
+      next += 500ms;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  std::this_thread::sleep_for(200ms); // let the release readback land
+  print_result(out);
+}
+
+/// Raw SDO access to a node. Index may be given as 0x6086 or decimal.
+int parse_index(const std::string &text) {
+  return static_cast<int>(std::strtol(text.c_str(), nullptr, 0));
+}
+
+bool node_has_commissioned_leg(int node) {
+  for (const auto &r : mib::config::actuators) {
+    if (r.node_id == node && r.commissioned) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::unique_ptr<cli::Menu> build_menu() {
   auto menu = std::make_unique<cli::Menu>("actuator");
 
   menu->Insert(
-      "status",
-      [](std::ostream &out) {
-        mib::Actuator::DriveState state{};
-        bool reached = false;
-        uint16_t sw = 0;
-        const bool have_state = actuator->get_drive_state(state);
-        const bool have_reached = have_state && actuator->is_target_reached(reached);
-        const bool have_sw = actuator->read_statusword(sw);
-        const auto r = actuator->range();
-        out << fmt::format("{}: {}, {}, drive {}, target {}, range [{}, {}], jog {}{}{}\n",
-                           actuator->name(), actuator->online() ? "online" : "OFFLINE",
-                           actuator->ready() ? "ready" : "NOT ready",
-                           have_state ? state_name(state) : "unreadable",
-                           have_reached ? (reached ? "reached" : "not reached") : "?", r.min,
-                           r.max, actuator->config().jog_step,
-                           actuator->calibration_mode() ? ", CALIBRATING (clamp lifted)" : "",
-                           kHomingRequired ? (actuator->homed() ? ", homed" : ", NOT homed") : "");
-        if (have_sw) {
-          out << fmt::format("statusword 0x{:04X}{}{}{}\n", sw,
-                             (sw & (1 << 11)) ? " [internal limit active]" : "",
-                             (sw & (1 << 3)) ? " [FAULT]" : "", (sw & (1 << 7)) ? " [warning]" : "");
+      "legs", [](std::ostream &out) { print_legs(out); },
+      "The legs: node, channel, commissioned, travel, stroke sign");
+  menu->Insert(
+      "leg",
+      [](std::ostream &out, std::string name) {
+        for (const auto &r : mib::config::actuators) {
+          if (name == r.name) {
+            selected = r.leg;
+            out << fmt::format("selected {} (node {} M{}, {})\n", r.name, r.node_id, r.channel + 1,
+                               r.commissioned ? "commissioned" : "NOT commissioned: moves refused");
+            return;
+          }
         }
-        print_position(out);
+        out << "no such leg; `legs` lists them\n";
       },
-      "Position, drive state, target reached, online, range");
+      "Select a leg: leg <MR|ML|LCarr|RCarr>");
+  menu->Insert(
+      "settings", [](std::ostream &out) { print_settings(out); },
+      "Configured vs read-back controller settings");
+  menu->Insert(
+      "status", [](std::ostream &out) { print_status(out); },
+      "Count, PWM, current, statusword, fault, last move");
+  menu->Insert(
+      "result", [](std::ostream &out) { print_result(out); }, "The last move's result");
+
+  menu->Insert(
+      "abs",
+      [](std::ostream &out, int counts) {
+        if (!refuse_uncommissioned(out)) {
+          report(out, actuator().move_absolute(counts), "move");
+        }
+      },
+      "Move to a count at the leg's speed: abs <counts>");
+  menu->Insert(
+      "abs",
+      [](std::ostream &out, int counts, int speed) {
+        if (!refuse_uncommissioned(out) && valid_speed(out, speed)) {
+          report(out, actuator().move_absolute(counts, profile_at(speed)), "move");
+        }
+      },
+      "Move to a count at a speed: abs <counts> <counts/s>");
+  menu->Insert(
+      "rel",
+      [](std::ostream &out, int delta) {
+        if (!refuse_uncommissioned(out)) {
+          report(out, actuator().move_relative(delta), "move");
+        }
+      },
+      "Move by a signed count: rel <delta>");
+  menu->Insert(
+      "rel",
+      [](std::ostream &out, int delta, int speed) {
+        if (!refuse_uncommissioned(out) && valid_speed(out, speed)) {
+          report(out, actuator().move_relative(delta, profile_at(speed)), "move");
+        }
+      },
+      "Move by a signed count at a speed: rel <delta> <counts/s>");
+  menu->Insert(
+      "inc",
+      [](std::ostream &out) {
+        if (!refuse_uncommissioned(out)) {
+          report(out, actuator().increment(), "increment");
+        }
+      },
+      "Move one jog step up");
+  menu->Insert(
+      "dec",
+      [](std::ostream &out) {
+        if (!refuse_uncommissioned(out)) {
+          report(out, actuator().decrement(), "decrement");
+        }
+      },
+      "Move one jog step down");
+  menu->Insert(
+      "stop",
+      [](std::ostream &out) {
+        if (!row().commissioned) {
+          out << fmt::format("{} is not commissioned: the MIB never enabled it, nothing sent\n",
+                             row().name);
+          return;
+        }
+        const bool ok = actuator().stop();
+        out << (ok ? "stop: disable voltage acknowledged\n"
+                   : "stop: disable voltage NOT acknowledged (see log)\n");
+        std::this_thread::sleep_for(150ms); // PWM falls to 0 within ~100 ms
+        Actuator::Status s{};
+        if (actuator().read_status(s)) {
+          out << fmt::format(
+              "after stop: count {}, PWM {:.1f} %, {} mA, statusword 0x{:04X} ({})\n", s.count,
+              percent(s.pwm), s.current_ma, s.statusword, mib::to_string(s.state));
+        }
+      },
+      "Disable voltage now; then PWM and current");
+  menu->Insert(
+      "clear", [](std::ostream &out) { report(out, actuator().clear_faults(), "clear"); },
+      "CiA 402 fault reset of the selected channel");
+  menu->Insert(
+      "wait", [](std::ostream &out) { wait_for_move(out); },
+      "Print the count until the move ends (any key ends the wait, not the move)");
+  menu->Insert(
+      "init", [](std::ostream &out) { report(out, actuator().initialize(), "initialize"); },
+      "Rerun initialize(): settings written and read back");
 
   menu->Insert(
       "scan",
       [](std::ostream &out) {
-        // Ask every node id for its device type (0x1000). A node in CANopen mode answers;
-        // a node in raw-CAN mode ACKs the frame but stays silent, so a bus that ACKs with
-        // no answers points at the controller's CAN mode rather than its wiring.
-        out << "scanning node ids 1..127 (about 10 s)\n";
-        int found = 0;
-        for (uint8_t id = 1; id <= 127; ++id) {
-          espp::CanopenClient probe({
-              .node_id = id,
-              .send =
-                  [](const espp::CanopenClient::CanFrame &frame) {
-                    espp::Twai::Message m{.id = frame.id,
-                                          .extended = frame.extended,
-                                          .rtr = frame.rtr,
-                                          .dlc = frame.dlc,
-                                          .data = frame.data};
-                    std::error_code tx_ec;
-                    return twai && twai->transmit(m, tx_ec);
-                  },
-              .sdo_timeout = 60ms,
-              .log_level = espp::Logger::Verbosity::NONE,
-          });
-          rx_client.store(&probe);
-          std::error_code ec;
-          const uint32_t device_type = probe.read_u32(0x1000, 0, ec);
-          rx_client.store(client.get());
-          if (!ec) {
-            ++found;
-            std::string name;
-            std::error_code name_ec;
-            rx_client.store(&probe);
-            name = probe.read_string(0x1008, 0, name_ec);
-            rx_client.store(client.get());
-            out << fmt::format("  node {:3}: device type 0x{:08X} \"{}\"\n", id, device_type,
-                               name_ec ? "?" : name);
-          }
+        out << "asking node ids 1..127 for 0x1000 (reads only, about 8 s)\n";
+        const auto found = board().scan_bus(60ms);
+        for (const auto &[id, type] : found) {
+          out << fmt::format("  node {:3}: device type 0x{:08X}\n", id, type);
         }
-        out << fmt::format("{} node(s) answered; this example talks to node {}\n", found, kNodeId);
+        out << fmt::format("{} node(s) answered\n", found.size());
       },
-      "Find which node ids answer an SDO on the bus");
-  menu->Insert("init", [](std::ostream &out) { report(out, actuator->initialize(), "initialize"); },
-               "Re-run initialize(): clear faults, install the clamp, restore a saved position");
-  menu->Insert("pos", [](std::ostream &out) { print_position(out); }, "Read the position");
-  menu->Insert(
-      "profile",
-      [](std::ostream &out) {
-        out << fmt::format("profile: velocity {} counts/s, accel {} counts/s^2, decel {} counts/s^2\n",
-                           profile.velocity, profile.acceleration, profile.deceleration);
-      },
-      "Show the motion profile used by abs / rel");
-  menu->Insert(
-      "profile",
-      [](std::ostream &out, int velocity, int accel, int decel) {
-        if (velocity <= 0 || accel <= 0 || decel <= 0) {
-          out << "all three must be positive\n";
-          return;
-        }
-        profile = {static_cast<uint32_t>(velocity), static_cast<uint32_t>(accel),
-                   static_cast<uint32_t>(decel)};
-        out << fmt::format("profile set: ramp up {:.1f} s, ramp down {:.1f} s at full speed\n",
-                           static_cast<float>(velocity) / accel, static_cast<float>(velocity) / decel);
-      },
-      "Set the motion profile: profile <velocity> <accel> <decel>");
-  menu->Insert(
-      "abs",
-      [](std::ostream &out, int counts) { report(out, actuator->move_absolute(counts, profile), "move"); },
-      "Move to an absolute count: abs <counts>");
-  menu->Insert(
-      "rel",
-      [](std::ostream &out, int delta) { report(out, actuator->move_relative(delta, profile), "move"); },
-      "Move by a signed count: rel <delta>");
-  menu->Insert("inc", [](std::ostream &out) { report(out, actuator->increment(), "increment"); },
-               "Move one jog step up");
-  menu->Insert("dec", [](std::ostream &out) { report(out, actuator->decrement(), "decrement"); },
-               "Move one jog step down");
-  menu->Insert("wait", [](std::ostream &out) { wait_for_target(out); },
-               "Block until the drive reports target reached");
-  menu->Insert("stop", [](std::ostream &out) { report(out, actuator->stop(), "stop"); },
-               "Quick stop");
-  menu->Insert("clear", [](std::ostream &out) { report(out, actuator->clear_faults(), "clear"); },
-               "Clear a latched fault, limit or E-stop on the controller");
-  // Raw object access for experiments the Actuator API does not cover (profile type,
-  // manufacturer mirrors). Index may be given as 0x6086 or decimal.
-  const auto parse_index = [](const std::string &text) -> int {
-    return static_cast<int>(std::strtol(text.c_str(), nullptr, 0));
-  };
+      "Find which node ids answer an SDO (reads only)");
   menu->Insert(
       "sdor",
-      [parse_index](std::ostream &out, std::string index_text, int sub, int bytes) {
+      [](std::ostream &out, int node, std::string index_text, int sub, int bytes) {
+        const auto access = board().controller_access(static_cast<uint8_t>(node));
+        if (!access) {
+          out << "no leg in MIBconfig.hpp is on that node\n";
+          return;
+        }
         const int index = parse_index(index_text);
         std::error_code ec;
         int64_t value = 0;
-        switch (bytes) {
-        case 1: value = client->read_i8(index, sub, ec); break;
-        case 2: value = client->read_i16(index, sub, ec); break;
-        case 4: value = client->read_i32(index, sub, ec); break;
-        default: out << "bytes must be 1, 2 or 4\n"; return;
+        {
+          std::lock_guard<std::mutex> lock(*access->mutex);
+          switch (bytes) {
+          case 1:
+            value = access->client->read_i8(index, sub, ec);
+            break;
+          case 2:
+            value = access->client->read_i16(index, sub, ec);
+            break;
+          case 4:
+            value = access->client->read_i32(index, sub, ec);
+            break;
+          default:
+            out << "bytes must be 1, 2 or 4\n";
+            return;
+          }
         }
         if (ec) {
-          out << fmt::format("read 0x{:04X}:{} failed: {}\n", index, sub, ec.message());
+          out << fmt::format("read n{} 0x{:04X}:{} failed: {}\n", node, index, sub, ec.message());
         } else {
-          out << fmt::format("0x{:04X}:{} = {} (0x{:X})\n", index, sub, value,
+          out << fmt::format("n{} 0x{:04X}:{} = {} (0x{:X})\n", node, index, sub, value,
                              static_cast<uint32_t>(value));
         }
       },
-      "Raw SDO read: sdor <index> <sub> <bytes>");
+      "Raw SDO read: sdor <node> <index> <sub> <bytes>");
   menu->Insert(
       "sdow",
-      [parse_index](std::ostream &out, std::string index_text, int sub, int bytes, int value) {
+      [](std::ostream &out, int node, std::string index_text, int sub, int bytes, int value) {
+        if (!node_has_commissioned_leg(node)) {
+          out << fmt::format("REFUSED: node {} has no commissioned leg; the MIB does not write "
+                             "to it\n",
+                             node);
+          return;
+        }
+        const auto access = board().controller_access(static_cast<uint8_t>(node));
+        if (!access) {
+          out << "no leg in MIBconfig.hpp is on that node\n";
+          return;
+        }
         const int index = parse_index(index_text);
         std::error_code ec;
         bool ok = false;
-        switch (bytes) {
-        case 1: ok = client->write_i8(index, sub, static_cast<int8_t>(value), ec); break;
-        case 2: ok = client->write_i16(index, sub, static_cast<int16_t>(value), ec); break;
-        case 4: ok = client->write_i32(index, sub, value, ec); break;
-        default: out << "bytes must be 1, 2 or 4\n"; return;
+        {
+          std::lock_guard<std::mutex> lock(*access->mutex);
+          switch (bytes) {
+          case 1:
+            ok = access->client->write_i8(index, sub, static_cast<int8_t>(value), ec);
+            break;
+          case 2:
+            ok = access->client->write_i16(index, sub, static_cast<int16_t>(value), ec);
+            break;
+          case 4:
+            ok = access->client->write_i32(index, sub, value, ec);
+            break;
+          default:
+            out << "bytes must be 1, 2 or 4\n";
+            return;
+          }
         }
-        out << fmt::format("write 0x{:04X}:{} = {} {}\n", index, sub, value,
+        out << fmt::format("write n{} 0x{:04X}:{} = {} {}\n", node, index, sub, value,
                            ok ? "accepted" : "FAILED: " + ec.message());
       },
-      "Raw SDO write: sdow <index> <sub> <bytes> <value>");
+      "Raw SDO write: sdow <node> <index> <sub> <bytes> <value> (commissioned nodes only)");
   menu->Insert(
       "flags",
       [](std::ostream &out) {
-        // Basicmicro "read status" (command 90) mirrored at 0x205A. espp::Mcp266 does not
-        // wrap it yet, so this reads it through the client directly. The bit map is the
-        // RoboClaw/MCP 32-bit status word from the Basicmicro manual; unverified on this
-        // firmware, which is what this command is for.
-        static constexpr struct { uint32_t bit; const char *name; } kBits[] = {
-            {0x00000001, "E-stop"}, {0x00000002, "temperature error"},
-            {0x00000004, "temperature 2 error"}, {0x00000008, "main voltage high error"},
-            {0x00000010, "logic voltage high error"}, {0x00000020, "logic voltage low error"},
-            {0x00000040, "M1 driver fault"}, {0x00000080, "M2 driver fault"},
-            {0x00000100, "M1 speed error"}, {0x00000200, "M2 speed error"},
-            {0x00000400, "M1 position error"}, {0x00000800, "M2 position error"},
-            {0x00001000, "M1 current error"}, {0x00002000, "M2 current error"},
-            {0x00010000, "M1 over-current warning"}, {0x00020000, "M2 over-current warning"},
-            {0x00040000, "main voltage high warning"}, {0x00080000, "main voltage low warning"},
-            {0x00100000, "temperature warning"}, {0x00200000, "temperature 2 warning"},
-            {0x00400000, "S4 signal triggered"}, {0x00800000, "S5 signal triggered"},
-            {0x01000000, "speed error limit warning"}, {0x02000000, "position error limit warning"},
+        // Basicmicro "read status" (command 90) mirrored at 0x205A. Bit map from the
+        // RoboClaw/MCP manual; the bench saw it read 0 throughout.
+        static constexpr struct {
+          uint32_t bit;
+          const char *name;
+        } kBits[] = {
+            {0x00000001, "E-stop"},
+            {0x00000002, "temperature error"},
+            {0x00000004, "temperature 2 error"},
+            {0x00000008, "main voltage high error"},
+            {0x00000010, "logic voltage high error"},
+            {0x00000020, "logic voltage low error"},
+            {0x00000040, "M1 driver fault"},
+            {0x00000080, "M2 driver fault"},
+            {0x00000100, "M1 speed error"},
+            {0x00000200, "M2 speed error"},
+            {0x00000400, "M1 position error"},
+            {0x00000800, "M2 position error"},
+            {0x00001000, "M1 current error"},
+            {0x00002000, "M2 current error"},
+            {0x00010000, "M1 over-current warning"},
+            {0x00020000, "M2 over-current warning"},
+            {0x00040000, "main voltage high warning"},
+            {0x00080000, "main voltage low warning"},
+            {0x00100000, "temperature warning"},
+            {0x00200000, "temperature 2 warning"},
+            {0x00400000, "S4 signal triggered"},
+            {0x00800000, "S5 signal triggered"},
+            {0x01000000, "speed error limit warning"},
+            {0x02000000, "position error limit warning"},
         };
+        const auto access = board().controller_access(row().node_id);
+        if (!access) {
+          return;
+        }
         std::error_code ec;
-        uint32_t flags = client->read_u32(0x205A, 0, ec);
-        int width = 32;
-        if (ec) {
-          ec.clear();
-          flags = client->read_u16(0x205A, 0, ec);
-          width = 16;
+        uint32_t flags = 0;
+        {
+          std::lock_guard<std::mutex> lock(*access->mutex);
+          flags = access->client->read_u32(0x205A, 0, ec);
         }
         if (ec) {
           out << fmt::format("status flags read failed: {}\n", ec.message());
           return;
         }
-        out << fmt::format("status flags 0x{:08X} ({}-bit):", flags, width);
+        out << fmt::format("node {} status flags 0x{:08X}:", row().node_id, flags);
         bool any = false;
         for (const auto &b : kBits) {
           if (flags & b.bit) {
@@ -450,23 +501,19 @@ std::unique_ptr<cli::Menu> build_menu() {
           }
         }
         out << (any ? "\n" : " normal\n");
-        uint16_t sw = 0;
-        if (actuator->read_statusword(sw)) {
-          out << fmt::format("statusword 0x{:04X}\n", sw);
-        }
       },
-      "Read the controller's own status flags (command 90) and decode them");
+      "The selected leg's controller status flags (command 90)");
 
   // Calibration: absolute encoders, once per installation.
   menu->Insert(
       "limits",
       [](std::ostream &out) {
         int32_t min = 0, max = 0;
-        if (actuator->read_controller_limits(min, max)) {
-          const auto r = actuator->range();
+        if (actuator().read_controller_limits(min, max)) {
+          const auto r = actuator().range();
           out << fmt::format("controller clamp [{}, {}]; actuator range [{}, {}]{}\n", min, max,
                              r.min, r.max,
-                             actuator->calibration_mode() ? " (calibrating: clamp lifted)" : "");
+                             actuator().calibration_mode() ? " (calibrating: clamp lifted)" : "");
         } else {
           out << "read failed (see log)\n";
         }
@@ -476,82 +523,93 @@ std::unique_ptr<cli::Menu> build_menu() {
       "cal",
       [](std::ostream &out, std::string mode) {
         const bool on = mode == "on" || mode == "1";
-        report(out, actuator->set_calibration_mode(on),
-               on ? "calibration mode ON (clamp lifted, mind the mechanical ends)"
+        report(out, actuator().set_calibration_mode(on),
+               on ? "calibration mode ON (clamp lifted, jogs only, mind the mechanical ends)"
                   : "calibration mode off");
       },
       "Lift or restore the range clamp: cal on|off");
   menu->Insert(
       "range",
       [](std::ostream &out, int min, int max) {
-        report(out, actuator->set_range({min, max}), "range install and save");
+        report(out, board().set_actuator_range(selected.load(), {min, max}),
+               "range install and save");
       },
-      "Install a calibrated range and save it to NVS: range <min> <max>");
+      "Install a range and save it to NVS: range <min> <max>");
   menu->Insert(
       "forget",
       [](std::ostream &out) {
-        out << (store.erase_range(actuator->name())
+        mib::ActuatorStore store;
+        out << (store.init() && store.erase_range(actuator().name())
                     ? "saved range erased; the compiled default applies after reboot\n"
                     : "erase failed (see log)\n");
       },
       "Erase the saved range");
 
-  // Homing: incremental encoders, every boot.
-  menu->Insert("home", [](std::ostream &out) { report(out, actuator->home(), "homing"); },
-               "Drive into the limit switch and install the home count");
-  menu->Insert("restore", [](std::ostream &out) { report(out, actuator->restore_position(), "restore"); },
-               "Install the position saved on a previous run");
-  menu->Insert("save", [](std::ostream &out) { report(out, actuator->save_position(true), "save"); },
-               "Save the current position now");
+  // Homing: incremental encoders. Runs in its own task so `stop` stays available.
   menu->Insert(
-      "setenc", [](std::ostream &out, int counts) { report(out, actuator->set_encoder(counts), "set encoder"); },
+      "home",
+      [](std::ostream &out) {
+        if (refuse_uncommissioned(out)) {
+          return;
+        }
+        static std::atomic<bool> homing{false};
+        if (homing.exchange(true)) {
+          out << "already homing\n";
+          return;
+        }
+        xTaskCreate(
+            [](void *) {
+              const bool ok = actuator().home();
+              logger.info("homing {}", ok ? "done" : "FAILED (see log)");
+              homing = false;
+              vTaskDelete(nullptr);
+            },
+            "homing", 6 * 1024, nullptr, 4, nullptr);
+        out << "homing started; `stop` aborts it\n";
+      },
+      "Stream toward the limit switch and install the home count");
+  menu->Insert(
+      "restore", [](std::ostream &out) { report(out, actuator().restore_position(), "restore"); },
+      "Install the position saved on a previous run");
+  menu->Insert(
+      "save", [](std::ostream &out) { report(out, actuator().save_position(true), "save"); },
+      "Save the current position now");
+  menu->Insert(
+      "setenc",
+      [](std::ostream &out, int counts) {
+        report(out, actuator().set_encoder(counts), "set encoder");
+      },
       "Write the controller's encoder count: setenc <counts>");
 
-  menu->Insert(
-      "selftest",
-      [](std::ostream &out) {
-        int32_t start = 0;
-        if (!actuator->read_position(start)) {
-          out << "FAIL: cannot read position (see log)\n";
-          return;
-        }
-        out << fmt::format("start at {} counts, jog step {}\n", start, actuator->config().jog_step);
-        if (!actuator->increment() || !wait_for_target(out)) {
-          out << "FAIL: increment (see log)\n";
-          return;
-        }
-        int32_t up = 0;
-        actuator->read_position(up);
-        if (!actuator->decrement() || !wait_for_target(out)) {
-          out << "FAIL: decrement (see log)\n";
-          return;
-        }
-        int32_t back = 0;
-        actuator->read_position(back);
-        const int32_t tolerance = actuator->config().tolerance;
-        const bool moved_up = (up - start) > tolerance;
-        const bool returned = std::abs(back - start) <= tolerance;
-        out << fmt::format("{}: start {} -> up {} -> back {} (tolerance {})\n",
-                           moved_up && returned ? "PASS" : "FAIL", start, up, back, tolerance);
-        if (!moved_up) {
-          out << "  increment did not raise the count: check direction and the position loop gains\n";
-        }
-        if (!returned) {
-          out << "  did not return to start: check the position loop gains and deadzone\n";
-        }
-      },
-      "Move one jog step up and back; passes if the joint returns");
-
   return menu;
+}
+
+/// The move engine: every Actuator::kTickPeriod, on a fixed-period schedule, above the
+/// console so typing never delays a tick.
+void poll_task(void *) {
+  TickType_t last_wake = xTaskGetTickCount();
+  const TickType_t period = pdMS_TO_TICKS(Actuator::kTickPeriod.count());
+  for (;;) {
+    board().poll_actuators();
+    if (xTaskDelayUntil(&last_wake, period) == pdFALSE) {
+      last_wake = xTaskGetTickCount(); // overran: restart the schedule, do not burst
+    }
+  }
 }
 
 } // namespace
 
 extern "C" void app_main(void) {
-  logger.info("Actuator example: node {} {}", kNodeId, kAxis == mib::Actuator::Axis::M1 ? "M1" : "M2");
-  if (!bring_up()) {
+  logger.info("Actuator example: leg actuators through the BSP; selected {}", row().name);
+  if (!board().init_actuators()) {
+    logger.error("CAN bring-up failed; nothing to do");
     return;
   }
+  xTaskCreate(poll_task, "actuator poll", 6 * 1024, nullptr, 6, nullptr);
+
+  // The selected leg's settings as the boot check: configured and read back must match.
+  print_settings(std::cout);
+  print_status(std::cout);
 
   cli::Cli cli(build_menu());
   cli.ExitAction([](auto &out) { out << "bye\n"; });
@@ -568,19 +626,7 @@ extern "C" void app_main(void) {
     }
     fcntl(STDIN_FILENO, F_SETFL, flags);
   }
-  // The owner's periodic poll, in its own task because the console below blocks this
-  // one: releases the motor once a move has arrived, then keeps the resting joint
-  // within its tolerance of the target.
-  xTaskCreate(
-      [](void *) {
-        for (;;) {
-          actuator->poll();
-          vTaskDelay(pdMS_TO_TICKS(50));
-        }
-      },
-      "actuator poll", 6 * 1024, nullptr, 5, nullptr);
-
-  fmt::print("Type 'help' for the commands.\n");
+  fmt::print("Type 'help' for the commands. Selected leg: {} (`leg` to change).\n", row().name);
   input.Start();
 
   while (true) {
