@@ -3,9 +3,9 @@
 // The numbers are the right main leg's (docs/actuator-revamp/bench-findings.md): 800 counts/s,
 // 1,600 counts/s^2, lead 250 ms (1 / position P 4.0).
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <functional>
 
 #include "motion_profile.hpp"
 
