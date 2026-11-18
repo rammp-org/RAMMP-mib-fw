@@ -1,0 +1,8 @@
+# Overlay for a 460800 baud console (an esptool read at 921600 failed on one
+# board's CH343; 460800 worked). 460800 baud carries 46 kB/s; 70 % of that over
+# a worst-case 574-byte row (3 nodes) is 56 rows/s, so the boot rate is 50 Hz.
+# Layer it after the other defaults, e.g. for the passive build:
+#   idf.py -B build_460800 -DSDKCONFIG=build_460800/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.baud460800" build
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=460800
+CONFIG_SYSID_SAMPLE_RATE_HZ=50

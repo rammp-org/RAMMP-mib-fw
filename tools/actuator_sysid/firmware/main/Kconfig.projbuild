@@ -1,0 +1,198 @@
+menu "Actuator sysid"
+
+    config SYSID_SAMPLE_RATE_HZ
+        int "Row rate at boot (Hz)"
+        range 1 100
+        default 100
+        help
+            Rows per second on the console. Changeable at run time with `rate <hz>`.
+            The period is a whole number of milliseconds (1 kHz FreeRTOS tick), so
+            the rate actually used is 1000 / round(1000 / hz); it is reported in
+            #meta:sample_rate_hz. 100 Hz is the ceiling: the BNO055's fusion
+            output runs at 100 Hz and the CAN budget is sized for it (README).
+
+    config SYSID_NODE_IDS
+        string "MCP266 CANopen node ids"
+        default "2,3"
+        help
+            Comma-separated node ids to poll, up to 8. Both channels (M1, M2) of
+            each node are logged. This chair: 2 = left / right carriage,
+            3 = main left (M1) / main right (M2) leg. It has no powered casters
+            (node 1 on other chairs). Changeable at run time with `nodes 2,3,...`.
+
+    config SYSID_READONLY_NODE_IDS
+        string "Read-only node ids (never written, in any build)"
+        default "2"
+        help
+            Comma-separated. Node 2 is the carriages (incremental encoders, limit
+            switches), which this firmware must never move. Enforced at the CAN
+            transmit function (bus_policy.hpp): only SDO upload requests reach
+            these nodes, and broadcasts (NMT to all, SYNC) are dropped for every
+            node, since they would reach these too. Each block is an event.
+
+    config SYSID_CAN_TX_GPIO
+        int "CAN (TWAI) TX GPIO"
+        default 17
+
+    config SYSID_CAN_RX_GPIO
+        int "CAN (TWAI) RX GPIO"
+        default 16
+
+    config SYSID_CAN_BITRATE
+        int "CAN bit rate (bit/s)"
+        default 1000000
+
+    config SYSID_SDO_TIMEOUT_MS
+        int "SDO round-trip timeout (ms)"
+        range 2 200
+        default 20
+        help
+            How long one SDO read waits for the controller. Short, so a silent
+            node costs little; the node is marked offline after
+            SYSID_OFFLINE_AFTER_FAILED_PASSES passes in a row end in a timeout.
+
+    config SYSID_OFFLINE_AFTER_FAILED_PASSES
+        int "Failed passes before a node is marked offline"
+        range 1 20
+        default 3
+
+    config SYSID_MAX_FIELD_AGE_MS
+        int "Oldest MCP value still printed (ms)"
+        range 10 5000
+        default 500
+        help
+            A value older than this is printed as an empty field.
+
+    config SYSID_HEADER_PERIOD_S
+        int "Re-emit the header every (s)"
+        range 1 600
+        default 10
+
+    config SYSID_ENABLE_MOTION
+        bool "Compile in the bounded excitation commands (arm, pstep, clearfaults)"
+        default n
+        help
+            Off: the firmware never writes to a controller; SDO uploads only.
+            On: adds `arm <node> <ch>`, `pstep <node> <ch> <delta>` (one CiA 402
+            profile-position move) and `clearfaults <node>`, for the nodes in
+            SYSID_MOTION_NODE_IDS only, behind the guards below (README, "Motion").
+
+    if SYSID_ENABLE_MOTION
+
+        config SYSID_MOTION_NODE_IDS
+            string "Nodes motion commands may address"
+            default "3"
+            help
+                Node 3 = main left (M1) / main right (M2) leg, electro-hydraulic
+                actuators with absolute encoders. (Node 1, the casters on chairs
+                that have them, could be added.) A node also in
+                SYSID_READONLY_NODE_IDS is read-only regardless. Kconfig only:
+                `nodes` at run time does not change it.
+
+        config SYSID_PSTEP_MAX_DELTA_COUNTS
+            int "Largest pstep (encoder counts, either sign)"
+            range 1 2000
+            default 100
+            help
+                100 counts: about 1.25 % of a main leg's roughly 8000-count travel
+                (operator's figures: right main leg ~10000..18000, left ~17000..25000;
+                exact ends unknown, casters unknown), and 2x the bench controller's
+                50-count deadband, so a step should move at all.
+
+        config SYSID_MAX_CLAMP_SPAN_COUNTS
+            int "Widest travel window clamp installs and pstep accepts (counts)"
+            range 2 100000
+            default 400
+            help
+                400 counts: about 5 % of a main leg's roughly 8000-count travel
+                (operator's figures; exact ends unknown, casters unknown). Revisit
+                once the first passive log shows real counts. pstep refuses unless
+                both the position clamp and 0x607D are at most this wide.
+
+        config SYSID_ENCODER_SETTLED_SPREAD_COUNTS
+            int "Largest spread of the last 9 encoder reads that counts as settled"
+            range 1 100000
+            default 200
+            help
+                pstep, clamp and the stop's hold take the present count as the
+                median of the last 9 polled reads, and only if max - min of those
+                is at most this. At rest the bench saw 50..70 counts peak to peak;
+                glitches of ~1800 counts lasting ~100 ms are refused.
+
+        config SYSID_CLAMP_MARGIN_COUNTS
+            int "Margin inside the controller's position clamp (counts)"
+            range 0 10000
+            default 50
+            help
+                pstep is refused unless the present count and the target are both
+                at least this far inside the clamp (MinPos/MaxPos).
+
+        config SYSID_TRAVEL_MARGIN_COUNTS
+            int "Travel window margin beyond start and target (counts)"
+            range 1 10000
+            default 100
+            help
+                A move stops if the encoder leaves [min(start, target) - margin,
+                max(start, target) + margin].
+
+        config SYSID_MOVE_WINDOW_MS
+            int "pstep time cap (ms)"
+            range 200 10000
+            default 3000
+            help
+                A pstep is watched for this long, then the stop sequence runs. 3 s
+                is the teammate's stall-release time.
+
+        config SYSID_MOVE_VELOCITY
+            int "pstep profile velocity (counts/s)"
+            range 1 100000
+            default 500
+            help
+                CiA 402 0x6081. The bench found it honoured as a cap below the
+                controller's stored speed. 500 is the teammate's default profile.
+
+        config SYSID_MOVE_ACCELERATION
+            int "pstep profile acceleration and deceleration (counts/s^2)"
+            range 1 1000000
+            default 500
+            help
+                0x6083 / 0x6084. Accepted but not used by the controller on the bench.
+
+        config SYSID_MAX_CURRENT_MA
+            int "Motor current that stops a step (mA)"
+            range 100 60000
+            default 4000
+
+        config SYSID_MAX_TILT_RATE_DPS
+            int "Chair tilt rate that stops a step (deg/s)"
+            range 1 360
+            default 30
+            help
+                Tilt rate is the IMU's angular rate perpendicular to gravity, so it
+                does not depend on how the IMU is mounted and ignores yaw.
+
+        config SYSID_ARM_TIMEOUT_S
+            int "Arming lasts (s)"
+            range 1 60
+            default 10
+
+        config SYSID_HEARTBEAT_NODE_ID
+            int "Node id the MIB sends its CANopen heartbeat as"
+            range 1 127
+            default 127
+            help
+                Must differ from every controller's node id.
+
+        config SYSID_HEARTBEAT_PERIOD_MS
+            int "MIB heartbeat period (ms)"
+            range 10 1000
+            default 100
+
+        config SYSID_HEARTBEAT_CONSUMER_MS
+            int "Controller heartbeat-consumer timeout written at arm (ms)"
+            range 50 5000
+            default 500
+
+    endif
+
+endmenu

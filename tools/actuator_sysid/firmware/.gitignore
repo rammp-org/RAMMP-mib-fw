@@ -1,0 +1,5 @@
+# The motion build (README, "Build"); build/, sdkconfig and managed_components/
+# are ignored by the repo root .gitignore.
+build_motion/
+build_460800/
+build_motion_460800/
