@@ -1,15 +1,20 @@
 ## IDF Component Manager Manifest File
 dependencies:
-  # Until esp-cpp/espp releases the PR "set and read back the stored default speed and
-  # accel" (set_default_speed() / set_default_accel()): the fork's integration branch,
-  # which is that PR plus version fields so a git checkout resolves. The command table
-  # those use lives in motor_controller, so it comes from the same branch.
+  # Until esp-cpp/espp releases PR #911 ("read the position clamp from subindex 1"):
+  # the PR's branch. It is based on espp main, so it also carries #910. On the chair's
+  # MCP266 (firmware 1.4.9) the clamp reads 0 unless the record is read from subindex 1,
+  # which released espp does not do. The command table mcp266 uses lives in
+  # motor_controller, so that comes from the same branch.
+  # Return both to a released version ('>=x.y.z') once #911 is released.
+  # After a force-push to the branch, clear the component manager's git cache
+  # (~/Library/Caches/Espressif/ComponentManager/b_git_*) or it keeps the old commit.
   espp/mcp266:
     path: components/mcp266
-    git: https://github.com/ewang360/espp.git
-    version: rammp/mcp266-defaults
+    git: https://github.com/alexchunlin/espp.git
+    version: fix/mcp266-position-limits-read
   espp/motor_controller:
     path: components/motor_controller
-    git: https://github.com/ewang360/espp.git
-    version: rammp/mcp266-defaults
+    git: https://github.com/alexchunlin/espp.git
+    version: fix/mcp266-position-limits-read
+  espp/canopen: '>=1.4.3'
   espp/nvs: '>=1.3.5'
