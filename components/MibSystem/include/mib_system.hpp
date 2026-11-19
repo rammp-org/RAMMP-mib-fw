@@ -220,10 +220,10 @@ private:
   bool handle_seat_control_command(const rammp::SeatCommand &command);
 
   /// The seat legs' map, from MIBconfig.hpp's geometry and calibration and each leg's
-  /// calibrated range. Empty, with the reason logged, if the legs are not up or the
-  /// calibration is invalid.
+  /// calibrated range. Empty if the legs are not up or the calibration is invalid, with the
+  /// reason logged unless `log_failure` is false.
   /// \note No CAN traffic: safe on any task.
-  std::optional<mib::SeatLegMap> seat_leg_map();
+  std::optional<mib::SeatLegMap> seat_leg_map(bool log_failure = true);
 
   /// Start the seat task once the leg actuators are up.
   /// \note Runs on the state task during INIT.
@@ -242,6 +242,12 @@ private:
   /// elevation becomes seat_state_.elevation.
   /// \note Blocks for the CAN exchanges. State task (INIT) or seat task.
   void log_seat_position(const char *what);
+
+  /// Read the three seat legs and publish the base URDF's joints on /base/joint_states. Joints
+  /// the MIB does not measure are published at their fixed positions; see the function.
+  /// Publishes nothing while a leg is unreadable or the seat calibration is invalid.
+  /// \note Blocks for the CAN exchanges. Seat task only.
+  void publish_joint_states();
 
   /// Handle a drive enable or disable command.
   /// \param command The requested drive state and response profile.
@@ -400,6 +406,7 @@ private:
   std::unique_ptr<espp::Task> telemetry_task_;                ///< Feeds the panel's plots.
   std::unique_ptr<espp::Publisher<rammp::Odometry>> odometry_publisher_; ///< /base/odom.
   std::unique_ptr<espp::Publisher<rammp::TFMessage>> tf_publisher_;      ///< /tf.
+  std::unique_ptr<espp::Publisher<rammp::JointState>> joint_state_publisher_; ///< Joint states.
   std::unique_ptr<espp::Subscriber<rammp::XYTwist>> joystick_subscriber_; ///< HMI joystick input.
   std::unique_ptr<espp::Subscriber<rammp::SeatCommand>> seat_command_subscriber_; ///< Seat input.
   std::unique_ptr<espp::Subscriber<rammp::DriveCommand>>
@@ -417,4 +424,5 @@ private:
   bool seat_moving_{false};                   ///< A seat move is running. Seat task only.
   std::chrono::steady_clock::time_point seat_move_deadline_{}; ///< Seat task only.
   std::chrono::steady_clock::time_point seat_next_report_{};   ///< Seat task only.
+  bool joint_states_ok_{true}; ///< The last joint-state publish worked. Seat task only.
 };

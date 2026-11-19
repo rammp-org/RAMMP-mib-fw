@@ -21,6 +21,16 @@ struct SeatLegCounts {
   int32_t rear_caster{0};
 };
 
+/// @brief The base URDF's joints that the seat legs set, in its units and from its zero
+/// (Demo-Software's rammp_prototype_base.urdf), for /base/joint_states.
+struct SeatUrdfJoints {
+  double main_left_arm_rad{0.0};   ///< motor_swing_arm_l
+  double main_right_arm_rad{0.0};  ///< motor_swing_arm_r
+  double rear_caster_arm_rad{0.0}; ///< rear_caster_swing_arm
+  double main_left_rod_m{0.0};     ///< motor_elevator_rod_l
+  double main_right_rod_m{0.0};    ///< motor_elevator_rod_r
+};
+
 /// @brief Seat pose <-> encoder counts of the main left, main right and rear caster legs.
 ///
 /// The glue between SeatKinematics (geometry in millimetres and degrees) and the leg actuators
@@ -52,6 +62,14 @@ public:
 
   /// @brief Leg counts -> seat pose (carriages at `translation_mm`), for reporting.
   std::optional<SeatPose> pose_at(const SeatLegCounts &counts, float translation_mm) const;
+
+  /// @brief Leg counts -> the URDF joints they set.
+  ///
+  /// The URDF breaks each main leg's actuator loop into two joints: the arm and the elevator
+  /// rod, which slides along the actuator. The rod's position is the actuator's length change
+  /// from the URDF's zero pose (arm at 0), so the drawn rod follows the arm.
+  /// @return Empty where joints_at() is.
+  std::optional<SeatUrdfJoints> urdf_joints_at(const SeatLegCounts &counts) const;
 
   /// @brief The kinematics, built with the calibrated arm limits.
   const SeatKinematics &kinematics() const { return kinematics_; }

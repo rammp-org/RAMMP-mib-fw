@@ -23,10 +23,10 @@ using namespace std::chrono_literals;
 namespace {
 /// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
 constexpr size_t kFixedWriters = 5;
-/// Reliable, so stateful, writers: /base/odom, /tf, and the ArbitrationServer's
-/// /base/control_status and three service replies. In the stateful and per-participant
-/// limits, not the stateless one.
-constexpr size_t kReliableWriters = 6;
+/// Reliable, so stateful, writers: /base/odom, /tf, /base/joint_states, and the
+/// ArbitrationServer's /base/control_status and three service replies. In the stateful and
+/// per-participant limits, not the stateless one.
+constexpr size_t kReliableWriters = 7;
 /// Reliable readers: the ArbitrationServer's three service requests. In the stateful and
 /// per-participant limits and the reader callbacks, not the stateless one.
 constexpr size_t kReliableReaders = 3;
@@ -379,6 +379,17 @@ bool MibSystem::initialize_pubsub() {
     return false;
   }
 
+  // RELIABLE: robot_state_publisher subscribes reliable.
+  joint_state_publisher_ = std::make_unique<espp::Publisher<rammp::JointState>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::JointState>::Config{.topic = rammp::kBaseJointStates.name,
+                                                 .type_name = rammp::kBaseJointStates.type,
+                                                 .reliability = Reliability::RELIABLE});
+  if (!joint_state_publisher_->is_valid()) {
+    logger_.error("Failed to create joint state publisher");
+    return false;
+  }
+
   // The Arbiter's services and status topic (all reliable; see the counts above).
   arbitration_server_ = std::make_unique<mib::ArbitrationServer>(
       mib::ArbitrationServer::Config{.arbiter = arbiter_, .participant = mib_.rtps_participant()});
@@ -680,9 +691,11 @@ std::array<int32_t, 3> as_array(const mib::SeatLegCounts &counts) {
 }
 } // namespace
 
-std::optional<mib::SeatLegMap> MibSystem::seat_leg_map() {
+std::optional<mib::SeatLegMap> MibSystem::seat_leg_map(bool log_failure) {
   if (!mib_.actuators_ready()) {
-    logger_.warn("Seat legs unavailable: the leg actuators are not up (CAN)");
+    if (log_failure) {
+      logger_.warn("Seat legs unavailable: the leg actuators are not up (CAN)");
+    }
     return std::nullopt;
   }
   auto range = [this](mib::config::Leg leg) {
@@ -693,7 +706,7 @@ std::optional<mib::SeatLegMap> MibSystem::seat_leg_map() {
                                      range(mib::config::Leg::MAIN_LEFT),
                                      range(mib::config::Leg::MAIN_RIGHT),
                                      range(mib::config::Leg::REAR_CASTER));
-  if (!map) {
+  if (!map && log_failure) {
     logger_.error("Seat legs: calibration invalid (a leg range not min < max, or a leg's two "
                   "end angles equal in seat_leg_calibration)");
   }
@@ -709,11 +722,12 @@ void MibSystem::start_seat_task() {
   seat_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
         run_seat_step();
+        publish_joint_states();
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::seat_task_interval);
         return false;
       },
-      .task_config = {.name = "MIB Seat", .stack_size_bytes = 6 * 1024},
+      .task_config = {.name = "MIB Seat", .stack_size_bytes = 8 * 1024},
   });
   seat_task_->start();
 }
@@ -837,6 +851,53 @@ void MibSystem::log_seat_position(const char *what) {
                joints->rear_caster_arm_deg);
   std::lock_guard<std::mutex> lock(seat_state_mutex_);
   seat_state_.elevation = pose->elevation_mm;
+}
+
+void MibSystem::publish_joint_states() {
+  std::array<int32_t, 3> counts{};
+  bool read_ok = true;
+  for (size_t i = 0; i < kSeatLegs.size() && read_ok; i++) {
+    read_ok = mib_.actuator(kSeatLegs[i]).read_position(counts[i]);
+  }
+  const auto map = read_ok ? seat_leg_map(false) : std::nullopt;
+  const auto urdf = map ? map->urdf_joints_at({counts[0], counts[1], counts[2]}) : std::nullopt;
+  if (!urdf) {
+    // Quiet rather than a made-up position; say so once, not every cycle.
+    if (std::exchange(joint_states_ok_, false)) {
+      logger_.warn("/base/joint_states paused: {}",
+                   !read_ok ? "a seat leg is unreadable"
+                            : (!map ? "the seat calibration is invalid"
+                                    : "a leg's counts give no arm angle"));
+    }
+    return;
+  }
+  if (!std::exchange(joint_states_ok_, true)) {
+    logger_.info("/base/joint_states resumed");
+  }
+
+  // Every non-fixed joint of the base URDF, so robot_state_publisher can place every link.
+  // Only the seat legs are measured; the others are published where they are held:
+  // - the carriages at 0, where the seat code assumes them (nothing drives them yet, and
+  //   their counts -> m conversion is not calibrated);
+  // - the front caster locked at 0, its highest point;
+  // - the rear caster's shock absorber treated as locked (dampener rod 0), and its actuator
+  //   rod at 0: the URDF holds that actuator fixed to the chassis, not linked to the arm,
+  //   so there is no rod position that follows the arm.
+  rammp::JointState joints{};
+  joints.header.stamp = ros_time_now();
+  joints.name = {rammp::kJointMainSwingArmLeft,   rammp::kJointMainSwingArmRight,
+                 rammp::kJointRearCasterSwingArm, rammp::kJointMainElevatorRodLeft,
+                 rammp::kJointMainElevatorRodRight, rammp::kJointMainPlateLeft,
+                 rammp::kJointMainPlateRight,     rammp::kJointFrontCasterSwingArm,
+                 rammp::kJointFrontCasterMotorRod, rammp::kJointRearCasterMotorRod,
+                 rammp::kJointRearCasterDampenerRod};
+  joints.position = {urdf->main_left_arm_rad, urdf->main_right_arm_rad, urdf->rear_caster_arm_rad,
+                     urdf->main_left_rod_m,   urdf->main_right_rod_m,   0.0,
+                     0.0,                     0.0,                      0.0,
+                     0.0,                     0.0};
+  if (!joint_state_publisher_->publish(joints)) {
+    logger_.warn("Failed to publish joint states");
+  }
 }
 
 bool MibSystem::move_leg(uint8_t leg, int32_t counts, bool relative, std::string &why) {

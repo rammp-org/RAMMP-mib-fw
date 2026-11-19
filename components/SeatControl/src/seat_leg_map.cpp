@@ -118,4 +118,24 @@ std::optional<SeatPose> SeatLegMap::pose_at(const SeatLegCounts &counts,
   return kinematics_.forward(*joints);
 }
 
+std::optional<SeatUrdfJoints> SeatLegMap::urdf_joints_at(const SeatLegCounts &counts) const {
+  // The arms do not depend on the carriages, so any translation does.
+  const auto joints = joints_at(counts, 0.0f);
+  if (!joints) {
+    return std::nullopt;
+  }
+  constexpr double rad_per_deg = 3.14159265358979323846 / 180.0;
+  constexpr double m_per_mm = 0.001;
+  const auto &geometry = kinematics_.geometry();
+  auto rod_m = [](const TriangleLinkage &linkage, float arm_deg) {
+    return (linkage_length_mm(linkage, arm_deg) - linkage_length_mm(linkage, 0.0f)) * m_per_mm;
+  };
+  return SeatUrdfJoints{
+      .main_left_arm_rad = joints->main_left_arm_deg * rad_per_deg,
+      .main_right_arm_rad = joints->main_right_arm_deg * rad_per_deg,
+      .rear_caster_arm_rad = joints->rear_caster_arm_deg * rad_per_deg,
+      .main_left_rod_m = rod_m(geometry.main_left_linkage, joints->main_left_arm_deg),
+      .main_right_rod_m = rod_m(geometry.main_right_linkage, joints->main_right_arm_deg)};
+}
+
 } // namespace mib

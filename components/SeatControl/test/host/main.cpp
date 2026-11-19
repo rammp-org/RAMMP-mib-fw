@@ -112,6 +112,35 @@ int main() {
           "an elevation past a leg's calibrated end is refused, though the URDF limits allow it");
   }
 
+  {
+    // URDF joints: arm angles in radians; each main rod is 0 at arm 0 and shorter as the arm
+    // drops the wheel (arm angle down): the arm pin, behind and above the pivot, swings toward
+    // the plate pin.
+    const auto mid = map->counts_for(level(120.0f));
+    const auto mid_joints = mid ? map->joints_at(*mid, 0.0f) : std::nullopt;
+    const auto urdf = mid ? map->urdf_joints_at(*mid) : std::nullopt;
+    check(mid_joints && urdf &&
+              near(static_cast<float>(urdf->main_left_arm_rad),
+                   mid_joints->main_left_arm_deg * 3.14159265f / 180.0f, 1e-5f) &&
+              near(static_cast<float>(urdf->rear_caster_arm_rad),
+                   mid_joints->rear_caster_arm_deg * 3.14159265f / 180.0f, 1e-5f),
+          "URDF joints: arm angles are joints_at()'s, in radians");
+
+    const auto low = map->counts_for(level(20.0f));
+    const auto high = map->counts_for(level(220.0f));
+    const auto urdf_low = low ? map->urdf_joints_at(*low) : std::nullopt;
+    const auto urdf_high = high ? map->urdf_joints_at(*high) : std::nullopt;
+    check(urdf_low && urdf_high && urdf_high->main_left_rod_m < urdf_low->main_left_rod_m &&
+              urdf_high->main_left_rod_m == urdf_high->main_right_rod_m &&
+              urdf_low->main_left_rod_m > -0.1 && urdf_high->main_left_rod_m < 0.1,
+          "URDF joints: the main rods retract as the seat rises, inside the URDF's +-0.1 m");
+    if (urdf_low && urdf_high) {
+      std::printf("  main rod at 20 mm: %.4f m (arm %.3f rad); at 220 mm: %.4f m (arm %.3f rad)\n",
+                  urdf_low->main_left_rod_m, urdf_low->main_left_arm_rad,
+                  urdf_high->main_left_rod_m, urdf_high->main_left_arm_rad);
+    }
+  }
+
   check(!map->counts_for(level(1000.0f)), "elevation 1000 mm is refused");
   check(!SeatLegMap::create(geometry, urdf_ends, {5000, 5000}, range, range),
         "an empty range is refused");
