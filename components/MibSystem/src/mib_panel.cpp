@@ -571,7 +571,18 @@ std::string MibSystem::status_json() {
           json_escape(result.reason));
     }
   }
-  json += "]}";
+  json += "]";
+  // The IMU as read by its task (gravity m/s^2, gyro rad/s, BNO055 sensor frame): the chair's
+  // tilt whatever way the IMU is mounted (vertical on the 2026-11-19 chair).
+  if (auto *imu = mib_.imu(); imu != nullptr && imu_reading_ok_.load()) {
+    const auto d = imu->data();
+    json += fmt::format(",\"imu\":{{\"g\":[{:.3f},{:.3f},{:.3f}],\"gyro\":[{:.4f},{:.4f},{:.4f}],"
+                        "\"cal\":[{},{},{},{}]}}",
+                        d.gravity_mps2.x, d.gravity_mps2.y, d.gravity_mps2.z, d.gyro_radps.x,
+                        d.gyro_radps.y, d.gyro_radps.z, d.calibration.system, d.calibration.gyro,
+                        d.calibration.accel, d.calibration.mag);
+  }
+  json += "}";
   return json;
 }
 
