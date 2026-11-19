@@ -196,7 +196,8 @@ const SYS = { RESET: 0x01, INFO: 0x02, SET_BAUD: 0x03, OK: 0x81, INFO_REPLY: 0x8
 const SERIAL_FAST_BAUD = 921600;
 const MIBP = {
   OVERRIDE: 0x01, RELEASE: 0x02, TUNING: 0x03, CLEAR_FAULT: 0x04, DRIVE: 0x05, STICK: 0x06,
-  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, OK: 0x81, STATUS_REPLY: 0x89, ERROR: 0x8F, ALL: 0xFF,
+  SEAT: 0x07, ESTOP: 0x08, STATUS: 0x09, CAL_HOLD: 0x0A, CAL_RELEASE: 0x0B, OK: 0x81, STATUS_REPLY: 0x89,
+  ERROR: 0x8F, ALL: 0xFF,
 };
 const REQ_STATE = { DISARMED: 0, ARMED: 1, SAFE_STOP: 2, ESTOP: 3 };
 const MODE = { COAST: 0, TORQUE: 1, VELOCITY: 2, POSITION: 3, HOLD: 4 };
@@ -386,6 +387,10 @@ class MibLink {
   drive(enable, profile) { return this.mib(MIBP.DRIVE, u8(enable ? 1 : 0, profile)); }
   seat(axis, target) { return this.mib(MIBP.SEAT, cat(u8(axis), f32s(target))); }
   estop(engage) { return this.mib(MIBP.ESTOP, u8(engage ? 1 : 2)); }
+  // Calibration hold: the MIB stops commanding `axis` (ALL = every axis) so its board's console
+  // may drive it. seconds 0 = the MIB's default. Both answer with the held axes mask.
+  calHold(axis = MIBP.ALL, seconds = 0) { return this.mib(MIBP.CAL_HOLD, u8(axis, seconds & 0xFF, (seconds >> 8) & 0xFF)); }
+  calRelease(axis = MIBP.ALL) { return this.mib(MIBP.CAL_RELEASE, u8(axis)); }
 }
 
 // ---------------------------------------------------------------- FrameLink

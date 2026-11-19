@@ -70,6 +70,13 @@ inline constexpr mib::ArbitrationMode arbitration_mode = mib::ArbitrationMode::D
 inline constexpr float service_max_velocity_radps = 8.0f;
 inline constexpr float service_max_torque_nm = 20.0f;
 
+/// @brief Calibration hold (mib_panel_protocol.hpp CAL_HOLD): a held axis gets no
+/// MotorCommand, so its board's console may run a calibration spin. A request lasts
+/// calibration_hold_default unless it names a duration; asking again renews it. Renewed or
+/// not, a hold ends calibration_hold_max after it began; then a new request from IDLE is needed.
+inline constexpr auto calibration_hold_default = std::chrono::seconds{60};
+inline constexpr auto calibration_hold_max = std::chrono::seconds{300};
+
 /// @brief Time an unacknowledged MotorTuning is resent before the MIB gives up.
 inline constexpr auto tuning_resend_timeout = std::chrono::milliseconds{2000};
 

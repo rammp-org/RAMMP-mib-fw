@@ -33,6 +33,9 @@ jobs:
     - name: Arbiter host checks
       run: components/Arbiter/test/host/run.sh
 
+    - name: Calibration hold host checks
+      run: components/MibSystem/test/host/run.sh
+
     - name: Determine Size Delta
       uses: esp-cpp/esp-idf-size-delta@v1
       with:

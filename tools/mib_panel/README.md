@@ -138,6 +138,32 @@ panel stops every override when its tab is hidden, the window loses focus
 during a pad drive, or the MIB refuses a command. None of this replaces a
 person on the e-stop.
 
+### Calibration hold
+
+A PACE RACER refuses console motion (its hall calibration spin) while a
+`MotorCommand` stream is live, and the MIB sends one to every axis all the
+time. A calibration hold (control module `CAL_HOLD`, 0x0A) makes the MIB stop
+sending to the axes named, so their streams go stale and the boards' consoles
+may drive. pace-racer-fw's `tools/provision.py` asks for it around the hall
+calibration and releases it afterwards; `tools/eth_link.py mib hold` does the
+same by hand.
+
+- It begins only in IDLE, with the e-stop clear, no panel override and no
+  jog. The MIB is then in CALIBRATE: the other axes get DISARMED, and drive
+  enable, autonomy, push assist, the pad, overrides, jogs and seat commands
+  are refused. Refused, not obeyed: a request from elsewhere never takes a
+  wheel back from someone calibrating it.
+- It lasts 60 s per request (renew by asking again) and never more than
+  300 s in total; then a new request from IDLE is needed.
+- It ends on `CAL_RELEASE` (0x0B, or **Release** next to the MIB state
+  here), at its deadline, on the e-stop and on a firmware update. The MIB
+  then commands every axis DISARMED again, which also coasts a board in the
+  middle of a console spin, and returns to IDLE. After an e-stop it goes
+  through ESTOP as from IDLE.
+- `STATUS` and the system module's info carry `cal_hold`; the console logs a
+  `Calibration hold:` line every 500 ms while it lasts, and the overview
+  shows the held axes and the time left.
+
 ## Protocol
 
 espp `stream_frame` frames on any of the links (TCP :5555, the UART, WebUSB), routed by module: telemetry (3, espp `Telemetry`),

@@ -146,8 +146,10 @@ void MibSystem::start_service_link() {
         handle_panel_frame(f, reply);
       },
       "MIB control", "Drive, seat, e-stop, motor overrides and tuning");
-  service_->set_info_extra(
-      [this]() { return fmt::format("\"ip\":\"{}\"", mib_.ethernet_ip_string()); });
+  service_->set_info_extra([this]() {
+    return fmt::format("\"ip\":\"{}\",\"cal_hold\":{}", mib_.ethernet_ip_string(),
+                       calibration_hold_json());
+  });
   if (!service_->start()) {
     logger_.warn("Control panel link is down; the MIB runs without it");
     return;
@@ -169,6 +171,9 @@ void MibSystem::start_service_link() {
 void MibSystem::make_safe_for_ota() {
   // Flash writes stall the cache for milliseconds at a time: nothing should be moving.
   ota_active_.store(true);
+  // Every axis back on DISARMED before the flash stalls the tasks; the state task returns
+  // CALIBRATE to IDLE.
+  end_calibration_hold(mib::CalibrationHold::End::OTA);
   {
     std::lock_guard<std::mutex> lock(axes_mutex_);
     for (auto &axis : axes_)
@@ -229,9 +234,10 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
       return;
     if (state_.load() != SystemState::IDLE || latch_.is_active() || ota_active_.load()) {
       reply_error(reply, f.type,
-                  latch_.is_active()   ? "e-stop is latched"
-                  : ota_active_.load() ? "a firmware update is running"
-                                       : "MIB is not IDLE");
+                  latch_.is_active()                 ? "e-stop is latched"
+                  : ota_active_.load()               ? "a firmware update is running"
+                  : calibration_hold_mask() != 0     ? "a calibration hold is active"
+                                                     : "MIB is not IDLE");
       return;
     }
     if (!endpoints_ready_.load()) {
@@ -363,6 +369,30 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     reply_ok(reply, f.type, p[0]);
     return;
   }
+  case P::kCalHold: {
+    if (!need(3))
+      return;
+    if (p[0] != P::kAllAxes && !axis_ok(p[0]))
+      return;
+    const uint8_t mask = p[0] == P::kAllAxes ? 0xFF : static_cast<uint8_t>(1u << p[0]);
+    const auto seconds = static_cast<uint16_t>(p[1] | (p[2] << 8));
+    std::string why;
+    const uint8_t held = request_calibration_hold(mask, std::chrono::seconds{seconds}, why);
+    if (held != 0)
+      reply_ok(reply, f.type, held);
+    else
+      reply_error(reply, f.type, why);
+    return;
+  }
+  case P::kCalRelease: {
+    if (!need(1))
+      return;
+    if (p[0] != P::kAllAxes && !axis_ok(p[0]))
+      return;
+    const uint8_t mask = p[0] == P::kAllAxes ? 0xFF : static_cast<uint8_t>(1u << p[0]);
+    reply_ok(reply, f.type, release_calibration_hold(mask));
+    return;
+  }
   case P::kStatus: {
     const auto json = status_json();
     reply(reply_frame(
@@ -423,12 +453,14 @@ std::string MibSystem::status_json() {
   std::string json =
       fmt::format("{{\"state\":\"{}\",\"profile\":{},\"ethernet\":{},\"ip\":\"{}\",\"rtps\":{},"
                   "\"estop\":{{\"latched\":{},\"clearing\":{},\"cause\":\"{}\",\"releases\":{}}},"
-                  "\"panel_stick\":{},\"seat\":[{:.2f},{:.2f},{:.2f},{:.2f}],\"axes\":[",
+                  "\"panel_stick\":{},\"cal_hold\":{},\"seat\":[{:.2f},{:.2f},{:.2f},{:.2f}],"
+                  "\"axes\":[",
                   state, static_cast<int>(drive_profile_.load()),
                   mib_.ethernet_connected() ? "true" : "false", mib_.ethernet_ip_string(),
                   endpoints_ready_.load() ? "true" : "false", latch.latched ? "true" : "false",
                   latch.clear_attempt_running ? "true" : "false", json_escape(latch.cause),
-                  latch.releases, stick_live ? "true" : "false", fin(seat.front_back_tilt),
+                  latch.releases, stick_live ? "true" : "false", calibration_hold_json(),
+                  fin(seat.front_back_tilt),
                   fin(seat.lateral_tilt), fin(seat.elevation), fin(seat.translation));
 
   // Each board's last MotorState (copied out of handle_motor_state()'s cache first, so the
