@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -9,10 +11,20 @@
 #include "base_component.hpp"
 #include "bno055.hpp"
 #include "esp32-p4-eth.hpp"
+#include "esp_timer.h"
 #include "rtps_participant.hpp"
 #include "timer.hpp"
 
 namespace mib::bsp {
+
+/// @brief What the MIB's DHCP server is doing, for the panel's status.
+struct DhcpStatus {
+  bool running{false};               ///< ESP-IDF reports the server as started.
+  std::uint32_t leases_assigned{0};  ///< ACKs since boot, renewals included.
+  std::int64_t last_lease_age_s{-1}; ///< Seconds since the last ACK, -1 if there has been none.
+  std::uint8_t pool_first_host{0};   ///< First host address of this boot's pool window.
+  std::uint8_t pool_last_host{0};    ///< Last host address of this boot's pool window.
+};
 
 /// @brief Board Support Package for the RAMMP MIB.
 ///
@@ -77,6 +89,10 @@ public:
            std::to_string(esp_ip4_addr4_16(&ip));
   }
 
+  /// @brief Read the DHCP server's state.
+  /// @return The server's state, this boot's pool window, and when it last gave out a lease.
+  DhcpStatus dhcp_status() const;
+
   /// @brief Access the underlying ESP32-P4-ETH board-support object.
   /// @return Reference to the initialized ESP32-P4-ETH board object.
   espp::Esp32P4Eth &board() { return *board_; }
@@ -112,8 +128,32 @@ private:
       logger_.info("Ethernet got IP: {}", ethernet_ip_address_);
     };
 
+    if (mib::config::ethernet_dhcp_server) {
+      choose_dhcp_pool_window();
+      // The server is already up by the first link, and no client can have reached it.
+      config.on_link_up = [this]() {
+        if (!dhcp_pool_applied_.exchange(true)) {
+          apply_dhcp_pool_window();
+        }
+      };
+      config.server_config.on_client_assigned = [this](esp_ip4_addr_t, std::array<uint8_t, 6>) {
+        last_lease_ms_ = esp_timer_get_time() / 1000;
+        dhcp_leases_assigned_++;
+      };
+    }
+
     return board_->initialize_ethernet(config);
   }
+
+  /// @brief Pick this boot's DHCP pool window, and store the next one in NVS.
+  /// @details Runs before Ethernet, off the event-loop task's small stack. Without NVS the MIB
+  ///          serves the first window on every boot.
+  void choose_dhcp_pool_window();
+
+  /// @brief Restart the DHCP server on this boot's pool window.
+  /// @details Runs on the event-loop task. espp starts the server inside initialize_ethernet() and
+  ///          the pool can only change while it is stopped, so this cannot happen any earlier.
+  void apply_dhcp_pool_window();
 
   MIB() : BaseComponent("MIB", espp::Logger::Verbosity::INFO) {}
   espp::Esp32P4Eth *board_{nullptr};
@@ -122,6 +162,10 @@ private:
   std::unique_ptr<espp::Timer> time_sync_retry_timer_{nullptr};
   std::atomic<bool> time_synced_{false};
   std::string ethernet_ip_address_;
+  std::uint8_t dhcp_pool_window_{0};
+  std::atomic<bool> dhcp_pool_applied_{false};
+  std::atomic<std::uint32_t> dhcp_leases_assigned_{0};
+  std::atomic<std::int64_t> last_lease_ms_{-1};
 };
 
 } // namespace mib::bsp

@@ -3,9 +3,101 @@
 #include <cstdlib>
 #include <ctime>
 
+#include "dhcpserver/dhcpserver.h"
+#include "esp_netif.h"
 #include "esp_netif_sntp.h"
+#include "nvs.hpp"
+#include "nvs_handle_espp.hpp"
+#include "sdkconfig.h"
 
 namespace mib::bsp {
+
+namespace {
+
+static_assert(mib::config::dhcp_pool_window_size >= CONFIG_LWIP_DHCPS_MAX_STATION_NUM,
+              "a DHCP pool window must hold every lease the server keeps");
+
+constexpr const char *kNetNamespace = "mib_net";
+constexpr const char *kNextWindowKey = "next_pool_win";
+
+/// espp's DHCP-server netif key (espp::Ethernet); Esp32P4Eth does not expose its netif.
+constexpr const char *kDhcpServerNetif = "ETH_DHCPS";
+
+std::uint8_t pool_window_first_host(std::uint8_t window) {
+  return mib::config::dhcp_pool_first_host + window * mib::config::dhcp_pool_window_size;
+}
+
+} // namespace
+
+void MIB::choose_dhcp_pool_window() {
+  std::error_code ec;
+  espp::Nvs().init(ec); // a no-op if the partition is already up
+  if (ec) {
+    logger_.error("NVS init failed ({}); serving the first DHCP pool window", ec.message());
+    return;
+  }
+  espp::NvsHandle handle(kNetNamespace, ec);
+  if (ec) {
+    logger_.error("NVS open failed ({}); serving the first DHCP pool window", ec.message());
+    return;
+  }
+  std::uint8_t window = 0;
+  std::error_code read_ec;
+  handle.get(kNextWindowKey, window, read_ec); // not found on the first boot: stays 0
+  dhcp_pool_window_ = window % mib::config::dhcp_pool_window_count;
+  const std::uint8_t next = (dhcp_pool_window_ + 1) % mib::config::dhcp_pool_window_count;
+  handle.set(kNextWindowKey, next, ec);
+  if (!ec) {
+    handle.commit(ec);
+  }
+  if (ec) {
+    logger_.warn("Could not save the next DHCP pool window ({}); the next boot reuses this one",
+                 ec.message());
+  }
+}
+
+void MIB::apply_dhcp_pool_window() {
+  const std::uint8_t first = pool_window_first_host(dhcp_pool_window_);
+  const std::uint8_t last = first + mib::config::dhcp_pool_window_size - 1;
+  dhcps_lease_t pool{};
+  pool.enable = true;
+  IP4_ADDR(&pool.start_ip, mib::config::ethernet_ip[0], mib::config::ethernet_ip[1],
+           mib::config::ethernet_ip[2], first);
+  IP4_ADDR(&pool.end_ip, mib::config::ethernet_ip[0], mib::config::ethernet_ip[1],
+           mib::config::ethernet_ip[2], last);
+
+  esp_netif_t *netif = esp_netif_get_handle_from_ifkey(kDhcpServerNetif);
+  esp_err_t err = netif ? esp_netif_dhcps_stop(netif) : ESP_ERR_NOT_FOUND;
+  if (err == ESP_OK) {
+    err = esp_netif_dhcps_option(netif, ESP_NETIF_OP_SET, ESP_NETIF_REQUESTED_IP_ADDRESS, &pool,
+                                 sizeof(pool));
+    // Start it again even if the option was refused: a default pool beats no server.
+    const esp_err_t start_err = esp_netif_dhcps_start(netif);
+    err = err != ESP_OK ? err : start_err;
+  }
+  if (err != ESP_OK) {
+    logger_.error("Failed to move the DHCP pool: {}", esp_err_to_name(err));
+    return;
+  }
+  logger_.info("DHCP pool window {} of {}: .{} to .{}", dhcp_pool_window_ + 1,
+               mib::config::dhcp_pool_window_count, first, last);
+}
+
+DhcpStatus MIB::dhcp_status() const {
+  DhcpStatus status;
+  esp_netif_t *netif = esp_netif_get_handle_from_ifkey(kDhcpServerNetif);
+  esp_netif_dhcp_status_t server = ESP_NETIF_DHCP_INIT;
+  status.running = netif && esp_netif_dhcps_get_status(netif, &server) == ESP_OK &&
+                   server == ESP_NETIF_DHCP_STARTED;
+  status.leases_assigned = dhcp_leases_assigned_.load();
+  const std::int64_t last_lease_ms = last_lease_ms_.load();
+  if (last_lease_ms >= 0) {
+    status.last_lease_age_s = (esp_timer_get_time() / 1000 - last_lease_ms) / 1000;
+  }
+  status.pool_first_host = pool_window_first_host(dhcp_pool_window_);
+  status.pool_last_host = status.pool_first_host + mib::config::dhcp_pool_window_size - 1;
+  return status;
+}
 
 bool MIB::init_imu() {
   auto &i2c = board_->internal_i2c();

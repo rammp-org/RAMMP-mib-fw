@@ -6,6 +6,7 @@ idf_component_register(
     "esp_driver_gpio"
     "ethernet"
     "esp_netif"
+    "nvs"
     "esp32-p4-eth"
     "rtps"
     "cdr"
