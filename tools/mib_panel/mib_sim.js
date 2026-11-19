@@ -102,6 +102,22 @@ class SimMib {
         else { this.estop.clearing = true; this.log('W RAMMP_MIB: E-stop clear attempt from the control panel'); setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
         return this.ok(f.type, p[0]);
       case MIBP.STATUS: return this.reply(MIBP.STATUS_REPLY, new TextEncoder().encode(JSON.stringify(this.statusJson())));
+      case MIBP.CAL_HOLD: {
+        // As MibSystem::request_calibration_hold: begins only from a quiet IDLE, renews in CALIBRATE.
+        const mask = p[0] === 0xFF ? 0x0F : (1 << p[0]), secs = Math.min(300, Math.max(1, (p[1] | (p[2] << 8)) || 60));
+        if (this.estop.latched) return this.err(f.type, 'e-stop is latched');
+        if (this.state !== 2) {
+          if (this.state !== 1) return this.err(f.type, 'MIB is not IDLE: disable the drive first');
+          if (this.axes.some(a => now < a.overrideUntil)) return this.err(f.type, 'a panel motor override is live: release it first');
+          this.hold = { mask: 0, began: now }; this.state = 2;
+        }
+        this.hold.mask |= mask; this.hold.until = Math.min(now + secs, this.hold.began + 300);
+        this.log(`W RAMMP_MIB: Calibration hold: not commanding mask 0x${this.hold.mask.toString(16)} for ${secs} s`);
+        return this.ok(f.type, this.hold.mask);
+      }
+      case MIBP.CAL_RELEASE:
+        if (this.state === 2 && this.hold) { this.hold.mask &= ~(p[0] === 0xFF ? 0xFF : (1 << p[0])); if (!this.hold.mask) this.hold.until = 0; }
+        return this.ok(f.type, this.state === 2 && this.hold ? this.hold.mask : 0);
       default: return this.err(f.type, 'unknown request');
     }
   }
@@ -138,6 +154,7 @@ class SimMib {
       state: MIB_STATE[st], profile: this.profile, ethernet: true, ip: '192.168.4.1', rtps: this.state !== 0,
       estop: { latched: this.estop.latched, clearing: this.estop.clearing, cause: this.estop.cause, releases: this.estop.releases },
       panel_stick: now < this.stick.until, seat: this.seat,
+      cal_hold: { active: this.state === 2, axes: this.state === 2 ? this.axes.filter(a => this.hold.mask & (1 << a.id)).map(a => a.id) : [], remaining_ms: this.state === 2 ? Math.max(0, Math.round((this.hold.until - now) * 1000)) : 0, default_s: 60, max_s: 300 },
       axes: this.axes.map(a => {
         const s = a.reported, online = a.online && s && now - a.reportedT < 0.5;
         return { axis: a.id, segment: a.segment, label: a.label, online: !!online, age_ms: s ? Math.round((now - a.reportedT) * 1000) : -1,
@@ -166,7 +183,8 @@ class SimMib {
       else if (drive && (a.id === 2 || a.id === 3)) c = { state: 1, mode: 2, velocity: a.id === 2 ? wl : wr, torque: 0, position: 0, torqueLimit: 0, velLimit: 0, accelLimit: 0 };
       else c = { state: 0, mode: 2, velocity: 0, torque: 0, position: 0, torqueLimit: 0, velLimit: 0, accelLimit: 0 };
       c.clearReq = a.clearReq; a.lastCmd = { state: c.state, mode: c.mode, vel: c.velocity, torque: c.torque };
-      if (a.online) this.boardCommand(a, c, now);
+      const held = st === 2 && !this.estop.latched && (this.hold.mask & (1 << a.id)); // a held axis gets nothing
+      if (a.online && !held) this.boardCommand(a, c, now);
       if (a.tuning && now < a.tuningUntil && a.board.tuningAck !== a.tuning.req) this.boardTuning(a, a.tuning);
     }
   }
@@ -192,6 +210,7 @@ class SimMib {
     // does. The boot latch has no hold and, with no HMI here, waits for the panel's clear.
     if ((this.state === 1 || this.state === 3 || this.state === 4 || this.state === 5) && this.estop.latched) { this.state = 6; this.estopHoldUntil = now + 3; }
     if (this.state === 6 && !this.estop.latched) this.state = 1;
+    if (this.state === 2 && (this.estop.latched || now >= this.hold.until)) { this.state = this.estop.latched ? 6 : 1; this.estopHoldUntil = now + 3; this.log('W RAMMP_MIB: Calibration hold over: commanding every axis again'); }
     if (this.state === 6 && this.estop.cause !== 'boot' && now >= this.estopHoldUntil && !this.estop.clearing) { this.estop.clearing = true; setTimeout(() => { this.estop.clearing = false; this.estop.latched = false; this.estop.releases++; }, 800); }
     while (dtAll > 1e-6) {
       const dt = Math.min(h, dtAll); dtAll -= dt;

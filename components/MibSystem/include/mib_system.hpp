@@ -11,6 +11,7 @@
 #include "arbitration_server.hpp"
 #include "base_component.hpp"
 #include "bsp.hpp"
+#include "calibration_hold.hpp"
 #include "diff_drive_odometry.hpp"
 #include "drive_controller.hpp"
 #include "estop/estop.hpp"
@@ -54,7 +55,8 @@ private:
   enum class SystemState {
     INIT,          ///< Bringing up the board, Ethernet, RTPS, and pub/sub.
     IDLE,          ///< Initialized and waiting; drive is disabled.
-    CALIBRATE,     ///< Running a calibration routine.
+    CALIBRATE,     ///< Calibration hold (CAL_HOLD): held axes get no MotorCommand, the rest
+                   ///< DISARMED, nothing may start driving; IDLE again when the hold ends.
     DRIVE_ENABLED, ///< Drive commands are accepted and acted on.
     AUTONOMOUS,    ///< The Jetson drives the base; any joystick input ends it (back to IDLE).
     SHARED,        ///< Shared control; the joystick commands nothing, even when touched.
@@ -194,10 +196,38 @@ private:
    */
   void leave_push_assist_if_lapsed();
 
-  /// Enter CALIBRATE from IDLE.
-  /// \note The trigger (a joystick command or another source) is not finalized; nothing
-  ///       calls this yet. Only valid from IDLE.
-  void enter_calibrate();
+  /// IDLE -> CALIBRATE, atomically: fails if another task moved the state first (#37).
+  /// Stops the drive. Called by request_calibration_hold() when a hold begins.
+  /// \return False (and logs) if the state was not IDLE.
+  bool enter_calibrate();
+
+  /// Begin or renew a calibration hold (calibration_hold.hpp) for the axes in `mask`.
+  /// \param duration 0 = mib::config::calibration_hold_default.
+  /// \param why Set to the reason when refused.
+  /// \return The held axes mask, or 0 if refused.
+  /// \note Runs on a service-link worker task. Takes calibration_hold_mutex_, then (never
+  ///       the other way round) axes_mutex_ and jog_mutex_.
+  uint8_t request_calibration_hold(uint8_t mask, std::chrono::milliseconds duration,
+                                   std::string &why);
+
+  /// Stop holding the axes in `mask`. \return The axes still held.
+  uint8_t release_calibration_hold(uint8_t mask);
+
+  /// End any hold at once (e-stop, firmware update). The state task moves CALIBRATE to IDLE.
+  void end_calibration_hold(mib::CalibrationHold::End why);
+
+  /// The axes held right now (bit n = rammp::kAxes row n), 0 when none.
+  uint8_t calibration_hold_mask() const;
+
+  /// The state task's part of the hold: CALIBRATE back to IDLE once the hold has ended, an
+  /// e-stop ends it, and a state some other task wrote over CALIBRATE (#37) is put back.
+  void run_calibration_hold_step();
+
+  /// The hold for the status JSON and the system info: {"active":..,"axes":[..],...}.
+  std::string calibration_hold_json() const;
+
+  /// One console line per publication period while a hold is active.
+  void log_calibration_hold();
 
   /// Leave ESTOP for IDLE once the e-stop latch has cleared. Until then, after the hold,
   /// ask the latch to clear every mib::config::estop_clear_retry. Nothing is resumed:
@@ -351,4 +381,12 @@ private:
   std::chrono::steady_clock::time_point imu_next_wake_{}; ///< Next IMU read time; IMU task only.
   std::atomic<bool> imu_reading_ok_{false}; ///< True if the latest IMU read succeeded.
   std::unique_ptr<espp::Task> odometry_task_; ///< Publishes odometry at 20 Hz.
+  /// Axes the MIB has stopped commanding so their boards may calibrate (CAL_HOLD). The
+  /// motor command task reads it every period and publishes nothing to a held axis, whatever
+  /// state_ says: state_ has more than one writer (#37), the hold has one lock.
+  mib::CalibrationHold calibration_hold_;
+  mutable std::mutex calibration_hold_mutex_; ///< Guards calibration_hold_.
+  /// Set when a hold ends: a jog needs the jog input released once before it moves an axis,
+  /// so a jog held through the end of a hold does not start on its own. Motor task clears it.
+  std::atomic<bool> jog_needs_release_{false};
 };

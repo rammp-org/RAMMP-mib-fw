@@ -173,11 +173,14 @@ function onMibError(type, why) {
 
 // ---------------------------------------------------------------- status rendering
 const stateCls = s => ({ IDLE: 'good', DRIVE_ENABLED: 'live', AUTONOMOUS: 'live', SHARED: 'live', INIT: 'warning', CALIBRATE: 'warning', ESTOP: 'critical', ERROR: 'critical' }[s] || '');
-const stateLabel = { DRIVE_ENABLED: 'Driving', IDLE: 'Ready', AUTONOMOUS: 'Jetson driving', SHARED: 'Shared control', CALIBRATE: 'Calibrating', ESTOP: 'E-stop', ERROR: 'Error' };
+const stateLabel = { DRIVE_ENABLED: 'Driving', IDLE: 'Ready', AUTONOMOUS: 'Jetson driving', SHARED: 'Shared control', CALIBRATE: 'Calibration hold', ESTOP: 'E-stop', ERROR: 'Error' };
 function renderStatus() {
   const s = status; if (!s) return;
   $('tState').textContent = s.state.replace('_ENABLED', '');
-  $('tStateSub').innerHTML = `<span class="ax-status ${stateCls(s.state)}">${stateLabel[s.state] || 'Starting'}</span>${s.panel_stick ? ' <span class="ax-muted">panel stick</span>' : ''}`;
+  const hold = s.cal_hold && s.cal_hold.active ? s.cal_hold : null;
+  $('tStateSub').innerHTML = `<span class="ax-status ${stateCls(s.state)}">${stateLabel[s.state] || 'Starting'}</span>${s.panel_stick ? ' <span class="ax-muted">panel stick</span>' : ''}` +
+    (hold ? ` <span class="ax-muted">not commanding ${hold.axes.map(i => (AXES[i] || { label: i }).label).join(', ')}, ${Math.ceil(hold.remaining_ms / 1000)} s left</span> <button class="ax-btn" id="calRelease">Release</button>` : '');
+  if (hold) $('calRelease').onclick = async () => { try { await link.calRelease(); toast('Calibration hold released', 'ok'); } catch (e) { toast(e.message, 'err'); } };
   $('tEstop').textContent = s.estop.latched ? 'LATCHED' : 'CLEAR';
   $('tEstop').style.color = s.estop.latched ? css('critical') : '';
   $('tEstopSub').innerHTML = s.estop.latched ? `<span class="ax-status critical">Cause: ${s.estop.cause}</span>${s.estop.clearing ? ' <span class="ax-spin"></span> clearing' : ''}` : `<span class="ax-status good">Clear</span> <span class="ax-muted">${s.estop.releases} releases</span>`;
@@ -203,7 +206,8 @@ function renderAxesTable(s) {
     const tr = tb.querySelector(`[data-ax="${a.axis}"]`), td = tr.children, st = link ? link.store : null, seg = a.segment;
     const g = n => st ? st.get(`${seg}.${n}`) : NaN;
     td[1].innerHTML = a.online ? `<span class="ax-status good">${a.age_ms} ms</span>` : `<span class="ax-status ${a.age_ms < 0 ? '' : 'warning'}">${a.age_ms < 0 ? 'never seen' : 'stale'}</span>`;
-    td[2].innerHTML = a.online ? `<span class="ax-status ${a.state === 'FAULT' ? 'critical' : a.state === 'ARMED' ? 'live' : ''}">${a.state}</span>${a.override ? ' <span class="ax-muted">panel</span>' : ''}` : '<span class="pill-off">–</span>';
+    const held = s.cal_hold && s.cal_hold.active && s.cal_hold.axes.includes(a.axis);
+    td[2].innerHTML = (a.online ? `<span class="ax-status ${a.state === 'FAULT' ? 'critical' : a.state === 'ARMED' ? 'live' : ''}">${a.state}</span>${a.override ? ' <span class="ax-muted">panel</span>' : ''}` : '<span class="pill-off">–</span>') + (held ? ' <span class="ax-muted">held, not commanded</span>' : '');
     td[3].textContent = a.online ? a.fault : '–';
     const cells = [[g('vel'), 2], [a.cmd.vel, 2], [g('iq'), 2], [a.online ? a.vbus : NaN, 1], [a.online ? a.temp_max : NaN, 1], [a.online ? a.tuning.kp : NaN, 4], [a.online ? a.tuning.ki : NaN, 4], [a.online ? a.tuning.pll : NaN, 1]];
     cells.forEach(([v, d], i) => { td[4 + i].className = 'num'; td[4 + i].textContent = fmt(v, d); });

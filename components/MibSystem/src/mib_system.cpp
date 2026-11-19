@@ -135,6 +135,10 @@ MibSystem::MibSystem()
           .wheel_separation_m = mib::config::differential_drive.wheel_separation_m,
           .invert_left = mib::config::differential_drive.invert_left,
           .invert_right = mib::config::differential_drive.invert_right,
+      })
+    , calibration_hold_({
+          .default_duration = mib::config::calibration_hold_default,
+          .max_total = mib::config::calibration_hold_max,
       }) {}
 
 void MibSystem::start() {
@@ -167,6 +171,7 @@ void MibSystem::start() {
         publish_seat_state();
         publish_diagnostics();
         log_drive_status();
+        log_calibration_hold();
 
         std::unique_lock<std::mutex> lock(mutex);
         condition_variable.wait_for(lock, mib::config::publication_task_interval);
@@ -648,6 +653,14 @@ bool MibSystem::handle_seat_control_command(const rammp::SeatCommand &command) {
 }
 
 bool MibSystem::handle_drive_command(const rammp::DriveCommand &command) {
+  // A calibration hold refuses everything that could start driving; it does not end the
+  // hold, so a person at a wheel being calibrated never has the MIB take it back on a
+  // request from elsewhere. Checked against the hold itself, not state_ (#37).
+  if (calibration_hold_mask() != 0 && !(drive_disable_requested(command) && !command.push_assist)) {
+    logger_.warn("Ignoring drive request {}: a calibration hold is active",
+                 static_cast<uint8_t>(command.request));
+    return false;
+  }
   const auto current_state = state_.load();
   if (drive_enable_requested(command)) {
     // In DRIVE_ENABLED this is profile_change_requested(): same request, profile only.
@@ -784,8 +797,13 @@ void MibSystem::publish_system_state() {
   const auto current_state = state_.load();
   switch (current_state) {
   case SystemState::INIT:
-  case SystemState::CALIBRATE: // TODO: Handle calibration state separately if needed.
     status.system_state = rammp::MibSystemState::INITIALIZING;
+    break;
+  case SystemState::CALIBRATE:
+    // MibSystemState has no calibration value (rammp-rtps): "not ready" is the closest, and
+    // the message says why.
+    status.system_state = rammp::MibSystemState::INITIALIZING;
+    status.error_message = "Calibration hold: the MIB is not commanding some motors";
     break;
   case SystemState::IDLE:
     status.system_state = rammp::MibSystemState::IDLE;
@@ -1048,12 +1066,16 @@ void MibSystem::publish_motor_commands() {
   // The e-stop puts state_ in ESTOP; latch_.is_active() is a backstop until #37:
   // state_ has two writers, so an RTPS ENABLE can overwrite ESTOP for one state step.
   const bool stopped = latch_.is_active();
+  // Calibration hold: no command at all to a held axis, DISARMED to the rest, nothing that
+  // moves anything, whatever state_ says (#37). The e-stop ends it here at once: every axis
+  // is commanded DISARMED again, as in ESTOP, before the state task has caught up.
+  const uint8_t held = stopped ? 0 : calibration_hold_mask();
   const bool drive =
       (current_state == SystemState::DRIVE_ENABLED || current_state == SystemState::AUTONOMOUS ||
        current_state == SystemState::SHARED || current_state == SystemState::PUSH_ASSIST) &&
-      !stopped;
+      !stopped && held == 0;
   // Panel overrides run only while the chair is IDLE: never alongside the stick.
-  const bool service = current_state == SystemState::IDLE && !stopped;
+  const bool service = current_state == SystemState::IDLE && !stopped && held == 0;
 
   rammp::MotorJog jog{};
   bool jog_fresh = false;
@@ -1064,13 +1086,20 @@ void MibSystem::publish_motor_commands() {
   }
   // A jog moves one board, only while IDLE: never while driving, never through the e-stop.
   const bool jog_requested = jog_fresh && jog.direction != 0;
-  const bool jogging = jog_requested && current_state == SystemState::IDLE && !stopped;
+  // After a calibration hold, a jog moves only once its input has been let go of.
+  if (!jog_requested) {
+    jog_needs_release_.store(false);
+  }
+  const bool jogging = jog_requested && current_state == SystemState::IDLE && !stopped &&
+                       held == 0 && !jog_needs_release_.load();
   if (jog_requested != jog_requested_) {
     jog_requested_ = jog_requested;
     if (jog_requested) {
       logger_.info("Motor jog {} {}: {}", rammp::kAxes[jog.axis_id].label,
                    jog.direction > 0 ? "+" : "-",
-                   jogging ? "moving" : "refused (not IDLE, or the e-stop is active)");
+                   jogging ? "moving"
+                           : "refused (not IDLE, the e-stop, a calibration hold, or a jog held "
+                             "through the end of one)");
     } else {
       logger_.info("Motor jog stopped");
     }
@@ -1126,7 +1155,9 @@ void MibSystem::publish_motor_commands() {
         tuning = axis.tuning;
       }
     }
-    if (!motor_publishers_[i]->publish(command)) {
+    // A held axis gets nothing, so its board's stream goes stale and its console may drive.
+    const bool axis_held = (held & (1u << i)) != 0;
+    if (!axis_held && !motor_publishers_[i]->publish(command)) {
       logger_.warn("Failed to publish {} motor command", rammp::kAxes[i].label);
     }
     if (tuning_due && !axes_[i].tuning_publisher->publish(tuning)) {
@@ -1257,6 +1288,7 @@ void MibSystem::run_state_step() {
       state != SystemState::ERROR) {
     enter_estop();
   }
+  run_calibration_hold_step();
   switch (state_.load()) {
   case SystemState::INIT:
     logger_.info("System state: INIT - initializing MIB");
@@ -1317,9 +1349,7 @@ void MibSystem::run_state_step() {
     logger_.debug("System state: IDLE - running idle placeholder");
     break;
   case SystemState::CALIBRATE:
-    // Placeholder routine: completes at once. A real calibration stays here until done.
-    logger_.info("System state: CALIBRATE - calibration placeholder done, returning to IDLE");
-    state_.store(SystemState::IDLE);
+    // A calibration hold: run_calibration_hold_step() above returns to IDLE when it ends.
     break;
   case SystemState::DRIVE_ENABLED: {
     logger_.debug("System state: DRIVE_ENABLED - running drive placeholder");
@@ -1389,14 +1419,197 @@ void MibSystem::enter_estop() {
   publish_control_status();
 }
 
-void MibSystem::enter_calibrate() {
-  if (state_.load() != SystemState::IDLE) {
+bool MibSystem::enter_calibrate() {
+  // Compare-and-swap, not load-then-store: state_ has several writers (#37), and a hold
+  // must never begin over a state another task has just moved to.
+  auto expected = SystemState::IDLE;
+  if (!state_.compare_exchange_strong(expected, SystemState::CALIBRATE)) {
     logger_.warn("Ignoring calibrate request outside IDLE state");
-    return;
+    return false;
   }
   drive_controller_.stop();
-  state_.store(SystemState::CALIBRATE);
-  logger_.info("Entering CALIBRATE - placeholder");
+  logger_.info("Entering CALIBRATE");
+  return true;
+}
+
+uint8_t MibSystem::request_calibration_hold(uint8_t mask, std::chrono::milliseconds duration,
+                                            std::string &why) {
+  static_assert(rammp::kAxisCount <= 8, "the calibration hold's axis mask is 8 bits");
+  constexpr uint8_t kAllAxes = static_cast<uint8_t>((1u << rammp::kAxisCount) - 1);
+  mask &= kAllAxes;
+  const auto now = std::chrono::steady_clock::now();
+  // Read before calibration_hold_mutex_, so the hold's lock is never held with another.
+  bool jogging = false;
+  {
+    std::lock_guard<std::mutex> lock(jog_mutex_);
+    jogging = latest_jog_.direction != 0 && now - latest_jog_time_ < mib::config::motor_jog_timeout;
+  }
+  const mib::CalibrationHold::Conditions conditions{
+      .idle = state_.load() == SystemState::IDLE,
+      .estop = latch_.is_active(),
+      .ota = ota_active_.load(),
+      .override_active = any_override_active(),
+      .jogging = jogging,
+  };
+
+  std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+  using Refusal = mib::CalibrationHold::Refusal;
+  const bool renewing = calibration_hold_.active(now);
+  auto refusal = calibration_hold_.check(mask, conditions, now);
+  if (refusal == Refusal::NONE && !renewing && !enter_calibrate()) {
+    refusal = Refusal::NOT_IDLE;
+  }
+  if (refusal != Refusal::NONE) {
+    why = mib::CalibrationHold::refusal_text(refusal);
+    if (refusal == Refusal::NOT_IDLE && state_.load() == SystemState::CALIBRATE) {
+      // The deadline passed and the state task has not returned to IDLE yet (<= 20 ms).
+      why = "the previous hold has just ended: ask again";
+    }
+    logger_.warn("Calibration hold refused: {}", why);
+    return 0;
+  }
+  calibration_hold_.grant(mask, duration, now);
+  const uint8_t held = calibration_hold_.mask(now);
+  const auto left = calibration_hold_.remaining(now);
+  std::string names;
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    if (held & (1u << i)) {
+      names += fmt::format("{}{}", names.empty() ? "" : ", ", rammp::kAxes[i].segment);
+    }
+  }
+  logger_.warn("Calibration hold {}: not commanding {} for {} s", renewing ? "renewed" : "begun",
+               names, std::chrono::duration_cast<std::chrono::seconds>(left).count());
+  return held;
+}
+
+uint8_t MibSystem::release_calibration_hold(uint8_t mask) {
+  std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+  const auto now = std::chrono::steady_clock::now();
+  if (!calibration_hold_.active(now)) {
+    return 0;
+  }
+  const uint8_t left = calibration_hold_.release(mask, now);
+  logger_.info("Calibration hold released for axis mask 0x{:02x}; still held 0x{:02x}", mask, left);
+  return left;
+}
+
+void MibSystem::end_calibration_hold(mib::CalibrationHold::End why) {
+  std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+  const auto now = std::chrono::steady_clock::now();
+  if (calibration_hold_.active(now)) {
+    calibration_hold_.end(why, now);
+    logger_.warn("Calibration hold ended: {}", mib::CalibrationHold::end_text(why));
+  }
+}
+
+uint8_t MibSystem::calibration_hold_mask() const {
+  std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+  return calibration_hold_.mask(std::chrono::steady_clock::now());
+}
+
+void MibSystem::run_calibration_hold_step() {
+  using End = mib::CalibrationHold::End;
+  // The e-stop ends a hold. run_state_step() has already moved CALIBRATE to ESTOP, and the
+  // motor task commanded every axis DISARMED as soon as the latch was active: from here
+  // on it is the e-stop of IDLE, and the latch clearing returns to IDLE, not to the hold.
+  if (latch_.is_active()) {
+    end_calibration_hold(End::ESTOP);
+  }
+  const auto now = std::chrono::steady_clock::now();
+  uint8_t held = 0;
+  End ended = End::NONE;
+  {
+    std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+    held = calibration_hold_.mask(now);
+    ended = calibration_hold_.ended(now);
+    if (held == 0) {
+      calibration_hold_.clear(now);
+    }
+  }
+  // After the hold's lock: a hold that began just now has its state in place already.
+  const auto state = state_.load();
+
+  if (held != 0) {
+    if (state == SystemState::CALIBRATE || state == SystemState::ESTOP) {
+      return;
+    }
+    // Another task wrote state_ over CALIBRATE (#37): a stale writer leaving autonomy or
+    // push assist stores IDLE, or a drive request that read IDLE before the hold began
+    // stores its state. The motor task commands nothing that moves while the hold is
+    // active whatever state_ says; put CALIBRATE back so every other check refuses too.
+    logger_.error("Calibration hold: state {} was written over CALIBRATE; restoring it",
+                  static_cast<int>(state));
+    if (state == SystemState::AUTONOMOUS || state == SystemState::SHARED) {
+      leave_autonomy("calibration hold");
+    }
+    {
+      std::lock_guard<std::mutex> lock(twist_mutex_);
+      twist_until_ = {};
+      drive_controller_.stop();
+      state_.store(SystemState::CALIBRATE);
+    }
+    return;
+  }
+
+  // No hold: leave CALIBRATE. Only from CALIBRATE, so an e-stop's ESTOP stays.
+  auto expected = SystemState::CALIBRATE;
+  if (state_.compare_exchange_strong(expected, SystemState::IDLE)) {
+    drive_controller_.stop();
+    if (ended == End::NONE) {
+      ended = End::STATE;
+    }
+  }
+  if (ended != End::NONE) {
+    // A jog held through the end of the hold waits to be let go of before it moves.
+    jog_needs_release_.store(true);
+    logger_.warn("Calibration hold over ({}): commanding every axis again; drive must be "
+                 "enabled again",
+                 mib::CalibrationHold::end_text(ended));
+  }
+}
+
+std::string MibSystem::calibration_hold_json() const {
+  uint8_t held = 0;
+  long long left_ms = 0;
+  {
+    std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    held = calibration_hold_.mask(now);
+    left_ms = calibration_hold_.remaining(now).count();
+  }
+  std::string axes;
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    if (held & (1u << i)) {
+      axes += fmt::format("{}{}", axes.empty() ? "" : ",", i);
+    }
+  }
+  return fmt::format("{{\"active\":{},\"axes\":[{}],\"remaining_ms\":{},\"default_s\":{},"
+                     "\"max_s\":{}}}",
+                     held ? "true" : "false", axes, left_ms,
+                     mib::config::calibration_hold_default.count(),
+                     mib::config::calibration_hold_max.count());
+}
+
+void MibSystem::log_calibration_hold() {
+  uint8_t held = 0;
+  std::chrono::milliseconds left{};
+  {
+    std::lock_guard<std::mutex> lock(calibration_hold_mutex_);
+    const auto now = std::chrono::steady_clock::now();
+    held = calibration_hold_.mask(now);
+    left = calibration_hold_.remaining(now);
+  }
+  if (held == 0) {
+    return;
+  }
+  std::string names;
+  for (size_t i = 0; i < rammp::kAxisCount; i++) {
+    if (held & (1u << i)) {
+      names += fmt::format("{}{}", names.empty() ? "" : ", ", rammp::kAxes[i].segment);
+    }
+  }
+  logger_.info("Calibration hold: not commanding {}; {} s left (CAL_RELEASE ends it)", names,
+               std::chrono::duration_cast<std::chrono::seconds>(left).count());
 }
 
 void MibSystem::run_estop_step() {

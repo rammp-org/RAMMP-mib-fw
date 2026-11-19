@@ -29,6 +29,19 @@
 ///   0x07 SEAT           [axis u8][target f32]     rammp::SeatCommand. Reply OK / ERROR.
 ///   0x08 ESTOP          [action u8]               1 = engage, 2 = start a clear attempt.
 ///   0x09 STATUS                                    Reply STATUS_REPLY, UTF-8 JSON.
+///   0x0A CAL_HOLD       [axis u8][seconds u16]    0xFF = every axis; seconds 0 = the default
+///        (MIBconfig calibration_hold_default, 60 s). Stop publishing MotorCommands to the
+///        axis so its board's own console may drive it (a wheel's hall calibration). Begins
+///        only in IDLE, with the e-stop clear, no panel override and no jog; the MIB is then
+///        CALIBRATE and refuses drive enable, autonomy, push assist, panel overrides, the
+///        panel stick and jogs. Asking again renews it and may add axes; it ends
+///        calibration_hold_max (300 s) after it began however often it is renewed. It also
+///        ends on CAL_RELEASE, the e-stop (the MIB then commands every axis DISARMED, as in
+///        ESTOP) and a firmware update; then the MIB returns to IDLE. Reply OK [type][held
+///        axes mask], or ERROR with the reason. STATUS's "cal_hold" shows it.
+///   0x0B CAL_RELEASE    [axis u8]                 0xFF = every axis. The MIB commands the
+///        axis again (DISARMED) at once. Reply OK [type][axes still held mask]; OK with
+///        mask 0 also when no hold was active.
 ///
 /// MIB -> host
 ///   0x81 OK           [request type u8][value u8]
@@ -47,6 +60,8 @@ inline constexpr uint8_t kStick = 0x06;
 inline constexpr uint8_t kSeat = 0x07;
 inline constexpr uint8_t kEstop = 0x08;
 inline constexpr uint8_t kStatus = 0x09;
+inline constexpr uint8_t kCalHold = 0x0A;
+inline constexpr uint8_t kCalRelease = 0x0B;
 
 inline constexpr uint8_t kOk = 0x81;
 inline constexpr uint8_t kStatusReply = 0x89;
