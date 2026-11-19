@@ -321,6 +321,25 @@ inline constexpr ActuatorTuning main_leg_tuning{
     .profile_velocity = 20000,
 };
 
+/// @brief NEW CHAIR BRING-UP (2026-11-19): deliberately gentle first settings for its main legs.
+/// The chair's stored values (velocity P ~78,000-82,000 with QPPS 119-165, so ~1 % PWM per
+/// count/s of speed error, position P ~0.1-0.15, window 100) would slam a step. These give
+/// PWM = (65536/65536) / 7143 x (1.0 x error - speed): ~1.4 % per 100 counts of error, so a
+/// leg may not move at all before the gains are raised on the chair.
+inline constexpr ActuatorTuning bringup_tuning{
+    .position_window = 10,
+    .position_p = 1024,
+    .position_i = 0,
+    .position_d = 0,
+    .position_max_i = 0,
+    .position_deadband = 0,
+    .velocity_p = 65536,
+    .velocity_i = 1701,
+    .velocity_d = 0,
+    .velocity_qpps = 7143,
+    .profile_velocity = 20000,
+};
+
 /// @brief Placeholder for legs never tuned: all gains 0, so a leg commissioned by mistake
 /// produces no output. Tune a leg (Motion Studio or the Actuator example) before
 /// commissioning it.
@@ -343,46 +362,43 @@ inline constexpr ActuatorTuning untuned{
 // not yet confirmed). The main legs carry absolute encoders; the carriages incremental
 // (AB) encoders on the rail and limit switches.
 inline constexpr ActuatorConfig actuators[leg_count] = {
-    // Right main leg: commissioned. +counts = stroke retracts = that side of the chair rises;
-    // -counts = stroke extends = wheel up = the right side lowers. Clamp as stored on the
-    // controller, 10,000..18,000; moved on the chair between 10,530 and 17,420.
+    // NEW CHAIR BRING-UP (2026-11-19). Node 3 M1 / M2 as read over Ethernet: counts ~59,580 and
+    // ~60,290; stored clamps 58,000..64,000 and 60,000..66,000. Which leg each is and which way
+    // +counts goes are NOT known yet: stroke_sign 0. The range is the count read +-300 (inside
+    // the stored clamp) so a leg that runs the wrong way leaves it within ~300 counts. Speed
+    // capped at 200 counts/s. Widen the range only by calibration (LEG_CALIBRATE + jogs).
     {.leg = Leg::MAIN_RIGHT,
      .name = "MR",
      .node_id = 3,
      .channel = 0,
-     .commissioned = false, // NEW CHAIR BRING-UP: nothing is written until measured
-     .min_counts = 10000,
-     .max_counts = 18000,
-     .stroke_sign = -1,
-     .max_speed = 800, // the requirement: 800 counts/s at most
-     .acceleration = 1600,
-     .lead_ms = 250,
-     .tolerance = 15, // median of 9 reads; raw noise is +-30 counts. At 40 the leg was released
-                     // while still converging and ended up to 31 counts off (2026-11-17)
-     .jog_step = 100,
-     .tuning = main_leg_tuning,
+     .commissioned = true,
+     .min_counts = 59280,
+     .max_counts = 59880,
+     .stroke_sign = 0,
+     .max_speed = 200,
+     .acceleration = 400,
+     .lead_ms = 1000, // 1 / position P 1.0
+     .tolerance = 50,
+     .jog_step = 50,
+     .tuning = bringup_tuning,
      .hardware_limits = false,
      .incremental_encoder = false,
      .home_direction = 0,
      .home_count = 0},
-    // Left main leg: NOT commissioned. +counts = stroke extends = wheel up = the left side
-    // lowers: the opposite sign to the right leg. Never tuned, and its encoder glitches by
-    // ~1,800 counts about every 10 s with the chair still (a hardware fault to fix first).
-    // The right leg's tuning is a starting guess, nothing more. Clamp as stored.
     {.leg = Leg::MAIN_LEFT,
      .name = "ML",
      .node_id = 3,
      .channel = 1,
-     .commissioned = false,
-     .min_counts = 25000,
-     .max_counts = 32000,
-     .stroke_sign = +1,
-     .max_speed = 800,
-     .acceleration = 1600,
-     .lead_ms = 250,
-     .tolerance = 40,
-     .jog_step = 100,
-     .tuning = main_leg_tuning,
+     .commissioned = true,
+     .min_counts = 60000,
+     .max_counts = 60600,
+     .stroke_sign = 0,
+     .max_speed = 200,
+     .acceleration = 400,
+     .lead_ms = 1000,
+     .tolerance = 50,
+     .jog_step = 50,
+     .tuning = bringup_tuning,
      .hardware_limits = false,
      .incremental_encoder = false,
      .home_direction = 0,

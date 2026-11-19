@@ -434,20 +434,8 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     return;
   }
   case P::kScan: {
-    if (!need(2))
-      return;
-    if (ota_active_.load()) {
-      reply_error(reply, f.type, "a firmware update is running");
-      return;
-    }
-    const auto found = mib_.scan_bus(p[0], p[1], std::chrono::milliseconds{60});
-    std::vector<uint8_t> out{static_cast<uint8_t>(found.size())};
-    for (const auto &[id, type] : found) {
-      out.push_back(id);
-      for (int i = 0; i < 4; ++i)
-        out.push_back(static_cast<uint8_t>(type >> (8 * i)));
-    }
-    reply(reply_frame(P::kScanReply, out));
+    // Disabled: the probe clients a scan builds crashed the MIB from this task (2026-11-19).
+    reply_error(reply, f.type, "scan disabled on the service link; use the console");
     return;
   }
   case P::kStatus: {

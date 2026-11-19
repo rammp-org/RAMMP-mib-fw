@@ -436,13 +436,10 @@ bool MIB::read_sdo(uint8_t node, uint16_t index, uint8_t sub, uint8_t bytes, int
     std::lock_guard<std::mutex> lock(*access->mutex);
     return read(*access->client);
   }
-  std::lock_guard<std::mutex> lock(probe_mutex_);
-  espp::CanopenClient probe(probe_config(node, std::chrono::milliseconds{60}, twai_));
-  probe_client_.store(&probe);
-  const bool ok = read(probe);
-  probe_client_.store(nullptr);
-  std::this_thread::sleep_for(std::chrono::milliseconds{5});
-  return ok;
+  // Only nodes with a configured controller: a short-lived probe client here crashed the MIB
+  // (2026-11-19, reset reason panic) and is not used until that is understood.
+  ec = std::make_error_code(std::errc::no_such_device);
+  return false;
 }
 
 } // namespace mib::bsp
