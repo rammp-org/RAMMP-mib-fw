@@ -410,6 +410,46 @@ void MibSystem::handle_panel_frame(const espp::stream_frame::Frame &f,
     reply_ok(reply, f.type, p[0]);
     return;
   }
+  case P::kSdoRead: {
+    if (!need(5))
+      return;
+    if (ota_active_.load()) {
+      reply_error(reply, f.type, "a firmware update is running");
+      return;
+    }
+    const uint8_t node = p[0];
+    const uint16_t index = static_cast<uint16_t>(p[1] | (p[2] << 8));
+    const uint8_t sub = p[3];
+    int32_t value = 0;
+    std::error_code ec;
+    if (!mib_.read_sdo(node, index, sub, p[4], value, ec)) {
+      reply_error(reply, f.type, ec.message());
+      return;
+    }
+    std::vector<uint8_t> out{node, p[1], p[2], sub};
+    const auto v = static_cast<uint32_t>(value);
+    for (int i = 0; i < 4; ++i)
+      out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    reply(reply_frame(P::kSdoValue, out));
+    return;
+  }
+  case P::kScan: {
+    if (!need(2))
+      return;
+    if (ota_active_.load()) {
+      reply_error(reply, f.type, "a firmware update is running");
+      return;
+    }
+    const auto found = mib_.scan_bus(p[0], p[1], std::chrono::milliseconds{60});
+    std::vector<uint8_t> out{static_cast<uint8_t>(found.size())};
+    for (const auto &[id, type] : found) {
+      out.push_back(id);
+      for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(type >> (8 * i)));
+    }
+    reply(reply_frame(P::kScanReply, out));
+    return;
+  }
   case P::kStatus: {
     const auto json = status_json();
     reply(reply_frame(

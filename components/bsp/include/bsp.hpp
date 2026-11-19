@@ -174,6 +174,16 @@ public:
   /// @brief Diagnostics: ask every node id 1..127 for its device type (0x1000,
   /// SDO upload only) and return the ones that answer. About 127 x timeout.
   std::vector<std::pair<uint8_t, uint32_t>> scan_bus(std::chrono::milliseconds timeout);
+  /// scan_bus() over node ids first..last only (a chunk, so a caller is not blocked ~8 s).
+  std::vector<std::pair<uint8_t, uint32_t>> scan_bus(uint8_t first, uint8_t last,
+                                                     std::chrono::milliseconds timeout);
+
+  /// Read one object from any node, reads only: through the node's own client when a leg
+  /// is configured on it, otherwise through a short-lived probe client as scan_bus() uses.
+  /// `bytes` is 1, 2 or 4; the value is sign-extended. For bringing up an unknown chair:
+  /// nothing is ever written this way.
+  bool read_sdo(uint8_t node, uint16_t index, uint8_t sub, uint8_t bytes, int32_t &value,
+                std::error_code &ec);
 
   /// @}
 
@@ -230,6 +240,7 @@ private:
   std::unique_ptr<espp::Timer> heartbeat_timer_;
   std::vector<std::unique_ptr<Controller>> controllers_;
   std::atomic<espp::CanopenClient *> probe_client_{nullptr}; ///< scan_bus()'s, while it runs.
+  std::mutex probe_mutex_; ///< One probe client at a time (scan_bus(), read_sdo()).
   std::array<std::unique_ptr<Actuator>, config::leg_count> actuators_;
   ActuatorStore store_;
 };

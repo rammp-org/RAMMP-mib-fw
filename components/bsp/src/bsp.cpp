@@ -362,26 +362,39 @@ std::optional<MIB::ControllerAccess> MIB::controller_access(uint8_t node_id) {
 }
 
 std::vector<std::pair<uint8_t, uint32_t>> MIB::scan_bus(std::chrono::milliseconds timeout) {
+  return scan_bus(1, 127, timeout);
+}
+
+namespace {
+espp::CanopenClient::Config probe_config(uint8_t id, std::chrono::milliseconds timeout,
+                                         std::unique_ptr<espp::Twai> &twai) {
+  return {
+      .node_id = id,
+      .send =
+          [&twai](const espp::CanopenClient::CanFrame &frame) {
+            espp::Twai::Message m{.id = frame.id,
+                                  .extended = frame.extended,
+                                  .rtr = frame.rtr,
+                                  .dlc = frame.dlc,
+                                  .data = frame.data};
+            std::error_code tx_ec;
+            return twai && twai->transmit(m, tx_ec);
+          },
+      .sdo_timeout = timeout,
+      .log_level = espp::Logger::Verbosity::NONE,
+  };
+}
+} // namespace
+
+std::vector<std::pair<uint8_t, uint32_t>>
+MIB::scan_bus(uint8_t first, uint8_t last, std::chrono::milliseconds timeout) {
   std::vector<std::pair<uint8_t, uint32_t>> found;
   if (!twai_) {
     return found;
   }
-  for (uint8_t id = 1; id <= 127; ++id) {
-    espp::CanopenClient probe({
-        .node_id = id,
-        .send =
-            [this](const espp::CanopenClient::CanFrame &frame) {
-              espp::Twai::Message m{.id = frame.id,
-                                    .extended = frame.extended,
-                                    .rtr = frame.rtr,
-                                    .dlc = frame.dlc,
-                                    .data = frame.data};
-              std::error_code tx_ec;
-              return twai_ && twai_->transmit(m, tx_ec);
-            },
-        .sdo_timeout = timeout,
-        .log_level = espp::Logger::Verbosity::NONE,
-    });
+  std::lock_guard<std::mutex> lock(probe_mutex_);
+  for (unsigned id = std::max<unsigned>(first, 1); id <= std::min<unsigned>(last, 127); ++id) {
+    espp::CanopenClient probe(probe_config(static_cast<uint8_t>(id), timeout, twai_));
     probe_client_.store(&probe);
     std::error_code ec;
     const uint32_t device_type = probe.read_u32(0x1000, 0, ec);
@@ -390,10 +403,46 @@ std::vector<std::pair<uint8_t, uint32_t>> MIB::scan_bus(std::chrono::millisecond
     // probe goes out of scope.
     std::this_thread::sleep_for(std::chrono::milliseconds{5});
     if (!ec) {
-      found.emplace_back(id, device_type);
+      found.emplace_back(static_cast<uint8_t>(id), device_type);
     }
   }
   return found;
+}
+
+bool MIB::read_sdo(uint8_t node, uint16_t index, uint8_t sub, uint8_t bytes, int32_t &value,
+                   std::error_code &ec) {
+  ec.clear();
+  if (!twai_) {
+    ec = std::make_error_code(std::errc::not_connected);
+    return false;
+  }
+  const auto read = [&](espp::CanopenClient &client) {
+    switch (bytes) {
+    case 1:
+      value = client.read_i8(index, sub, ec);
+      break;
+    case 2:
+      value = client.read_i16(index, sub, ec);
+      break;
+    case 4:
+      value = client.read_i32(index, sub, ec);
+      break;
+    default:
+      ec = std::make_error_code(std::errc::invalid_argument);
+    }
+    return !ec;
+  };
+  if (const auto access = controller_access(node)) {
+    std::lock_guard<std::mutex> lock(*access->mutex);
+    return read(*access->client);
+  }
+  std::lock_guard<std::mutex> lock(probe_mutex_);
+  espp::CanopenClient probe(probe_config(node, std::chrono::milliseconds{60}, twai_));
+  probe_client_.store(&probe);
+  const bool ok = read(probe);
+  probe_client_.store(nullptr);
+  std::this_thread::sleep_for(std::chrono::milliseconds{5});
+  return ok;
 }
 
 } // namespace mib::bsp

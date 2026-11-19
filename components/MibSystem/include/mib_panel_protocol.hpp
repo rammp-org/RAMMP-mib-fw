@@ -50,9 +50,17 @@
 ///   0x0D LEG_CALIBRATE  [leg u8][on u8]           1 = lift one leg's range clamp on the
 ///        controller so jogs can reach its mechanical ends, 0 = restore it. Off at every
 ///        boot. STATUS reports it as the leg's `cal`. In IDLE only. Reply OK [leg] / ERROR.
+///   0x0E SDO_READ       [node u8][index u16][sub u8][bytes u8]  Read one object from any
+///        CANopen node (bytes 1, 2 or 4, sign-extended). Reads only: for bringing up a chair
+///        whose controllers are not known yet. Any state but a firmware update. Reply
+///        SDO_VALUE / ERROR [reason].
+///   0x0F SCAN           [first u8][last u8]       Ask node ids first..last for 0x1000
+///        (~60 ms per silent id: scan in chunks). Reply SCAN_REPLY.
 ///
 /// MIB -> host
 ///   0x81 OK           [request type u8][value u8]
+///   0x8D SCAN_REPLY   [count u8] then count x [node u8][device type u32]
+///   0x8E SDO_VALUE    [node u8][index u16][sub u8][value i32]
 ///   0x89 STATUS_REPLY UTF-8 JSON (see MibSystem::status_json)
 ///   0x8F ERROR        [request type u8][UTF-8 reason]
 namespace mib::panel {
@@ -72,8 +80,12 @@ inline constexpr uint8_t kLegMove = 0x0A;
 inline constexpr uint8_t kLegRange = 0x0B;
 inline constexpr uint8_t kLegJog = 0x0C;
 inline constexpr uint8_t kLegCalibrate = 0x0D;
+inline constexpr uint8_t kSdoRead = 0x0E;
+inline constexpr uint8_t kScan = 0x0F;
 
 inline constexpr uint8_t kOk = 0x81;
+inline constexpr uint8_t kScanReply = 0x8D;
+inline constexpr uint8_t kSdoValue = 0x8E;
 inline constexpr uint8_t kStatusReply = 0x89;
 inline constexpr uint8_t kError = 0x8F;
 
