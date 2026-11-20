@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "MIBconfig.hpp"
+#include "esp_heap_caps.h"
 #include "sdkconfig.h"
 
 using namespace std::chrono_literals;
@@ -119,6 +120,21 @@ static_assert(CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS >= kReliableReaders + kSedp
 static_assert(CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kWriters + kReliableWriters &&
                   CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kReaders + kReliableReaders,
               "raise CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL with the endpoint count");
+// The builtin discovery endpoints hold one proxy per remote participant.
+static_assert(
+    CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER >=
+            CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS &&
+        CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER >=
+            CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS,
+    "raise the RTPS proxy pools with CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS");
+// Past 24 participants or proxies rtps::Domain outgrows what internal RAM can spare (~120 KB at
+// 24, ~260 KB at sdkconfig.defaults' 64): it has to be able to land in PSRAM.
+#if (CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS > 24 ||                                  \
+     CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER > 24 ||                                       \
+     CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER > 24) &&                                      \
+    !defined(CONFIG_SPIRAM_USE_MALLOC)
+#error "RTPS pools past 24 participants or proxies need CONFIG_SPIRAM and CONFIG_SPIRAM_USE_MALLOC"
+#endif
 
 MibSystem::MibSystem()
     : BaseComponent("RAMMP_MIB", espp::Logger::Verbosity::INFO)
@@ -1291,6 +1307,12 @@ void MibSystem::run_state_step() {
       state_.store(SystemState::ERROR);
       return;
     }
+    // The participant's RTPS pools are one heap object (rtps::Domain, ~260 KB with
+    // sdkconfig.defaults' limits), which malloc() puts in PSRAM. Where memory stands:
+    logger_.info("Heap with RTPS up: internal {} KB free (largest block {} KB), PSRAM {} KB free",
+                 heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
+                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024,
+                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
     if (!latch_.attach(mib_.rtps_participant())) {
       logger_.error("Failed to attach the e-stop latch");
       state_.store(SystemState::ERROR);
