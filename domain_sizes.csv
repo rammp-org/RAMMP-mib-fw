@@ -1,0 +1,6 @@
+config,spdp_participants,proxies_per_endpoint,unmatched_remote_endpoints,domain_bytes
+main today,24,24,50,122760
+participants and proxies 48,48,48,50,195296
+participants and proxies 64,64,64,50,243424
+unmatched endpoints 128,24,24,128,130896
+this PR,64,64,255,264792
