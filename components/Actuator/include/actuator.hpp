@@ -178,6 +178,10 @@ public:
   /// rewritten encoder count ends the watch; the next move restarts it. No bus traffic
   /// while there is nothing to do. False only on a bus failure.
   bool poll();
+  /// A move is under way: poll() is still streaming its setpoints, or has yet to see the
+  /// joint arrive (or stall) and release it. False once released, and after stop(). No bus
+  /// traffic.
+  bool moving() const;
   bool is_target_reached(bool &reached);
   bool get_drive_state(DriveState &state);
   bool read_statusword(uint16_t &statusword); ///< Raw CiA 402 statusword; bit 11 = limit active.

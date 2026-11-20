@@ -762,10 +762,11 @@ void MibSystem::run_seat_step() {
   }
   seat_next_report_ = now + mib::config::seat_report_interval;
 
+  // Done once every leg's move has finished: Actuator::poll() (state task) has streamed it
+  // and released the leg, arrived or stalled (it logs which).
   bool all_reached = true;
   for (const auto leg : kSeatLegs) {
-    bool reached = false;
-    all_reached = mib_.actuator(leg).is_target_reached(reached) && reached && all_reached;
+    all_reached = !mib_.actuator(leg).moving() && all_reached;
   }
   log_seat_position(all_reached ? "Seat move done" : "Seat moving");
   if (all_reached) {
@@ -1611,6 +1612,14 @@ void MibSystem::run_state_step() {
       state != SystemState::ERROR) {
     enter_estop();
   }
+  // The legs' move engine (Actuator::poll()): streams each move's setpoints, then releases
+  // the drive once the leg has arrived. Only in IDLE, the one state legs move in; no bus
+  // traffic while no leg has anything to do.
+  if (state_.load() == SystemState::IDLE && mib_.actuators_ready()) {
+    for (size_t i = 0; i < mib::config::leg_count; i++) {
+      mib_.actuator(static_cast<mib::config::Leg>(i)).poll();
+    }
+  }
   switch (state_.load()) {
   case SystemState::INIT:
     logger_.info("System state: INIT - initializing MIB");
@@ -1782,7 +1791,11 @@ void MibSystem::run_estop_step() {
       std::array<bool, mib::config::leg_count> stopped{};
       for (size_t i = 0; i < mib::config::leg_count; i++) {
         auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
-        if (!actuator.last_target()) {
+        // Only legs whose drive is enabled: one never commanded, or one Actuator::poll()
+        // released after it arrived, is already still, and refuses the quick stop.
+        mib::Actuator::DriveState drive_state{};
+        if (!actuator.last_target() || !actuator.get_drive_state(drive_state) ||
+            drive_state != mib::Actuator::DriveState::OperationEnabled) {
           continue;
         }
         stopped[i] = actuator.stop();

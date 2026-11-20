@@ -271,6 +271,11 @@ std::optional<int32_t> Actuator::last_target() const {
   return last_target_;
 }
 
+bool Actuator::moving() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return trajectory_.active || pending_release_;
+}
+
 bool Actuator::is_target_reached(bool &reached) {
   if (!check_online()) {
     return false;
