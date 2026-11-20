@@ -79,7 +79,7 @@ CONFIG_RTPS_LIMIT_MAX_TYPENAME_LENGTH=128
 # Remote endpoints one endpoint can match. The two SEDP writers hold one reader proxy per
 # remote participant and the two SEDP readers one writer proxy each, so the esp32 profile's
 # 6 completes discovery with six participants and silently skips the rest; a ROS 2 host
-# runs more than that. Keep these equal to the participant pool below.
+# runs more than that. At least the participant pool below (mib_system.cpp checks).
 CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER=64
 CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER=64
 # Remote participants the MIB tracks at once. Every ROS 2 process is one (each node, the
@@ -93,11 +93,15 @@ CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS=64
 CONFIG_RTPS_LIMIT_MAX_NUM_UNMATCHED_REMOTE_WRITERS=255
 CONFIG_RTPS_LIMIT_MAX_NUM_UNMATCHED_REMOTE_READERS=255
 # All of these pools live in one heap object, rtps::Domain: 122,760 bytes at 24 participants
-# and proxies with 50 unmatched records, 264,792 bytes with the values above. That is more than
-# the P4's internal RAM can spare next to everything else, so it goes to PSRAM: the
-# ESP32-P4-ETH's P4NRW32 has 32 MB in the package. With CONFIG_SPIRAM_USE_MALLOC (the default
-# once PSRAM is on), malloc() puts any allocation over 16 KB in PSRAM; DMA buffers and task
-# stacks stay internal. Same PSRAM settings as prototype-fw's holo_deck_mib and pace-hmi-fw.
+# and proxies with 50 unmatched records, 264,792 bytes with the values above, which would leave
+# about 90 KB of the internal heap. It goes to PSRAM instead: the ESP32-P4-ETH's P4NRW32 has
+# 32 MB in the package. With CONFIG_SPIRAM_USE_MALLOC (the default once PSRAM is on), malloc()
+# puts any allocation over 16 KB in PSRAM; DMA buffers and task stacks stay internal, and
+# 32 KB of internal RAM is held back for DMA-capable allocations. mib_system.cpp stops the
+# build if the pools are raised without it. Same three lines as espp's esp32-p4-eth example
+# and prototype-fw's holo_deck_mib. XIP_FROM_PSRAM runs code from PSRAM, so tasks keep running
+# while flash is written (OTA, NVS); it costs code fetches on the PSRAM bus, which nothing
+# else here loads heavily (pace-hmi-fw leaves it off for its display's sake).
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y

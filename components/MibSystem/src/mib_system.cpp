@@ -120,10 +120,20 @@ static_assert(CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS >= kReliableReaders + kSedp
 static_assert(CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kWriters + kReliableWriters &&
                   CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL >= kReaders + kReliableReaders,
               "raise CONFIG_RTPS_LIMIT_HISTORY_SIZE_STATEFUL with the endpoint count");
-// Past 24 remote participants rtps::Domain outgrows what internal RAM can spare (~120 KB at
+// The builtin discovery endpoints hold one proxy per remote participant.
+static_assert(
+    CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER >=
+            CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS &&
+        CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER >=
+            CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS,
+    "raise the RTPS proxy pools with CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS");
+// Past 24 participants or proxies rtps::Domain outgrows what internal RAM can spare (~120 KB at
 // 24, ~260 KB at sdkconfig.defaults' 64): it has to be able to land in PSRAM.
-#if CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS > 24 && !defined(CONFIG_SPIRAM_USE_MALLOC)
-#error "RTPS pools past 24 participants need CONFIG_SPIRAM and CONFIG_SPIRAM_USE_MALLOC"
+#if (CONFIG_RTPS_LIMIT_SPDP_MAX_NUMBER_FOUND_PARTICIPANTS > 24 ||                                  \
+     CONFIG_RTPS_LIMIT_NUM_READER_PROXIES_PER_WRITER > 24 ||                                       \
+     CONFIG_RTPS_LIMIT_NUM_WRITER_PROXIES_PER_READER > 24) &&                                      \
+    !defined(CONFIG_SPIRAM_USE_MALLOC)
+#error "RTPS pools past 24 participants or proxies need CONFIG_SPIRAM and CONFIG_SPIRAM_USE_MALLOC"
 #endif
 
 MibSystem::MibSystem()
