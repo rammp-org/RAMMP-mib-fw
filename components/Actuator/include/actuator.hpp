@@ -128,6 +128,11 @@ public:
     /// Counts from the target within which the median count must stay for settle_time
     /// for the leg to have arrived. Encoder noise is about +-30 counts.
     int32_t tolerance{};
+    /// Zero-vibration input shaper, ms; 0 = off. The streamed target is the mean of the
+    /// profile now and the profile this long ago, which cancels a resonance whose half
+    /// period is this delay (the left main leg's ~3.7 Hz chassis mode: 135 ms). Moves
+    /// take this much longer.
+    std::chrono::milliseconds shaper_delay{0};
     std::chrono::milliseconds settle_time{200};
     /// A move not arrived this long after its profile finished is stopped and FAILED.
     std::chrono::milliseconds arrival_margin{2000};
@@ -285,6 +290,10 @@ public:
   bool set_calibration_mode(bool enabled);
   bool calibration_mode() const;
 
+  /// Change the input shaper delay (Config::shaper_delay) until the next boot; 0 = off.
+  void set_shaper_delay(std::chrono::milliseconds delay);
+  std::chrono::milliseconds shaper_delay() const;
+
   /// Install a calibrated range: on the controller if initialised, and in the store.
   bool set_range(const Range &range);
   Range range() const;
@@ -409,6 +418,7 @@ private:
   bool homed_{false};
   bool homing_{false};
   bool calibration_mode_{false};
+  std::chrono::milliseconds shaper_delay_{0}; ///< Config::shaper_delay, changeable at run time.
   bool online_{true};
   std::chrono::steady_clock::time_point offline_since_{};
 };

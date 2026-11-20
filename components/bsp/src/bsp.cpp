@@ -262,6 +262,7 @@ bool MIB::init_actuators() {
                        .heartbeat_consumer = heartbeat_consumer},
         .jog_step = row.jog_step,
         .tolerance = row.tolerance,
+        .shaper_delay = std::chrono::milliseconds{row.shaper_ms},
         .hardware_limits = row.hardware_limits,
         .homing = {.required = row.incremental_encoder,
                    .direction = row.home_direction,

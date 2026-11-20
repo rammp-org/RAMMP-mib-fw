@@ -194,6 +194,34 @@ void setpoint_follows_a_retarget() {
   CHECK(near(b.setpoint(0.0, kLead), before));
 }
 
+void shaped_setpoint_cancels_and_lands() {
+  std::printf("the input-shaped setpoint stays continuous, never passes the target, and lands\n");
+  MotionProfile p;
+  CHECK(p.plan(31500, 0, 30500, kLeg));
+  const double tau = 0.135; // the left main leg: half its ~3.9 Hz period
+  const double lead = 0.5;  // 1 / position P 2.0
+  CHECK(near(p.shaped_setpoint(0.7, lead, 0.0), p.setpoint(0.7, lead)));
+  double previous = p.shaped_setpoint(0.0, lead, tau);
+  CHECK(near(previous, 31500.0)); // at rest: the lead is 0 and both halves are the start
+  for (double t = kTick; t <= p.duration() + tau + 0.5; t += kTick) {
+    const double sp = p.shaped_setpoint(t, lead, tau);
+    CHECK(sp >= 30500.0 - 1e-6 && sp <= 31500.0 + 1e-6);
+    // No step bigger than the unshaped setpoint's largest: the lead adds v x lead, so steps
+    // are bounded by (speed + acceleration x lead) x tick.
+    CHECK(std::fabs(sp - previous) <= (800.0 + 1600.0 * lead) * kTick + 1e-6);
+    CHECK(sp <= previous + 1e-6); // a move down never turns back up
+    previous = sp;
+  }
+  // Without a lead the delayed half is still moving when the profile ends; it lands one delay
+  // later. (With the lead, each half reaches the target early: the lead is cut at the target.)
+  CHECK(!near(p.shaped_setpoint(p.duration(), 0.0, tau), 30500.0));
+  CHECK(near(p.shaped_setpoint(p.duration() + tau, 0.0, tau), 30500.0));
+  CHECK(near(p.shaped_setpoint(p.duration() + tau, lead, tau), 30500.0));
+  // Halfway through, the shaped target trails the unshaped one by about half of speed x delay.
+  CHECK(near(p.setpoint(0.875, lead) - p.shaped_setpoint(0.875, lead, tau), -0.5 * 800.0 * tau,
+             1.0));
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +231,7 @@ int main() {
   lead_never_past_target();
   retargets();
   setpoint_follows_a_retarget();
+  shaped_setpoint_cancels_and_lands();
   if (failures != 0) {
     std::printf("%d check(s) FAILED\n", failures);
     return 1;

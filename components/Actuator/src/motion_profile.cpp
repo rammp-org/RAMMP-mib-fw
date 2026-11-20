@@ -94,4 +94,11 @@ double MotionProfile::setpoint(double t, double lead_s) const {
   return led;
 }
 
+double MotionProfile::shaped_setpoint(double t, double lead_s, double shaper_s) const {
+  if (shaper_s <= 0.0) {
+    return setpoint(t, lead_s);
+  }
+  return 0.5 * (setpoint(t, lead_s) + setpoint(t - shaper_s, lead_s));
+}
+
 } // namespace mib

@@ -242,14 +242,16 @@ inline constexpr auto can_heartbeat_period = std::chrono::milliseconds{100};
 inline constexpr auto can_heartbeat_timeout = std::chrono::milliseconds{500};
 
 /// @brief The legs whose joint is positioned by a linear actuator (an EHA) on one channel of
-/// a Basicmicro MCP266. This chair has no powered casters (no node 1 on its bus).
+/// a Basicmicro MCP266. The casters are on node 10 ("MCP 1" on the chair).
 enum class Leg : std::uint8_t {
   MAIN_RIGHT = 0,
   MAIN_LEFT,
   LEFT_CARRIAGE,
   RIGHT_CARRIAGE,
+  FRONT_CASTER,
+  REAR_CASTER,
 };
-inline constexpr std::size_t leg_count = 4;
+inline constexpr std::size_t leg_count = 6;
 
 /// @brief What the MIB writes to a leg's controller channel at boot (controller RAM only; its
 /// flash keeps Motion Studio's values, which return at the next power cycle). Raw controller
@@ -296,6 +298,8 @@ struct ActuatorConfig {
   bool incremental_encoder;   ///< AB encoder: arbitrary count at power-up, must be homed.
   std::int8_t home_direction; ///< +1 or -1: which way the home switch lies (incremental only).
   std::int32_t home_count;    ///< Count installed at the home switch (incremental only).
+  /// Input shaper delay, ms (Actuator::Config::shaper_delay); 0 = off.
+  std::uint32_t shaper_ms{0};
 };
 
 /// @brief The right main leg's controller settings, proven on the chair on 2026-11-17
@@ -305,6 +309,25 @@ struct ActuatorConfig {
 inline constexpr ActuatorTuning main_leg_tuning{
     .position_window = 10,
     .position_p = 4096,
+    .position_i = 0,
+    .position_d = 0,
+    .position_max_i = 0,
+    .position_deadband = 0,
+    .velocity_p = 65536,
+    .velocity_i = 1701,
+    .velocity_d = 0,
+    .velocity_qpps = 7143,
+    .profile_velocity = 20000,
+};
+
+/// @brief The left main leg's settings: the right leg's with position P 2.0 (lead 500 ms). The
+/// left leg has a lightly damped ~3.9 Hz chassis mode the right leg does not; at P 4.0 it grew
+/// into an oscillation below ~29,000, and neither a higher velocity integral, a lower velocity
+/// P, P 1.0 nor a deadband stopped it (2026-11-18, bench-findings.md). P 2.0 with the input
+/// shaper (shaper_ms) is the best found: clean 1,000-count moves between ~30,400 and 31,600.
+inline constexpr ActuatorTuning left_leg_tuning{
+    .position_window = 10,
+    .position_p = 2048,
     .position_i = 0,
     .position_d = 0,
     .position_max_i = 0,
@@ -360,28 +383,30 @@ inline constexpr ActuatorConfig actuators[leg_count] = {
      .incremental_encoder = false,
      .home_direction = 0,
      .home_count = 0},
-    // Left main leg: NOT commissioned. +counts = stroke extends = wheel up = the left side
-    // lowers: the opposite sign to the right leg. Never tuned, and its encoder glitches by
-    // ~1,800 counts about every 10 s with the chair still (a hardware fault to fix first).
-    // The right leg's tuning is a starting guess, nothing more. Clamp as stored.
+    // Left main leg. +counts = stroke extends = wheel up = the left side lowers: the opposite
+    // sign to the right leg. Its encoder glitched until its MCP input pin was changed on
+    // 2026-11-18 (now ~60 counts p-p at rest, no jumps, like MR). Measured only between ~30,400
+    // and 31,600; below ~29,500 it still bounces (see left_leg_tuning). Tolerance 50 is the
+    // accepted error. The shaper cancels its ~3.9 Hz mode (half period 135 ms). Clamp as stored.
     {.leg = Leg::MAIN_LEFT,
      .name = "ML",
      .node_id = 3,
      .channel = 1,
-     .commissioned = false,
+     .commissioned = true,
      .min_counts = 25000,
      .max_counts = 32000,
      .stroke_sign = +1,
      .max_speed = 800,
      .acceleration = 1600,
-     .lead_ms = 250,
-     .tolerance = 40,
+     .lead_ms = 500,
+     .tolerance = 50,
      .jog_step = 100,
-     .tuning = main_leg_tuning,
+     .tuning = left_leg_tuning,
      .hardware_limits = false,
      .incremental_encoder = false,
      .home_direction = 0,
-     .home_count = 0},
+     .home_count = 0,
+     .shaper_ms = 0},
     // Carriages: NOT commissioned, and must never move by accident. Nothing at boot writes
     // to node 2, and homing is never automatic. Ranges and homing are placeholders.
     {.leg = Leg::LEFT_CARRIAGE,
@@ -419,6 +444,45 @@ inline constexpr ActuatorConfig actuators[leg_count] = {
      .hardware_limits = true,
      .incremental_encoder = true,
      .home_direction = -1,
+     .home_count = 0},
+    // Casters, node 10 ("MCP 1" on the chair; M1 front, M2 rear). NOT commissioned: here so the
+    // console can read them. Both encoders read live (FC ~68,400, RC ~55,300 on 2026-11-18;
+    // RC's stored clamp is 50,000..57,000). Signs, travel and tuning still to be measured.
+    {.leg = Leg::FRONT_CASTER,
+     .name = "FC",
+     .node_id = 10,
+     .channel = 0,
+     .commissioned = false,
+     .min_counts = 0,
+     .max_counts = 0,
+     .stroke_sign = 0,
+     .max_speed = 400,
+     .acceleration = 800,
+     .lead_ms = 250,
+     .tolerance = 40,
+     .jog_step = 100,
+     .tuning = untuned,
+     .hardware_limits = false,
+     .incremental_encoder = false,
+     .home_direction = 0,
+     .home_count = 0},
+    {.leg = Leg::REAR_CASTER,
+     .name = "RC",
+     .node_id = 10,
+     .channel = 1,
+     .commissioned = false,
+     .min_counts = 0,
+     .max_counts = 0,
+     .stroke_sign = 0,
+     .max_speed = 400,
+     .acceleration = 800,
+     .lead_ms = 250,
+     .tolerance = 40,
+     .jog_step = 100,
+     .tuning = untuned,
+     .hardware_limits = false,
+     .incremental_encoder = false,
+     .home_direction = 0,
      .home_count = 0},
 };
 

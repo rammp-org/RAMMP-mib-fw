@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MCP266 encoders</title>
+<link rel="icon" href="data:,">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Condensed:wght@500;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ax-tokens.css">
+<style>
+.uplot, .uplot * { box-sizing: border-box; }
+.uplot { font-family: var(--ax-font-mono); line-height: 1.5; width: min-content; }
+.u-wrap { position: relative; user-select: none; }
+.u-over, .u-under { position: absolute; }
+.u-under { overflow: hidden; }
+.uplot canvas { display: block; position: relative; width: 100%; height: 100%; }
+.u-axis { position: absolute; }
+.u-legend { font: 11px var(--ax-font-mono); margin: 0 0 4px; text-align: left; color: var(--ax-muted); }
+.u-inline { display: block; } .u-inline * { display: inline-block; } .u-inline tr { margin-right: 14px; }
+.u-legend .u-marker { width: 10px; height: 10px; margin-right: 5px; border-radius: 0 !important; }
+.u-inline.u-live th::after { content: ":"; }
+.u-legend .u-value { color: var(--ax-ink); min-width: 6ch; }
+.u-select { background: rgba(var(--ax-accent-rgb), 0.08); position: absolute; pointer-events: none; }
+.u-cursor-x, .u-cursor-y { position: absolute; left: 0; top: 0; pointer-events: none; }
+.u-hz .u-cursor-x { height: 100%; border-right: 1px dashed var(--ax-axis); }
+.u-hz .u-cursor-y { width: 100%; border-bottom: 1px dashed var(--ax-axis); }
+.u-cursor-pt { position: absolute; top: 0; left: 0; border-radius: 50%; border: 0 solid; pointer-events: none; }
+.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off { display: none; }
+
+.ax-page { max-width: 1400px; }
+h1 { font: 700 22px var(--ax-font-title); text-transform: uppercase; letter-spacing: 0.08em; margin: 0; }
+h1::before { content: "■ "; color: var(--ax-accent); }
+h2 { font: 700 13px var(--ax-font-title); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 2px; }
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.controls label { font: 11px var(--ax-font-mono); color: var(--ax-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+select, input { background: var(--ax-panel); color: var(--ax-ink); border: 1px solid var(--ax-border-strong); font: 12px var(--ax-font-mono); padding: 7px 8px; border-radius: 0; }
+input[type=number] { width: 80px; }
+.ax-sub { font: 11px var(--ax-font-mono); color: var(--ax-muted); margin-top: 6px; }
+.chart { min-height: 260px; }
+table { width: 100%; border-collapse: collapse; font: 12px var(--ax-font-mono); }
+th { text-align: right; font-weight: 500; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ax-muted); padding: 6px 8px; border-bottom: 1px solid var(--ax-border); }
+td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--ax-rule); }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+tbody tr:hover { background: rgba(var(--ax-accent-rgb), 0.06); cursor: pointer; }
+.empty { color: var(--ax-muted); font: 12px var(--ax-font); padding: 10px 0; }
+.two { grid-template-columns: 1fr 1fr; }
+#console { white-space: pre-wrap; font: 12px var(--ax-font-mono); color: var(--ax-ink); max-height: 260px; overflow: auto; margin: 8px 0 0; }
+#console .c { color: var(--ax-accent); }
+.charts { grid-template-columns: 1fr 1fr; }
+.chart { min-height: 220px; }
+.sw { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; }
+</style>
+</head>
+<body class="ax">
+<div class="ax-page">
+  <header class="ax-mast">
+    <div>
+      <h1>MCP266 encoders</h1>
+      <div class="ax-meta"><span id="link" class="ax-status">Connecting</span><span id="port">–</span><span id="csv">–</span></div>
+    </div>
+    <div class="controls">
+      <label>Window <select id="win"><option>10</option><option selected>30</option><option>60</option><option>300</option><option>600</option></select> s</label>
+      <label>Jump ≥ <input id="thr" type="number" value="500" step="50"> counts</label>
+      <button class="ax-btn" id="freeze">Freeze view</button>
+      <button class="ax-btn primary" id="poll" data-fx="orbit">Pause polling</button>
+    </div>
+  </header>
+
+  <section class="ax-panel" style="margin-bottom:8px">
+    <h2>Read noise per channel</h2>
+    <div class="ax-cap">Over the last <span id="statWin">30</span> s (the window). Step σ is the standard deviation of the change between consecutive reads with jumps left out; a still leg with a clean encoder reads a few counts.</div>
+    <table><thead><tr><th>Channel</th><th>Node / ch</th><th>Count</th><th>Min</th><th>Max</th><th>p-p</th><th>Step σ</th><th>Jumps</th><th>Jumps / min</th><th>Errors</th></tr></thead><tbody id="stats"></tbody></table>
+  </section>
+
+  <section class="ax-grid charts" id="charts"></section>
+
+  <section class="ax-grid two">
+    <div class="ax-panel">
+      <h2>Jumps</h2>
+      <div class="ax-cap">Newest first. Click a row to centre every chart on it (freezes the view).</div>
+      <table><thead><tr><th>Time</th><th>Channel</th><th>From</th><th>To</th><th>Δ counts</th></tr></thead><tbody id="jumps"></tbody></table>
+      <div class="empty" id="noJumps">No jumps yet at this threshold.</div>
+    </div>
+    <div class="ax-panel">
+      <h2>Console</h2>
+      <div class="ax-cap">Runs a bench console command between reads, e.g. <span class="ax-mono">status</span>, <span class="ax-mono">sdor 10 0x6041 0 2</span>.</div>
+      <form id="cmdf" class="controls"><input id="cmd" style="flex:1" placeholder="status" autocomplete="off"><button class="ax-btn">Send</button></form>
+      <div id="console"></div>
+    </div>
+  </section>
+</div>
+<script src="uPlot.iife.min.js"></script>
+<script src="ax-fx.js"></script>
+<script>
+const css = v => getComputedStyle(document.documentElement).getPropertyValue('--ax-' + v).trim();
+const $ = id => document.getElementById(id);
+let chans = [], data = {}, charts = {}, colors = {}, errs = {};
+const jumps = [];
+let tNow = 0, frozen = false, paused = false;
+
+function axis(label) {
+  return { label, labelFont: '11px Roboto', font: "11px 'Roboto Mono'", stroke: css('muted'),
+    grid: { stroke: css('grid'), dash: [2, 4], width: 1 }, ticks: { show: false } };
+}
+function markers(name) {
+  return u => {
+    const c = u.ctx, top = u.bbox.top, h = u.bbox.height;
+    c.save(); c.setLineDash([4, 4]); c.lineWidth = 1; c.strokeStyle = colors[name];
+    for (const j of jumps) {
+      if (j.ch !== name) continue;
+      const x = u.valToPos(j.t, 'x', true);
+      if (x < u.bbox.left || x > u.bbox.left + u.bbox.width) continue;
+      c.beginPath(); c.moveTo(x, top); c.lineTo(x, top + h); c.stroke();
+    }
+    c.restore();
+  };
+}
+function setup(list) {
+  chans = list; data = {}; charts = {}; errs = {}; jumps.length = 0;
+  const host = $('charts'); host.innerHTML = '';
+  list.forEach((c, i) => {
+    colors[c.name] = css('s' + (i + 1)); data[c.name] = { t: [], v: [] }; errs[c.name] = 0;
+    const id = 'c' + i;
+    host.insertAdjacentHTML('beforeend', `<div class="ax-panel"><h2><span class="sw" style="background:${colors[c.name]}"></span>${c.name}, node ${c.node} M${c.ch} (0x${c.ch === 1 ? '6064' : '6864'})</h2><div class="chart" id="${id}"></div></div>`);
+    const el = $(id);
+    charts[c.name] = new uPlot({
+      width: el.clientWidth, height: 220,
+      cursor: { sync: { key: 'enc' }, drag: { x: true, y: false } },
+      scales: { x: { time: false } },
+      axes: [axis('Time since start, s'), { ...axis('Encoder, counts'), size: 70 }],
+      series: [{ label: 't, s', value: (u, v) => v == null ? '–' : v.toFixed(3) },
+        { label: c.name, stroke: colors[c.name], width: 2, value: (u, v) => v == null ? '–' : v }],
+      hooks: { draw: [markers(c.name)], setSelect: [u => { if (u.select.width > 0) setFrozen(true); }] },
+    }, [[], []], el);
+    charts[c.name].over.addEventListener('dblclick', () => setFrozen(false));
+  });
+}
+addEventListener('resize', () => chans.forEach((c, i) => charts[c.name].setSize({ width: $('c' + i).clientWidth, height: 220 })));
+
+function setFrozen(f) { frozen = f; $('freeze').textContent = f ? 'Follow live' : 'Freeze view'; if (!f) redraw(); }
+$('freeze').onclick = () => setFrozen(!frozen);
+$('poll').onclick = async () => {
+  paused = !paused;
+  await fetch('/pause', { method: 'POST', body: paused ? '1' : '0' });
+  $('poll').textContent = paused ? 'Resume polling' : 'Pause polling';
+};
+
+const last = {};
+function detect(ch, t, v) {
+  if (v == null) return;
+  if (last[ch] != null && Math.abs(v - last[ch]) >= +$('thr').value) jumps.push({ t, ch, from: last[ch], to: v, d: v - last[ch] });
+  last[ch] = v;
+}
+$('thr').onchange = () => {
+  jumps.length = 0;
+  for (const c of chans) { last[c.name] = null; const d = data[c.name]; d.t.forEach((t, i) => detect(c.name, t, d.v[i])); }
+  jumps.sort((a, b) => a.t - b.t); render(); redraw(true);
+};
+
+function render() {
+  const w = +$('win').value, thr = +$('thr').value; $('statWin').textContent = w;
+  $('stats').innerHTML = chans.map(c => {
+    const d = data[c.name], vs = [];
+    for (let i = 0; i < d.t.length; i++) if (d.t[i] > tNow - w && d.v[i] != null) vs.push(d.v[i]);
+    if (!vs.length) return `<tr><td><span class="sw" style="background:${colors[c.name]}"></span>${c.name}</td><td>${c.node} / M${c.ch}</td><td colspan="8" class="ax-muted">no reads yet</td></tr>`;
+    const steps = []; for (let i = 1; i < vs.length; i++) { const s = vs[i] - vs[i - 1]; if (Math.abs(s) < thr) steps.push(s); }
+    const mean = steps.reduce((a, b) => a + b, 0) / (steps.length || 1);
+    const sd = Math.sqrt(steps.reduce((a, b) => a + (b - mean) ** 2, 0) / (steps.length || 1));
+    const mn = Math.min(...vs), mx = Math.max(...vs);
+    const nj = jumps.filter(j => j.ch === c.name && j.t > tNow - w).length;
+    const span = Math.min(w, tNow - (d.t[0] || 0)) || 1;
+    return `<tr><td><span class="sw" style="background:${colors[c.name]}"></span>${c.name}</td><td>${c.node} / M${c.ch}</td><td>${vs.at(-1)}</td><td>${mn}</td><td>${mx}</td><td>${mx - mn}</td><td>${sd.toFixed(1)}</td><td>${nj}</td><td>${(nj / span * 60).toFixed(1)}</td><td>${errs[c.name]}</td></tr>`;
+  }).join('');
+  $('noJumps').style.display = jumps.length ? 'none' : '';
+  $('jumps').innerHTML = jumps.slice(-50).reverse().map(j =>
+    `<tr data-t="${j.t}"><td>${j.t.toFixed(3)}</td><td><span class="sw" style="background:${colors[j.ch]}"></span>${j.ch}</td><td>${j.from}</td><td>${j.to}</td><td>${j.d > 0 ? '+' : ''}${j.d}</td></tr>`).join('');
+}
+$('jumps').onclick = e => {
+  const tr = e.target.closest('tr'); if (!tr) return;
+  const t = +tr.dataset.t; setFrozen(true);
+  for (const k in charts) { charts[k].setData([data[k].t, data[k].v], false); charts[k].setScale('x', { min: t - 3, max: t + 3 }); }
+};
+function redraw(force) {
+  if (frozen && !force) return;
+  const w = +$('win').value;
+  for (const k in charts) {
+    charts[k].setData([data[k].t, data[k].v], false);
+    if (!frozen) charts[k].setScale('x', { min: Math.max(0, tNow - w), max: Math.max(tNow, w) });
+    else charts[k].redraw();
+  }
+}
+$('win').onchange = () => { render(); redraw(true); };
+
+const es = new EventSource('/events');
+es.addEventListener('hello', e => {
+  const h = JSON.parse(e.data);
+  $('port').textContent = h.port; $('csv').textContent = 'log ' + h.csv;
+  for (const k in last) delete last[k];
+  setup(h.channels);
+  paused = h.paused; $('poll').textContent = paused ? 'Resume polling' : 'Pause polling';
+});
+es.addEventListener('samples', e => {
+  const m = JSON.parse(e.data);
+  for (const [t, ch, v] of m.s) {
+    if (!data[ch]) continue;
+    if (v == null) errs[ch]++;
+    detect(ch, t, v);
+    data[ch].t.push(t); data[ch].v.push(v); tNow = Math.max(tNow, t);
+  }
+  for (const ch in data) {
+    const d = data[ch]; let i = 0; while (i < d.t.length && d.t[i] < tNow - 600) i++;
+    if (i) { d.t.splice(0, i); d.v.splice(0, i); }
+  }
+  $('link').className = 'ax-status live'; $('link').textContent = paused ? 'Paused' : 'Live';
+});
+es.addEventListener('console', e => {
+  const m = JSON.parse(e.data), el = $('console');
+  el.insertAdjacentHTML('beforeend', `<span class="c">&gt; ${m.cmd.replace(/</g, '&lt;')}</span>\n${m.out.replace(/</g, '&lt;')}\n`);
+  el.scrollTop = el.scrollHeight;
+});
+es.addEventListener('link', e => {
+  const m = JSON.parse(e.data);
+  $('link').className = 'ax-status ' + (m.up ? 'live' : 'critical');
+  $('link').textContent = (m.up ? 'Live' : 'USB link lost, reopening') + ` (${m.drops} drop${m.drops === 1 ? '' : 's'})`;
+});
+es.onerror = () => { $('link').className = 'ax-status critical'; $('link').textContent = 'Disconnected'; };
+$('cmdf').onsubmit = e => { e.preventDefault(); const c = $('cmd').value.trim(); if (c) fetch('/cmd', { method: 'POST', body: c }); $('cmd').value = ''; };
+
+setInterval(() => { render(); redraw(); }, 250);
+</script>
+</body>
+</html>

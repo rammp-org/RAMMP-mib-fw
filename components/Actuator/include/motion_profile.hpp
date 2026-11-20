@@ -49,6 +49,14 @@ public:
   ///          braking a retarget it could not stop for, the setpoint follows it.)
   double setpoint(double t, double lead_s) const;
 
+  /// @brief setpoint() through a zero-vibration input shaper: the mean of the setpoint at `t`
+  ///        and at `t - shaper_s`.
+  /// @details Two half-size copies of the move, the second delayed by half the period of a
+  ///          resonance, excite it in antiphase and cancel it. Never past the target (both
+  ///          halves are not), continuous, and at rest on the target from
+  ///          duration() + shaper_s on. `shaper_s` <= 0 is setpoint().
+  double shaped_setpoint(double t, double lead_s, double shaper_s) const;
+
   /// @brief Seconds from plan() until the profile rests on the target.
   double duration() const { return duration_; }
   double target() const { return target_; }

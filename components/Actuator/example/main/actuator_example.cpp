@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
@@ -65,6 +66,33 @@ namespace {
 espp::Logger logger({.tag = "Actuator Example", .level = espp::Logger::Verbosity::INFO});
 
 std::atomic<Leg> selected{Leg::MAIN_RIGHT};
+
+/// The BNO055, for the chassis motion in `trace`. Null if it did not come up.
+espp::Bno055 *g_imu{nullptr};
+
+/// Tilt rate, deg/s: the angular rate perpendicular to gravity (how fast the chair tips,
+/// however the IMU is mounted, ignoring yaw), and the gravity vector, m/s^2.
+bool imu_sample(float &tilt_dps, espp::Bno055::Vector3 &gravity) {
+  if (g_imu == nullptr) {
+    return false;
+  }
+  std::error_code ec;
+  if (!g_imu->update(ec)) {
+    return false;
+  }
+  const auto d = g_imu->data();
+  const auto &g = d.gravity_mps2;
+  const auto &w = d.gyro_radps;
+  const float g_norm = std::sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+  if (g_norm < 1.0f) {
+    return false;
+  }
+  const float along = (w.x * g.x + w.y * g.y + w.z * g.z) / g_norm;
+  const float total_sq = w.x * w.x + w.y * w.y + w.z * w.z;
+  tilt_dps = std::sqrt(std::max(0.0f, total_sq - along * along)) * (180.0f / 3.14159265f);
+  gravity = g;
+  return true;
+}
 
 mib::bsp::MIB &board() { return mib::bsp::MIB::instance(); }
 const mib::config::ActuatorConfig &row() { return mib::config::actuator_config(selected.load()); }
@@ -219,9 +247,12 @@ bool valid_speed(std::ostream &out, int speed) {
   return true;
 }
 
-/// Print the count every half second until the move ends; any key ends the wait.
-void wait_for_move(std::ostream &out) {
+/// Print the count until the move ends, then its result; any key ends the wait. Every half
+/// second for a person; with `trace`, every 20 ms with the IMU's tilt rate (deg/s) and gravity
+/// vector (m/s^2) for logging: "at <ms> <count> imu <tilt> <gx> <gy> <gz>".
+void wait_for_move(std::ostream &out, bool trace = false) {
   Actuator &a = actuator();
+  const auto period = trace ? 20ms : 500ms;
   auto next = std::chrono::steady_clock::now();
   while (a.moving()) {
     if (key_pressed()) {
@@ -230,11 +261,25 @@ void wait_for_move(std::ostream &out) {
     }
     if (std::chrono::steady_clock::now() >= next) {
       if (const auto here = a.current_position()) {
-        out << fmt::format("  at {}\n", *here);
+        if (!trace) {
+          out << fmt::format("  at {}\n", *here);
+        } else {
+          out << fmt::format("  at {} {}",
+                             std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count(),
+                             *here);
+          float tilt = 0;
+          espp::Bno055::Vector3 g{};
+          if (imu_sample(tilt, g)) {
+            out << fmt::format(" imu {:.2f} {:.3f} {:.3f} {:.3f}", tilt, g.x, g.y, g.z);
+          }
+          out << "\n";
+        }
       }
-      next += 500ms;
+      next += period;
     }
-    std::this_thread::sleep_for(20ms);
+    std::this_thread::sleep_for(trace ? 5ms : 20ms);
   }
   std::this_thread::sleep_for(200ms); // let the release readback land
   print_result(out);
@@ -330,6 +375,14 @@ std::unique_ptr<cli::Menu> build_menu() {
       },
       "Move one jog step down");
   menu->Insert(
+      "shape",
+      [](std::ostream &out, int ms) {
+        actuator().set_shaper_delay(std::chrono::milliseconds{ms});
+        out << fmt::format("{}: input shaper delay {} ms (until reboot)\n", row().name,
+                           actuator().shaper_delay().count());
+      },
+      "Input shaper: shape <ms> (half the resonance period); 0 turns it off");
+  menu->Insert(
       "stop",
       [](std::ostream &out) {
         if (!row().commissioned) {
@@ -354,7 +407,10 @@ std::unique_ptr<cli::Menu> build_menu() {
       "CiA 402 fault reset of the selected channel");
   menu->Insert(
       "wait", [](std::ostream &out) { wait_for_move(out); },
-      "Print the count until the move ends (any key ends the wait, not the move)");
+      "Print the count until the move ends, then its result");
+  menu->Insert(
+      "trace", [](std::ostream &out) { wait_for_move(out, true); },
+      "As wait, every 20 ms with the IMU tilt rate and gravity: for logging moves");
   menu->Insert(
       "init", [](std::ostream &out) { report(out, actuator().initialize(), "initialize"); },
       "Rerun initialize(): settings written and read back");
@@ -607,6 +663,17 @@ extern "C" void app_main(void) {
     return;
   }
   xTaskCreate(poll_task, "actuator poll", 6 * 1024, nullptr, 6, nullptr);
+
+  // The IMU for `trace`. init() also starts Ethernet (the usual DHCP server).
+  if (!board().init()) {
+    logger.warn("board init: Ethernet did not come up (not needed here)");
+  }
+  if (board().init_imu()) {
+    g_imu = board().imu();
+    g_imu->set_log_level(espp::Logger::Verbosity::ERROR);
+  } else {
+    logger.warn("IMU did not come up: `trace` carries no chassis motion");
+  }
 
   // The selected leg's settings as the boot check: configured and read back must match.
   print_settings(std::cout);

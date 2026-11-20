@@ -104,7 +104,8 @@ Actuator::Actuator(espp::CanopenClient &client, espp::Mcp266 &mcp, std::mutex &m
     , mcp_(mcp)
     , mcp_mutex_(mcp_mutex)
     , config_(config)
-    , range_(config.range) {}
+    , range_(config.range)
+    , shaper_delay_(std::max(std::chrono::milliseconds{0}, config.shaper_delay)) {}
 
 uint16_t Actuator::object(uint16_t m1_index) const {
   return static_cast<uint16_t>(m1_index + (config_.axis == Axis::M2 ? 0x800 : 0));
@@ -197,6 +198,18 @@ bool Actuator::calibration_mode() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
   return calibration_mode_;
 }
+
+void Actuator::set_shaper_delay(std::chrono::milliseconds delay) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  shaper_delay_ = std::max(std::chrono::milliseconds{0}, delay);
+  logger_.info("{}: input shaper delay {} ms", config_.name, shaper_delay_.count());
+}
+
+std::chrono::milliseconds Actuator::shaper_delay() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return shaper_delay_;
+}
+
 
 bool Actuator::moving() const {
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -1205,10 +1218,11 @@ bool Actuator::tick_locked() {
       step = handshake_;
       const double t = seconds(now - profile_t0_);
       const double lead_s = std::chrono::duration<double>(config_.lead).count();
-      const double sp = profile_.setpoint(t, lead_s);
+      const double tau = std::chrono::duration<double>(shaper_delay_).count();
+      const double sp = profile_.shaped_setpoint(t, lead_s, tau);
       const Range limits = (calibration_mode_ || homing_) ? kUnlimited : range_;
       setpoint = std::clamp(static_cast<int32_t>(std::lround(sp)), limits.min, limits.max);
-      final_setpoint = profile_.at(t).done;
+      final_setpoint = profile_.at(t - tau).done;
     }
   }
   if (send && still_ours()) {
@@ -1244,10 +1258,13 @@ bool Actuator::tick_locked() {
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const double t = seconds(now - profile_t0_);
-    const bool profile_done = t >= profile_.duration();
+    // The shaped profile ends one shaper delay after the planned one.
+    const double shaped_duration =
+        profile_.duration() + std::chrono::duration<double>(shaper_delay_).count();
+    const bool profile_done = t >= shaped_duration;
     if (profile_done && !profile_done_at_) {
       profile_done_at_ = profile_t0_ + std::chrono::duration_cast<Clock::duration>(
-                                           std::chrono::duration<double>(profile_.duration()));
+                                           std::chrono::duration<double>(shaped_duration));
     }
     const auto median = history_median();
     if (profile_done && final_latched_ && median &&
@@ -1261,7 +1278,7 @@ bool Actuator::tick_locked() {
     }
     const auto deadline = profile_t0_ +
                           std::chrono::duration_cast<Clock::duration>(
-                              std::chrono::duration<double>(profile_.duration())) +
+                              std::chrono::duration<double>(shaped_duration)) +
                           config_.arrival_margin;
     if (!arrived && now > deadline) {
       late = true;
