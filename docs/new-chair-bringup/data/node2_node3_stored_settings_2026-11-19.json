@@ -1,0 +1,130 @@
+{
+ "3": {
+  "node": 3,
+  "supported_modes_6502": 1792,
+  "heartbeat_consumer_1016_1": -2147483648,
+  "battery_dV?_2018": 443,
+  "M1": {
+   "position_6064": 59586,
+   "statusword_6041": 64,
+   "window_6067": 100,
+   "swlimit_607D": [
+    58000,
+    64000
+   ],
+   "profile_vel_6081": 8000,
+   "pos_pid_P_I_D_MaxI_db_min_max": [
+    153,
+    0,
+    1101,
+    0,
+    0,
+    58000,
+    64000
+   ],
+   "vel_pid_P_I_D_QPPS": [
+    78010,
+    2696,
+    0,
+    119
+   ],
+   "encoder_mode_205B": 6,
+   "pwm_2030": 0,
+   "current_x10mA_2031": 0,
+   "fault_reaction_605E": 2
+  },
+  "M2": {
+   "position_6064": 60320,
+   "statusword_6041": 64,
+   "window_6067": 100,
+   "swlimit_607D": [
+    60000,
+    66000
+   ],
+   "profile_vel_6081": 8000,
+   "pos_pid_P_I_D_MaxI_db_min_max": [
+    106,
+    0,
+    702,
+    0,
+    0,
+    60000,
+    66000
+   ],
+   "vel_pid_P_I_D_QPPS": [
+    81783,
+    3361,
+    0,
+    165
+   ],
+   "encoder_mode_205B": 8,
+   "pwm_2030": 0,
+   "current_x10mA_2031": 0,
+   "fault_reaction_605E": 2
+  }
+ },
+ "2": {
+  "node": 2,
+  "supported_modes_6502": 1792,
+  "heartbeat_consumer_1016_1": -2147483648,
+  "battery_dV?_2018": 442,
+  "M1": {
+   "position_6064": 0,
+   "statusword_6041": 1088,
+   "window_6067": 100,
+   "swlimit_607D": [
+    0,
+    0
+   ],
+   "profile_vel_6081": 8000,
+   "pos_pid_P_I_D_MaxI_db_min_max": [
+    114,
+    0,
+    813,
+    0,
+    0,
+    0,
+    0
+   ],
+   "vel_pid_P_I_D_QPPS": [
+    87620,
+    3360,
+    0,
+    154
+   ],
+   "encoder_mode_205B": 6,
+   "pwm_2030": 0,
+   "current_x10mA_2031": 0,
+   "fault_reaction_605E": 2
+  },
+  "M2": {
+   "position_6064": 0,
+   "statusword_6041": 1088,
+   "window_6067": 100,
+   "swlimit_607D": [
+    0,
+    0
+   ],
+   "profile_vel_6081": 8000,
+   "pos_pid_P_I_D_MaxI_db_min_max": [
+    97,
+    0,
+    707,
+    0,
+    0,
+    0,
+    0
+   ],
+   "vel_pid_P_I_D_QPPS": [
+    91794,
+    3204,
+    0,
+    154
+   ],
+   "encoder_mode_205B": 7,
+   "pwm_2030": 0,
+   "current_x10mA_2031": 0,
+   "fault_reaction_605E": 2
+  }
+ }
+}

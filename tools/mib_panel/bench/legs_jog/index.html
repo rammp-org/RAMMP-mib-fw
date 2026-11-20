@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Legs jog · new chair</title>
+<link rel="icon" href="data:,">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Condensed:wght@500;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ax-tokens.css">
+<style>
+.ax-page { max-width: 1100px; }
+h1 { font: 700 22px var(--ax-font-title); text-transform: uppercase; letter-spacing: 0.08em; margin: 0; }
+h1::before { content: "■ "; color: var(--ax-accent); }
+h2 { font: 700 14px var(--ax-font-title); text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 2px; }
+.controls { display: flex; gap: 8px; align-items: center; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ax-gap); margin-bottom: var(--ax-gap); }
+.ax-sub { font: 11px var(--ax-font-mono); color: var(--ax-muted); margin-top: 6px; }
+.steps { display: flex; gap: 0; margin: 14px 0 10px; }
+.steps button { flex: 1; border-radius: 0; }
+.steps button + button { border-left: none; }
+.steps button.on { border-color: var(--ax-accent); color: var(--ax-accent); }
+.jog { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.jog .ax-btn { justify-content: center; padding: 18px 12px; font-size: 14px; }
+.jog .ax-btn small { display: block; font-size: 10px; color: var(--ax-muted); letter-spacing: 0.06em; margin-top: 4px; text-transform: none; }
+#estop { font-size: 18px; padding: 16px 28px; background: var(--ax-critical); color: #fff; border-color: var(--ax-critical); }
+#estop:hover { filter: brightness(1.1); }
+.result { font: 12px var(--ax-font-mono); color: var(--ax-ink); margin-top: 10px; min-height: 2.6em; white-space: pre-wrap; }
+#log { font: 12px var(--ax-font-mono); white-space: pre-wrap; color: var(--ax-ink); max-height: 260px; overflow: auto; margin: 0; }
+.warn { color: var(--ax-warning); } .crit { color: var(--ax-critical); }
+.dir { font: 11px var(--ax-font-mono); color: var(--ax-muted); }
+</style>
+</head>
+<body class="ax">
+<div class="ax-page">
+  <header class="ax-mast">
+    <div>
+      <h1>Legs jog · new chair</h1>
+      <div class="ax-meta"><span id="link" class="ax-status">Connecting</span><span id="mibstate">–</span><span id="es">–</span></div>
+    </div>
+    <div class="controls">
+      <button class="ax-btn" id="clear">Clear e-stop</button>
+      <button class="ax-btn" id="estop" title="Space or Esc">E-STOP</button>
+    </div>
+  </header>
+
+  <section class="ax-tiles">
+    <div class="ax-tile"><div class="ax-label">Tilt from level reference</div><div class="ax-value" id="tilt">–<small>deg</small></div>
+      <div class="ax-sub"><span id="gnow">–</span> · <a href="#" id="setref" style="color:var(--ax-accent)">set level reference</a></div></div>
+    <div class="ax-tile"><div class="ax-label">Moving</div><div class="ax-value" id="busy" style="font-size:22px">–</div><div class="ax-sub">one move at a time; guarded</div></div>
+  </section>
+
+  <section class="two" id="legs"></section>
+
+  <section class="ax-panel">
+    <h2>Log</h2>
+    <div class="ax-cap">Each move: end count, peak PWM / current / speed, IMU tilt change, and any guard trip (which sends the E-STOP).</div>
+    <pre id="log"></pre>
+  </section>
+</div>
+<script src="ax-fx.js"></script>
+<script>
+// leg 0 = MR: +counts lifts the right side; leg 1 = ML: -counts lifts the left side (measured 2026-11-19).
+const LEGS = [{ name: 'MR', side: 'Right', lift: +1 }, { name: 'ML', side: 'Left', lift: -1 }];
+const step = [200, 200];
+const $ = id => document.getElementById(id);
+let ref = JSON.parse(localStorage.getItem('levelRef') || 'null'), lastG = null;
+
+function legPanel(i) {
+  const L = LEGS[i];
+  return `<div class="ax-panel">
+    <h2>${L.name} · ${L.side} main leg</h2>
+    <div class="dir">node 3 M${i + 1} · lift = ${L.lift > 0 ? '+' : '−'}counts · lower = ${L.lift > 0 ? '−' : '+'}counts</div>
+    <div class="ax-value" id="pos${i}" style="margin-top:12px">–</div>
+    <div class="ax-sub" id="range${i}">–</div>
+    <div class="steps">${[100, 200, 300].map(s => `<button class="ax-btn${s === step[i] ? ' on' : ''}" data-leg="${i}" data-step="${s}">${s}</button>`).join('')}</div>
+    <div class="jog">
+      <button class="ax-btn" data-leg="${i}" data-dir="lift">▲ Lift<small id="lift${i}"></small></button>
+      <button class="ax-btn" data-leg="${i}" data-dir="lower">▼ Lower<small id="lower${i}"></small></button>
+    </div>
+    <div class="result" id="res${i}">–</div>
+  </div>`;
+}
+$('legs').innerHTML = legPanel(0) + legPanel(1);
+function labels() {
+  LEGS.forEach((L, i) => {
+    $('lift' + i).textContent = `${L.lift * step[i] > 0 ? '+' : ''}${L.lift * step[i]} counts`;
+    $('lower' + i).textContent = `${-L.lift * step[i] > 0 ? '+' : ''}${-L.lift * step[i]} counts`;
+  });
+}
+labels();
+document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
+  const i = +b.dataset.leg; step[i] = +b.dataset.step;
+  document.querySelectorAll(`[data-leg="${i}"][data-step]`).forEach(x => x.classList.toggle('on', x === b)); labels();
+});
+document.querySelectorAll('[data-dir]').forEach(b => b.onclick = async () => {
+  const i = +b.dataset.leg, counts = (b.dataset.dir === 'lift' ? 1 : -1) * LEGS[i].lift * step[i];
+  const r = await fetch('/api/move', { method: 'POST', body: JSON.stringify({ leg: i, counts }) });
+  const j = await r.json(); if (!r.ok) { $('res' + i).innerHTML = `<span class="warn">${j.error}</span>`; }
+});
+async function estop() { await fetch('/api/estop', { method: 'POST' }); }
+$('estop').onclick = estop;
+addEventListener('keydown', e => { if (e.key === 'Escape' || e.code === 'Space') { e.preventDefault(); estop(); } });
+$('clear').onclick = async () => { await fetch('/api/clear', { method: 'POST' }); };
+$('setref').onclick = e => { e.preventDefault(); if (lastG) { ref = lastG; localStorage.setItem('levelRef', JSON.stringify(ref)); } };
+
+function angle(a, b) {
+  const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2], n = Math.hypot(...a) * Math.hypot(...b);
+  return Math.acos(Math.max(-1, Math.min(1, d / n))) * 180 / Math.PI;
+}
+async function poll() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    if (s.error) throw new Error(s.error);
+    $('link').className = 'ax-status live'; $('link').textContent = 'Live';
+    $('mibstate').textContent = s.state;
+    $('es').innerHTML = s.estop.latched ? '<span class="crit">E-STOP LATCHED</span>' : 'e-stop clear';
+    $('busy').textContent = s.busy || 'idle';
+    s.legs.forEach((lg, i) => {
+      axSet($('pos' + i), lg.pos, { digits: 0 });
+      const cool = s.cool[i] > 0 ? ` · resting ${s.cool[i].toFixed(1)} s` : '';
+      $('range' + i).textContent = `range ${lg.min}..${lg.max}${lg.moving ? ' · MOVING' : ''}${cool}`;
+      const m = lg.last_move; if (m) $('res' + i).innerHTML = `last: <b>${m.outcome}</b> → ${m.target}, ended ${m.final}${m.reason ? '\n' + m.reason : ''}`;
+    });
+    document.querySelectorAll('[data-dir]').forEach(b => b.disabled = !!s.busy || s.estop.latched || s.cool[+b.dataset.leg] > 0);
+    if (s.imu) {
+      lastG = s.imu.g; $('gnow').textContent = 'g ' + s.imu.g.map(v => v.toFixed(2)).join(', ');
+      if (ref) $('tilt').innerHTML = angle(ref, s.imu.g).toFixed(2) + '<small>deg</small>';
+    }
+    $('log').textContent = s.log.join('\n'); $('log').scrollTop = $('log').scrollHeight;
+  } catch (e) { $('link').className = 'ax-status critical'; $('link').textContent = 'No link: ' + e.message; }
+}
+setInterval(poll, 350); poll();
+</script>
+</body>
+</html>
