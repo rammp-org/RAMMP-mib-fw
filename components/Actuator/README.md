@@ -34,6 +34,7 @@ layer that wants the other meaning).
 | `stop()` | CiA 402 quick stop; also ends the rest watch |
 | `poll()` | The move engine: streams the trapezoid's setpoints, releases the drive once the joint has arrived, then keeps the resting joint within `tolerance` of its target |
 | `is_target_reached(reached)`, `get_drive_state(state)` | The controller's arrival flag and decoded CiA 402 state |
+| `read_position_pid(pid)`, `set_position_pid(pid)` | The controller's position PID gains (P, I, D, MaxI, deadzone), read and written in controller RAM |
 
 Every method returns true on success and logs the reason on failure, as the
 rest of the firmware does; espp's error codes stay inside. Every method that
@@ -96,7 +97,9 @@ the joint did not move while powered off; `home()` when in doubt.
 [`example/`](example) is a standalone project that brings up one actuator on
 one MCP266 channel, with its pins, node id, range and profile written in the
 example, and offers a serial console to exercise the API:
-`status`, `pos`, `abs`, `rel`, `inc`, `dec`, `wait`, `stop`, the
+`status`, `pos`, `abs`, `rel`, `inc`, `dec`, `wait`, `stop`, the tuning command
+`pid` (read the position PID gains, or write them: `pid <p> <i> <d>` keeps MaxI
+and deadzone, five arguments write the whole record), the
 calibration commands `cal`, `range`, `forget`, the homing commands `home`,
 `restore`, `save`, `setenc`, and `selftest`. It doubles as the bench test for
 one actuator: `status` proves the controller answers, `pos` the encoder, `inc`
@@ -114,6 +117,8 @@ the direction, `selftest` the position loop. Build it from that directory with
 - Homing writes the encoder count through `Mcp266::set_encoder` (espp 1.3.7,
   Basicmicro command 22/23 mirrored at 0x2016/0x2017). `home()` reads the count
   back and fails loudly if it did not take.
-- Position loop gains are tuned on the controller (Motion Studio, or the
-  debugger's MCP266 / CAN page on the `feature/21-mib-debugger` branch), not
-  here.
+- Position loop gains live on the controller. `read_position_pid()` /
+  `set_position_pid()` (the example's `pid` command) read and write them in
+  controller RAM for tuning on the bench; a power cycle reverts to the
+  controller's EEPROM, so save a finished tune there (Motion Studio, or the
+  debugger's MCP266 / CAN page on the `feature/21-mib-debugger` branch).

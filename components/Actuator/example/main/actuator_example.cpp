@@ -69,7 +69,7 @@ constexpr int kRxGpio = 16;
 constexpr uint32_t kBitrate = 1'000'000;
 // Which controller and channel the actuator is on.
 constexpr uint8_t kNodeId = 3;
-constexpr auto kAxis = mib::Actuator::Axis::M1;
+constexpr auto kAxis = mib::Actuator::Axis::M2;
 // Set true for an incremental (AB) encoder, which must be homed every boot.
 constexpr bool kHomingRequired = false;
 // "Forward" (positive count, `inc`) is toward the FRONT of the rack. The carriage homes at
@@ -82,8 +82,8 @@ constexpr int32_t kTravel = 12600;
 const mib::Actuator::Config kActuatorConfig{
     .name = "example",              // also the NVS key prefix
     .axis = kAxis,
-    .range = {10000, 18000},         // calibrated travel; a range saved to NVS overrides it
-    .profile = {1000, 1000, 3000},  // counts/s, counts/s^2, counts/s^2
+    .range = {25000, 31000},         // calibrated travel; a range saved to NVS overrides it
+    .profile = {1000, 1000, 1000},  // counts/s, counts/s^2, counts/s^2
     .jog_step = 500,               // counts per inc / dec
     .tolerance = 200,               // counts within which a position counts as at target
     .hardware_limits = false,       // bench motors have no limit switches
@@ -472,6 +472,50 @@ std::unique_ptr<cli::Menu> build_menu() {
         }
       },
       "Read the MinPos/MaxPos clamp the controller currently holds");
+  menu->Insert(
+      "pid",
+      [](std::ostream &out) {
+        mib::Actuator::PositionPid pid{};
+        if (!actuator->read_position_pid(pid)) {
+          out << "read failed (see log)\n";
+          return;
+        }
+        out << fmt::format("position PID: P {:.3f}, I {:.3f}, D {:.3f}, MaxI {}, deadzone {} counts\n",
+                           pid.p, pid.i, pid.d, pid.max_i, pid.deadzone);
+      },
+      "Read the controller's position PID gains");
+  menu->Insert(
+      "pid",
+      [](std::ostream &out, double p, double i, double d) {
+        if (p < 0 || i < 0 || d < 0) {
+          out << "gains must not be negative\n";
+          return;
+        }
+        // Keep the MaxI and deadzone the controller holds; only the gains change.
+        mib::Actuator::PositionPid pid{};
+        if (!actuator->read_position_pid(pid)) {
+          out << "read failed (see log)\n";
+          return;
+        }
+        pid.p = static_cast<float>(p);
+        pid.i = static_cast<float>(i);
+        pid.d = static_cast<float>(d);
+        report(out, actuator->set_position_pid(pid), "position PID write (RAM, lost at power-up)");
+      },
+      "Set the position PID gains, keeping MaxI and deadzone: pid <p> <i> <d>");
+  menu->Insert(
+      "pid",
+      [](std::ostream &out, double p, double i, double d, int max_i, int deadzone) {
+        if (p < 0 || i < 0 || d < 0 || max_i < 0 || deadzone < 0) {
+          out << "all five must not be negative\n";
+          return;
+        }
+        const mib::Actuator::PositionPid pid{static_cast<float>(p), static_cast<float>(i),
+                                             static_cast<float>(d), static_cast<uint32_t>(max_i),
+                                             static_cast<uint32_t>(deadzone)};
+        report(out, actuator->set_position_pid(pid), "position PID write (RAM, lost at power-up)");
+      },
+      "Set the whole position PID record: pid <p> <i> <d> <max_i> <deadzone>");
   menu->Insert(
       "cal",
       [](std::ostream &out, std::string mode) {

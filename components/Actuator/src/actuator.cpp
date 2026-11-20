@@ -161,6 +161,57 @@ bool Actuator::read_controller_limits(int32_t &min_counts, int32_t &max_counts) 
   return ok;
 }
 
+bool Actuator::read_position_pid(PositionPid &pid) {
+  if (!check_online()) {
+    return false;
+  }
+  std::error_code ec;
+  bool ok;
+  int32_t min = 0;
+  int32_t max = 0; // the record's clamp fields, read but reported through read_controller_limits()
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    ok = mcp_.read_position_pid(config_.axis, pid.p, pid.i, pid.d, pid.max_i, pid.deadzone, min,
+                                max, ec);
+  }
+  note_result(ok, ec, "read_position_pid");
+  return ok;
+}
+
+bool Actuator::set_position_pid(const PositionPid &pid) {
+  if (pid.p < 0 || pid.i < 0 || pid.d < 0) {
+    logger_.error("{}: rejected position PID (P {}, I {}, D {}): gains must not be negative",
+                  config_.name, pid.p, pid.i, pid.d);
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (trajectory_.active || pending_release_) {
+      logger_.error("{}: position PID write refused, a move is in progress", config_.name);
+      return false;
+    }
+  }
+  if (!check_online()) {
+    return false;
+  }
+  // The setter writes the whole record, so the installed clamp travels with the gains.
+  const Range clamp = installed_limits();
+  std::error_code ec;
+  bool ok;
+  {
+    std::lock_guard<std::mutex> lock(mcp_mutex_);
+    ok = mcp_.set_position_pid(config_.axis, pid.p, pid.i, pid.d, pid.max_i, pid.deadzone,
+                               clamp.min, clamp.max, ec);
+  }
+  note_result(ok, ec, "set_position_pid");
+  if (ok) {
+    logger_.info("{}: position PID set: P {:.3f}, I {:.3f}, D {:.3f}, MaxI {}, deadzone {} "
+                 "(controller RAM; a power cycle reverts to its EEPROM)",
+                 config_.name, pid.p, pid.i, pid.d, pid.max_i, pid.deadzone);
+  }
+  return ok;
+}
+
 bool Actuator::verify_limits() {
   const Range expected = installed_limits();
   int32_t min = 0;
@@ -562,6 +613,7 @@ bool Actuator::step_trajectory() {
       t.velocity = direction * std::min(toward + accel * dt, cruise);
     }
     t.setpoint += t.velocity * dt;
+    // t.setpoint = t.target; // by pass the trajectory integration and go straight to the target
     const double left = (t.target - t.setpoint) * direction;
     if (left <= 0.0 || (std::fabs(t.velocity) < 1.0 && std::fabs(left) < 1.0)) {
       t.setpoint = t.target;

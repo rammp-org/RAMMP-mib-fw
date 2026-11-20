@@ -208,6 +208,31 @@ public:
   bool read_controller_limits(int32_t &min_counts, int32_t &max_counts);
   /// @}
 
+  /// @name Position loop tuning: the gain fields of the controller's position PID record
+  ///       (Basicmicro command 61-64). Controller RAM only: the MCP266 reverts to its
+  ///       EEPROM at power-up, so a gain set here lasts until the next power cycle (save
+  ///       it on the controller with Motion Studio once tuned).
+  /// @{
+
+  /// The record's gains. Its MinPos/MaxPos clamp belongs to the range machinery
+  /// (set_range(), read_controller_limits()) and is not part of this struct.
+  struct PositionPid {
+    float p{};           ///< Proportional gain (the controller stores it x1024).
+    float i{};           ///< Integral gain.
+    float d{};           ///< Derivative gain.
+    uint32_t max_i{};    ///< Integral windup limit.
+    uint32_t deadzone{}; ///< Counts: no correction inside it.
+  };
+
+  /// Read the gains the controller currently holds (seven SDOs).
+  bool read_position_pid(PositionPid &pid);
+
+  /// Write the gains to controller RAM, keeping the installed clamp (the setter writes
+  /// the whole record). Refused while a move is in progress: it would rewrite the loop
+  /// under way.
+  bool set_position_pid(const PositionPid &pid);
+  /// @}
+
   /// @name Homing: incremental encoders, every boot.
   /// @{
 
