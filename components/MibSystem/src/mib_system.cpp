@@ -21,8 +21,8 @@ using namespace std::chrono_literals;
 // axis table needs the limits raised; these checks fail the build until they are. An sdkconfig
 // made before the limits were raised keeps its old values: delete it.
 namespace {
-/// Fixed writers: MibStatus, Diagnostics, Motors, estop-core's EStop and SPDP.
-constexpr size_t kFixedWriters = 5;
+/// Fixed writers: MibStatus, Diagnostics, Motors, Actuators, estop-core's EStop and SPDP.
+constexpr size_t kFixedWriters = 6;
 /// Reliable, so stateful, writers: /base/odom, /tf, /base/joint_states, and the
 /// ArbitrationServer's /base/control_status and three service replies. In the stateful and
 /// per-participant limits, not the stateless one.
@@ -30,10 +30,10 @@ constexpr size_t kReliableWriters = 7;
 /// Reliable readers: the ArbitrationServer's three service requests. In the stateful and
 /// per-participant limits and the reader callbacks, not the stateless one.
 constexpr size_t kReliableReaders = 3;
-/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand and MotorJog,
-/// the external controller's TwistSetpoint, estop-core's EStop, SPDP and push assist board's
-/// HandleForce.
-constexpr size_t kFixedReaders = 8;
+/// Fixed readers: the joystick's XYTwist, SeatCommand, DriveCommand, MotorJog and
+/// ActuatorJog, the external controller's TwistSetpoint, estop-core's EStop, SPDP and push
+/// assist board's HandleForce.
+constexpr size_t kFixedReaders = 9;
 /// SEDP's publication and subscription endpoints: in the per-participant limits only.
 constexpr size_t kSedpEndpoints = 2;
 constexpr size_t kWriters = 2 * rammp::kAxisCount + kFixedWriters;
@@ -183,6 +183,7 @@ void MibSystem::start() {
         if (std::chrono::steady_clock::now() - last_motor_state_publish_timestamp_ >=
             mib::config::motor_states_publish_interval) {
           publish_motor_states();
+          publish_actuators();
         }
 
         std::unique_lock<std::mutex> lock(mutex);
@@ -357,6 +358,23 @@ bool MibSystem::initialize_pubsub() {
           .on_message = [this](const rammp::MotorJog &jog) { handle_motor_jog(jog); }});
   if (!motor_states_publisher_->is_valid() || !motor_jog_subscriber_->is_valid()) {
     logger_.error("Failed to create the motor debug endpoints");
+    return false;
+  }
+
+  actuators_publisher_ = std::make_unique<espp::Publisher<rammp::Actuators>>(
+      mib_.rtps_participant(),
+      espp::Publisher<rammp::Actuators>::Config{.topic = rammp::kMibActuators.name,
+                                                .type_name = rammp::kMibActuators.type,
+                                                .reliability = Reliability::BEST_EFFORT});
+  actuator_jog_subscriber_ = std::make_unique<espp::Subscriber<rammp::ActuatorJog>>(
+      mib_.rtps_participant(),
+      espp::Subscriber<rammp::ActuatorJog>::Config{
+          .topic = rammp::kJoystickActuatorJog.name,
+          .type_name = rammp::kJoystickActuatorJog.type,
+          .reliability = Reliability::BEST_EFFORT,
+          .on_message = [this](const rammp::ActuatorJog &jog) { handle_actuator_jog(jog); }});
+  if (!actuators_publisher_->is_valid() || !actuator_jog_subscriber_->is_valid()) {
+    logger_.error("Failed to create the leg actuator debug endpoints");
     return false;
   }
 
@@ -721,6 +739,7 @@ void MibSystem::start_seat_task() {
   log_seat_position("Seat at boot");
   seat_task_ = std::make_unique<espp::Task>(espp::Task::Config{
       .callback = [this](std::mutex &mutex, std::condition_variable &condition_variable) -> bool {
+        run_leg_jog_step();
         run_seat_step();
         publish_joint_states();
         std::unique_lock<std::mutex> lock(mutex);
@@ -949,6 +968,123 @@ bool MibSystem::jog_leg(uint8_t leg, int32_t delta, std::string &why) {
     return false;
   }
   return true;
+}
+
+void MibSystem::handle_actuator_jog(const rammp::ActuatorJog &jog) {
+  std::lock_guard<std::mutex> lock(actuator_jog_mutex_);
+  latest_actuator_jog_ = jog;
+  latest_actuator_jog_time_ = std::chrono::steady_clock::now();
+}
+
+void MibSystem::run_leg_jog_step() {
+  rammp::ActuatorJog jog;
+  std::chrono::steady_clock::time_point received;
+  {
+    std::lock_guard<std::mutex> lock(actuator_jog_mutex_);
+    jog = latest_actuator_jog_;
+    received = latest_actuator_jog_time_;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const bool fresh = now - received <= mib::config::motor_jog_timeout;
+  const bool latched = latch_.is_active();
+  const bool idle = state_.load() == SystemState::IDLE;
+  // A seat move owns the seat legs until it ends; the jog waits, and does not touch them.
+  const bool may_jog = idle && !latched && !seat_moving_;
+
+  std::array<bool, mib::config::leg_count> wanted{};
+  if (fresh && may_jog && jog.direction != 0) {
+    for (const uint8_t id : jog.ids) {
+      if (id < mib::config::leg_count && mib_.actuator(static_cast<mib::config::Leg>(id)).ready()) {
+        wanted[id] = true;
+      }
+    }
+  }
+  if (wanted != legs_jogging_) {
+    std::string names;
+    for (size_t i = 0; i < mib::config::leg_count; i++) {
+      if (wanted[i]) {
+        names += std::string(names.empty() ? "" : " ") +
+                 mib_.actuator(static_cast<mib::config::Leg>(i)).name();
+      }
+    }
+    if (!names.empty()) {
+      logger_.info("Leg jog {:+d} from the joystick: {}", jog.direction, names);
+    } else {
+      const char *why = fresh ? "released" : "lapsed";
+      if (latched) {
+        why = "e-stop";
+      } else if (!idle) {
+        why = "MIB left IDLE";
+      } else if (seat_moving_) {
+        why = "seat move";
+      }
+      logger_.info("Leg jog ended: {}", why);
+    }
+  }
+
+  for (size_t i = 0; i < mib::config::leg_count; i++) {
+    auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+    if (wanted[i]) {
+      // One jog_step per tick: at seat_task_interval this is the leg's own profile speed,
+      // and Actuator::jog() keeps the target at most ten steps ahead of the joint.
+      if (!actuator.jog(jog.direction > 0 ? actuator.config().jog_step
+                                          : -actuator.config().jog_step)) {
+        logger_.warn("Leg jog: {} refused the jog", actuator.name());
+      }
+    } else if (legs_jogging_[i]) {
+      // Ended. In IDLE, to rest at its deceleration (a jog of 0). Out of IDLE without the
+      // e-stop, a quick stop: poll() no longer runs, so no move can be streamed. The e-stop
+      // stops and holds the legs itself (run_estop_step()). A seat move retargets them.
+      if (latched || seat_moving_) {
+        // nothing: their owners have them
+      } else if (idle) {
+        actuator.jog(0);
+      } else {
+        actuator.stop();
+      }
+    }
+  }
+  legs_jogging_ = wanted;
+
+  // Keep the idle legs' positions fresh for Actuators: one read per tick, round robin.
+  // A moving or jogged leg is read by its own move.
+  for (size_t tries = 0; tries < mib::config::leg_count; tries++) {
+    const size_t i = leg_refresh_next_;
+    leg_refresh_next_ = (leg_refresh_next_ + 1) % mib::config::leg_count;
+    auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+    if (!wanted[i] && !actuator.moving()) {
+      int32_t counts = 0;
+      actuator.read_position(counts);
+      break;
+    }
+  }
+}
+
+void MibSystem::publish_actuators() {
+  if (!actuators_publisher_) {
+    return;
+  }
+  rammp::Actuators message{.seq = actuators_sequence_++, .actuators = {}};
+  // Empty while the actuators are not up: the joystick shows no rows rather than stale ones.
+  if (mib_.actuators_ready()) {
+    message.actuators.reserve(mib::config::leg_count);
+    for (size_t i = 0; i < mib::config::leg_count; i++) {
+      auto &actuator = mib_.actuator(static_cast<mib::config::Leg>(i));
+      const auto range = actuator.range();
+      message.actuators.push_back({
+          .id = static_cast<uint8_t>(i),
+          .ready = static_cast<uint8_t>(actuator.ready() ? 1 : 0),
+          .moving = static_cast<uint8_t>(actuator.moving() ? 1 : 0),
+          .position = actuator.current_position().value_or(0),
+          .min_counts = range.min,
+          .max_counts = range.max,
+          .label = actuator.name(),
+      });
+    }
+  }
+  if (!actuators_publisher_->publish(message)) {
+    logger_.warn("Failed to publish the leg actuator list");
+  }
 }
 
 bool MibSystem::set_leg_calibration(uint8_t leg, bool on, std::string &why) {
