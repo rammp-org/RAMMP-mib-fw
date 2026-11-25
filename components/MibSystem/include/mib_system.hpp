@@ -302,6 +302,21 @@ private:
   /// \note Runs on an RTPS receive thread - return quickly, do not block.
   void handle_motor_jog(const rammp::MotorJog &jog);
 
+  /// Handle a leg actuator jog request from the joystick (hold-to-run, several at once).
+  /// \param jog The whole set to jog, and the direction.
+  /// \note Runs on an RTPS receive thread - return quickly, do not block.
+  void handle_actuator_jog(const rammp::ActuatorJog &jog);
+
+  /// Run the joystick's leg jog: every seat task tick, jog each actuator in the latest
+  /// fresh ActuatorJog one jog_step on, and bring to rest any it no longer names.
+  /// \note Runs on the seat task: it waits on CAN.
+  void run_leg_jog_step();
+
+  /// Publish the leg actuator list (rammp::Actuators): no bus traffic, the actuators'
+  /// last readings.
+  /// \note Runs on the motor command task.
+  void publish_actuators();
+
   /// Publish the current system state.
   /// \note Runs on the publication task.
   void publish_system_state();
@@ -364,6 +379,7 @@ private:
   uint8_t motor_command_sequence_{0};          ///< Sequence number for motor command samples.
   uint8_t diagnostics_sequence_{0};            ///< Sequence number for diagnostics samples.
   uint8_t motor_states_sequence_{0};           ///< Sequence number for Motors samples.
+  uint8_t actuators_sequence_{0};              ///< Sequence number for Actuators samples.
   /// When publish_motor_states() last sent a Motors sample (epoch = never).
   std::chrono::steady_clock::time_point last_motor_state_publish_timestamp_{};
   /// Latest state of each kAxes board, and when it arrived (epoch = never).
@@ -378,6 +394,11 @@ private:
   std::chrono::steady_clock::time_point latest_jog_time_{}; ///< When it arrived.
   mutable std::mutex jog_mutex_;                            ///< Protects the latest jog request.
   bool jog_requested_{false}; ///< A fresh jog asked for; motor task only.
+  rammp::ActuatorJog latest_actuator_jog_{};                         ///< Most recent leg jog.
+  std::chrono::steady_clock::time_point latest_actuator_jog_time_{}; ///< When it arrived.
+  std::mutex actuator_jog_mutex_; ///< Protects the latest leg jog request.
+  std::array<bool, mib::config::leg_count> legs_jogging_{}; ///< Seat task only.
+  size_t leg_refresh_next_{0}; ///< The idle leg whose position is read next. Seat task only.
   std::unique_ptr<espp::Publisher<rammp::MibStatus>> status_publisher_; ///< MIB status output.
   std::unique_ptr<espp::Publisher<rammp::Diagnostics>> diagnostics_publisher_; ///< Readings output.
   /// One command output per kAxes row, in table order.
@@ -388,6 +409,8 @@ private:
       motor_state_subscribers_;
   std::unique_ptr<espp::Publisher<rammp::Motors>> motor_states_publisher_;  ///< Motor debug list.
   std::unique_ptr<espp::Subscriber<rammp::MotorJog>> motor_jog_subscriber_; ///< Jog input.
+  std::unique_ptr<espp::Publisher<rammp::Actuators>> actuators_publisher_; ///< Leg list.
+  std::unique_ptr<espp::Subscriber<rammp::ActuatorJog>> actuator_jog_subscriber_; ///< Leg jog.
   std::array<AxisLink, rammp::kAxisCount> axes_{}; ///< Every PACE RACER axis, in table order.
   mutable std::mutex axes_mutex_;                  ///< Protects axes_.
   std::atomic<bool> ota_active_{false};            ///< A firmware update is being written.

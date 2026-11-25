@@ -53,14 +53,14 @@ CONFIG_TINYUSB_VENDOR_RX_BUFSIZE=4096
 CONFIG_TINYUSB_VENDOR_TX_BUFSIZE=8192
 
 # RTPS endpoint pool (espp/rtps). Stateless (best-effort) writers: a command and a tuning
-# per motor board, status, Diagnostics, Motors, estop-core's, SPDP. Stateless readers: a
-# state per motor board, the joystick's four inputs, the external controller's twist,
-# estop-core's, SPDP, the push-assist board's. Stateful (reliable): /base/odom, /tf,
+# per motor board, status, Diagnostics, Motors, Actuators, estop-core's, SPDP. Stateless
+# readers: a state per motor board, the joystick's five inputs, the external controller's
+# twist, estop-core's, SPDP, the push-assist board's. Stateful (reliable): /base/odom, /tf,
 # /base/joint_states and the base arbitration's status and three service replies as writers, its three service
 # requests as readers, plus SEDP's two of each. Per participant counts both pools.
 # mib_system.cpp checks these against the axis table and its endpoint list.
 CONFIG_RTPS_LIMIT_NUM_STATELESS_WRITERS=14
-CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=12
+CONFIG_RTPS_LIMIT_NUM_STATELESS_READERS=13
 CONFIG_RTPS_LIMIT_NUM_STATEFUL_WRITERS=9
 CONFIG_RTPS_LIMIT_NUM_STATEFUL_READERS=8
 CONFIG_RTPS_LIMIT_NUM_WRITERS_PER_PARTICIPANT=24
